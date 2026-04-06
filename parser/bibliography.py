@@ -34,7 +34,21 @@ STOP_WORDS: list[str] = [
 
 # Патерн початку нового бібліографічного запису:
 # підтримує  "1. Текст..."  і  "[1] Текст..."
+# Bug 3 fix: обмежуємо номер до MAX_SOURCE_NUM, щоб рядки продовження
+# на зразок "2001. – № 29. – С. 2." (рік видання) не трактувались як
+# новий запис #2001.
+MAX_SOURCE_NUM = 999
 _ENTRY_START = re.compile(r"^\s*(?:\[)?(\d+)(?:\.|\])\s+(.+)")
+
+# Максимально допустимий номер джерела.
+# Числа понад 999 — це роки в тексті записів (напр. "2005. URL: ...")
+# а не порядкові номери. Реальна дисертація має щонайбільше ~500 джерел.
+_MAX_SOURCE_NUM = 999
+
+
+def _is_valid_entry_num(n: int) -> bool:
+    """True якщо n може бути порядковим номером джерела (не рік, не сміття)."""
+    return 1 <= n <= _MAX_SOURCE_NUM
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +190,7 @@ def parse_bibliography(bibliography_lines: list[dict]) -> dict[int, str]:
     for item in bibliography_lines:
         line = item["line"]
         m = _ENTRY_START.match(line)
-        if m:
+        if m and _is_valid_entry_num(int(m.group(1))):
             _flush()
             current_num = int(m.group(1))
             current_parts = [m.group(2).strip()]
