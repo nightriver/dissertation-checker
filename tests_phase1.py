@@ -432,5 +432,126 @@ class TestBug3FalseYearEntries(unittest.TestCase):
         self.assertNotIn(1000, result)
 
 
-if __name__ == "__main__":
+
+class TestBug1Multiline(unittest.TestCase):
+    def test_two_numbers_split(self):
+        body = [{"line": "text [124; 149;", "page": 1},
+                {"line": "179] end.", "page": 1}]
+        self.assertEqual(find_citations(body) & {124, 149, 179}, {124, 149, 179})
+
+    def test_range_split(self):
+        body = [{"line": "text [9; 40; 134-136; 209-210;", "page": 1},
+                {"line": "213; 220] end.", "page": 1}]
+        result = find_citations(body)
+        for n in [9, 40, 134, 135, 136, 209, 210, 213, 220]:
+            self.assertIn(n, result)
+
+    def test_single_line_unaffected(self):
+        body = [{"line": "text [5; 7].", "page": 1}]
+        self.assertEqual(find_citations(body), {5, 7})
+
+
+class TestBug2U2212(unittest.TestCase):
+    def test_u2212_range(self):
+        body = [{"line": "text [209−210].", "page": 5}]
+        self.assertEqual(find_citations(body), {209, 210})
+
+    def test_endash_range(self):
+        body = [{"line": "text [134–136].", "page": 5}]
+        self.assertEqual(find_citations(body), {134, 135, 136})
+
+    def test_mixed_dashes(self):
+        body = [{"line": "text [134–136; 209−210].", "page": 3}]
+        self.assertEqual(find_citations(body), {134, 135, 136, 209, 210})
+
+
+class TestBug3WingdingsBrackets(unittest.TestCase):
+    def test_pua_simple(self):
+        body = [{"line": "94; 108 text.", "page": 46}]
+        result = find_citations(body)
+        self.assertIn(94, result)
+        self.assertIn(108, result)
+
+    def test_pua_range_u2212(self):
+        body = [{"line": "107−108 text.", "page": 46}]
+        self.assertEqual(find_citations(body), {107, 108})
+
+    def test_pua_and_standard_mixed(self):
+        body = [{"line": "see [1; 2] and 3; 4.", "page": 1}]
+        self.assertEqual(find_citations(body), {1, 2, 3, 4})
+
+    def test_pua_multiline(self):
+        body = [{"line": "94; 97;", "page": 46},
+                {"line": "107 text.", "page": 46}]
+        result = find_citations(body)
+        for n in [94, 97, 107]:
+            self.assertIn(n, result)
+
+
+class TestBug4CommaMode(unittest.TestCase):
+    def test_three_sources_comma_only(self):
+        body = [{"line": "text [3, 7, 11] end.", "page": 9}]
+        self.assertEqual(find_citations(body), {3, 7, 11})
+
+    def test_four_sources_comma_only(self):
+        body = [{"line": "text [1, 5, 10, 12] end.", "page": 9}]
+        self.assertEqual(find_citations(body), {1, 5, 10, 12})
+
+    def test_comma_range(self):
+        body = [{"line": "text [1, 5, 14, 16-17] end.", "page": 9}]
+        self.assertEqual(find_citations(body), {1, 5, 14, 16, 17})
+
+    def test_semicolon_mode_unaffected(self):
+        body = [{"line": "text [1, 15; 3; 5, 20-25] end.", "page": 1}]
+        self.assertEqual(find_citations(body), {1, 3, 5})
+
+    def test_two_comma_sources(self):
+        body = [{"line": "text [69,85] end.", "page": 9}]
+        self.assertEqual(find_citations(body), {69, 85})
+
+
+class TestBug5BibNumberOnOwnLine(unittest.TestCase):
+    def _L(self, texts):
+        return [{"line": t, "page": 200} for t in texts]
+
+    def test_number_own_line(self):
+        lines = self._L(["11.", "", "Baykulatova V. Title. Kyiv, 2010.",
+                          "12.", "", "Baytsar R. Other. Kharkiv, 2012."])
+        result = parse_bibliography(lines)
+        self.assertIn(11, result)
+        self.assertIn(12, result)
+        self.assertIn("Baykulatova", result[11])
+
+    def test_inline_still_works(self):
+        lines = self._L(["1. Author A. Title.", "2. Author B. Another."])
+        result = parse_bibliography(lines)
+        self.assertIn(1, result)
+        self.assertIn(2, result)
+
+    def test_mixed_inline_and_own_line(self):
+        lines = self._L(["10. Author A.", "11.", "", "Author B. Kyiv, 2015.", "12. Author C."])
+        result = parse_bibliography(lines)
+        for n in [10, 11, 12]:
+            self.assertIn(n, result)
+
+
+class TestBug3YearNumbers(unittest.TestCase):
+    def _L(self, texts):
+        return [{"line": t, "page": 200} for t in texts]
+
+    def test_year_continuation(self):
+        lines = self._L(["2. Author // Journal. --", "2001. -- No 29. -- P. 2.", "3. Another."])
+        result = parse_bibliography(lines)
+        self.assertIn(2, result)
+        self.assertNotIn(2001, result)
+
+    def test_document_number(self):
+        lines = self._L(["170. Decision No", "1882. -- Zh., 2007. -- 8 p.", "171. Approval."])
+        result = parse_bibliography(lines)
+        self.assertIn(170, result)
+        self.assertNotIn(1882, result)
+        self.assertIn("1882", result[170])
+
+
+if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -38,7 +38,9 @@ STOP_WORDS: list[str] = [
 # на зразок "2001. – № 29. – С. 2." (рік видання) не трактувались як
 # новий запис #2001.
 MAX_SOURCE_NUM = 999
-_ENTRY_START = re.compile(r"^\s*(?:\[)?(\d+)(?:\.|\])\s+(.+)")
+# Text after number is optional: PyMuPDF sometimes puts number on its own line.
+# "11.\n\nБайкулатова..." → "11." matches, empty group(2), next lines become content.
+_ENTRY_START = re.compile(r"^\s*(?:\[)?(\d+)(?:\.|\])\s*(.*)")
 
 # Максимально допустимий номер джерела.
 # Числа понад 999 — це роки в тексті записів (напр. "2005. URL: ...")
@@ -193,7 +195,9 @@ def parse_bibliography(bibliography_lines: list[dict]) -> dict[int, str]:
         if m and _is_valid_entry_num(int(m.group(1))):
             _flush()
             current_num = int(m.group(1))
-            current_parts = [m.group(2).strip()]
+            text_part = m.group(2).strip()
+            # Number may be alone on line; text starts on next line
+            current_parts = [text_part] if text_part else []
         else:
             # Продовження попереднього запису (або заголовок зони — ігноруємо)
             if current_num is not None:
