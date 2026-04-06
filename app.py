@@ -202,6 +202,7 @@ if not citations:
 # ---------------------------------------------------------------------------
 
 result = compare(bibliography, citations)
+citations_dict: dict = citations  # dict[int, str] — first bracket per source
 orphans_sorted = sorted(result["orphans"])
 used_sorted = sorted(result["used"])
 
@@ -262,7 +263,11 @@ st.dataframe(
 # Розгорнута секція: використані джерела (для перевірки)
 with st.expander(f"Використані джерела ({used_count})"):
     used_rows = [
-        {"№": num, "Джерело": bibliography.get(num, "—")}
+        {
+            "№": num,
+            "Джерело": bibliography.get(num, "—"),
+            "Скобка в тексті": citations_dict.get(num, "—"),
+        }
         for num in used_sorted
     ]
     st.dataframe(
@@ -272,6 +277,7 @@ with st.expander(f"Використані джерела ({used_count})"):
         column_config={
             "№": st.column_config.NumberColumn(width="small"),
             "Джерело": st.column_config.TextColumn(width="large"),
+            "Скобка в тексті": st.column_config.TextColumn(width="medium"),
         },
     )
 

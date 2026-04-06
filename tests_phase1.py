@@ -31,6 +31,11 @@ def L(texts, page=1):
     return [{"line": t, "page": page} for t in texts]
 
 
+def fc(body_lines) -> set:
+    """fc() returns dict[int,str]; fc() returns just the set of keys."""
+    return set(find_citations(body_lines).keys())
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  bibliography.py
 # ═══════════════════════════════════════════════════════════════════════════
@@ -156,58 +161,58 @@ class TestExpandBracket(unittest.TestCase):
 
 class TestFindCitations(unittest.TestCase):
     def test_basic(self):
-        self.assertEqual(find_citations(L(["[1; 3; 7]"])), {1, 3, 7})
+        self.assertEqual(fc(L(["[1; 3; 7]"])), {1, 3, 7})
     def test_no_citations(self):
-        self.assertEqual(find_citations(L(["Текст."])), set())
+        self.assertEqual(fc(L(["Текст."])), set())
     def test_multiline_two(self):
         body = L(["[1]."]) + L(["[2; 3]."])
-        self.assertEqual(find_citations(body), {1, 2, 3})
+        self.assertEqual(fc(body), {1, 2, 3})
 
     # Bug 1 — multiline brackets (any depth)
     def test_multiline_bracket_2lines(self):
         body = [{"line": "[124; 149;", "page": 1}, {"line": "179].", "page": 1}]
-        self.assertLessEqual({124, 149, 179}, find_citations(body))
+        self.assertLessEqual({124, 149, 179}, fc(body))
     def test_multiline_bracket_3lines(self):
         body = [{"line": "[ 8; 16; 19; 57; 68; 84; 89, с. 11; 98;", "page": 1},
                 {"line": "100; 164; 189].", "page": 1}]
         self.assertLessEqual({8, 16, 19, 57, 68, 84, 89, 98, 100, 164, 189},
-                              find_citations(body))
+                              fc(body))
 
     # Bug 2 — U+2212 range
     def test_u2212(self):
-        self.assertEqual(find_citations(L(["[209−210]"])), {209, 210})
+        self.assertEqual(fc(L(["[209−210]"])), {209, 210})
 
     # Bug 3 — Wingdings PUA brackets
     def test_wingdings(self):
-        result = find_citations(L(["94; 108"]))
+        result = fc(L(["94; 108"]))
         self.assertIn(94, result); self.assertIn(108, result)
     def test_wingdings_range(self):
-        self.assertEqual(find_citations(L(["107−108"])), {107, 108})
+        self.assertEqual(fc(L(["107−108"])), {107, 108})
     def test_wingdings_multiline(self):
         body = [{"line": "94; 97;", "page": 46},
                 {"line": "107", "page": 46}]
-        result = find_citations(body)
+        result = fc(body)
         for n in [94, 97, 107]: self.assertIn(n, result)
 
     # Bug 4 — comma-only source lists
     def test_comma_sources(self):
-        self.assertEqual(find_citations(L(["[3, 7, 11]"])), {3, 7, 11})
+        self.assertEqual(fc(L(["[3, 7, 11]"])), {3, 7, 11})
     def test_comma_four(self):
-        self.assertEqual(find_citations(L(["[1, 5, 10, 12]"])), {1, 5, 10, 12})
+        self.assertEqual(fc(L(["[1, 5, 10, 12]"])), {1, 5, 10, 12})
     def test_semicolon_mode_unchanged(self):
-        self.assertEqual(find_citations(L(["[1, 15; 3; 5, 20-25]"])), {1, 3, 5})
+        self.assertEqual(fc(L(["[1, 15; 3; 5, 20-25]"])), {1, 3, 5})
 
     # Bug 5 — с. page marker
     def test_cyrillic_page_marker(self):
         body = L(["[95; 113; 170; 178; 235, с. 17]"])
-        result = find_citations(body)
+        result = fc(body)
         self.assertLessEqual({95, 113, 170, 178, 235}, result)
     def test_large_with_cyrillic(self):
         body = L(["[3; 22; 23; 24; 31, с. 70; 37; 55; 59, с. 26; 75; 79; 85, с. 3; 93; 95; 114 ]"])
-        result = find_citations(body)
+        result = fc(body)
         self.assertLessEqual({3, 22, 23, 24, 31, 37, 55, 59, 75, 79, 85, 93, 95, 114}, result)
     def test_250_comma_no_semi(self):
-        result = find_citations(L(["[250, с. 11-19]"]))
+        result = fc(L(["[250, с. 11-19]"]))
         self.assertIn(250, result)
 
 
@@ -226,6 +231,60 @@ class TestCompare(unittest.TestCase):
     def test_all_orphans(self):
         r = compare({1:"A",2:"B"}, set())
         self.assertEqual(r["orphans"], {1,2}); self.assertEqual(r["used"], set())
+
+
+
+class TestBug6EntryValidation(unittest.TestCase):
+    def _L(self, t): return [{"line": x, "page": 200} for x in t]
+
+    def test_date_09_rejected(self):
+        lines = self._L(["6. URL: example.com/(дата", "09.2019).", "7. Next."])
+        r = parse_bibliography(lines)
+        self.assertIn(6, r); self.assertIn(7, r)
+        self.assertNotIn(9, r)
+        self.assertIn("09.2019", r[6])
+
+    def test_spec_code_rejected(self):
+        lines = self._L(["18. Thesis. nauk:", "12.00.07. University.", "19. Next."])
+        r = parse_bibliography(lines)
+        self.assertIn(18, r); self.assertIn(19, r); self.assertNotIn(12, r)
+        self.assertIn("12.00.07", r[18])
+
+    def test_date_01_rejected(self):
+        lines = self._L(["5. URL: zakon.gov.ua. (data", "01.09.2019).", "6. Next."])
+        r = parse_bibliography(lines)
+        self.assertIn(5, r); self.assertIn(6, r); self.assertNotIn(1, r)
+
+    def test_no_space_entry_accepted(self):
+        lines = self._L(["10.Адміністративна юстиція.", "11.Адміністративне право."])
+        r = parse_bibliography(lines)
+        self.assertIn(10, r); self.assertIn(11, r)
+        self.assertIn("Адміністративна", r[10])
+
+
+
+class TestFindCitationsReturnsBracket(unittest.TestCase):
+    """find_citations() must return dict[int, str] with the original bracket."""
+
+    def test_returns_dict(self):
+        result = find_citations(L(["[1; 3; 7]"]))
+        self.assertIsInstance(result, dict)
+
+    def test_bracket_string_preserved(self):
+        result = find_citations(L(["text [49; 51; 55; 60; 63-65] end."]))
+        self.assertIn(55, result)
+        self.assertIn("49", result[55])   # bracket contains the original content
+
+    def test_first_occurrence_kept(self):
+        # Source 3 appears in two brackets — must keep first
+        result = find_citations(L(["[1; 3] then [3; 5]."]))
+        self.assertIn(3, result)
+        self.assertIn("1", result[3])     # first bracket contains 1
+
+    def test_cyrillic_page_bracket_preserved(self):
+        result = find_citations(L(["[89, с. 11; 98]"]))
+        self.assertIn(89, result)
+        self.assertIn("89", result[89])
 
 
 if __name__ == "__main__":
