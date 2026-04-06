@@ -171,6 +171,30 @@ class TestParseBibliography(unittest.TestCase):
         result = parse_bibliography(lines)
         self.assertEqual(result, {})
 
+    def test_year_not_treated_as_entry(self):
+        """Рядок '2005. URL: ...' не повинен стати джерелом #2005."""
+        lines = _lines([
+            "1. Конституція України: прийнята на п'ятій сесії Верховної Ради",
+            "2005. URL: https://zakon.rada.gov.ua/laws/show/254к/96-вр",
+            "2. Інше джерело.",
+        ])
+        result = parse_bibliography(lines)
+        self.assertNotIn(2005, result)
+        self.assertIn(1, result)
+        self.assertIn(2, result)
+        # рядок з роком має бути приєднаний до джерела #1
+        self.assertIn("2005", result[1])
+
+    def test_year_1882_not_treated_as_entry(self):
+        lines = _lines([
+            "5. Загальна теорія держави і права, видання",
+            "1882. Харків: Право.",
+            "6. Наступне джерело.",
+        ])
+        result = parse_bibliography(lines)
+        self.assertNotIn(1882, result)
+        self.assertIn(5, result)
+
 
 # ---------------------------------------------------------------------------
 # citations.py tests
@@ -205,6 +229,33 @@ class TestExpandBracket(unittest.TestCase):
     def test_range_ignored_when_after_comma(self):
         # "5, 20-25" — 5 є джерелом, 20-25 є сторінками
         self.assertEqual(_expand_bracket("5, 20-25"), {5})
+
+    # --- Регресійні тести: баг 1+2 — U+2212 математичний мінус ---
+
+    def test_range_minus_sign_u2212(self):
+        """U+2212 '−' має розгортатись як діапазон."""
+        self.assertEqual(_expand_bracket("15\u221218"), {15, 16, 17, 18})
+
+    def test_bracket_with_u2212_range(self):
+        """Скобка з U+2212 повинна матчитись і повертати всі джерела."""
+        # [9; 40; 81; 134–136; 147; 194; 209−210; 213; 220]
+        inner = "9; 40; 81; 134\u201336; 147; 194; 209\u2212210; 213; 220"
+        result = _expand_bracket(inner)
+        self.assertIn(9, result)
+        self.assertIn(40, result)
+        self.assertIn(209, result)
+        self.assertIn(210, result)
+
+    def test_find_citations_bracket_u2212(self):
+        """find_citations повинен знайти всі номери зі скобки з U+2212."""
+        body = _lines(["Текст [9; 40; 81; 134\u2013136; 209\u2212210; 213] кінець."])
+        result = find_citations(body)
+        self.assertIn(9, result)
+        self.assertIn(40, result)
+        self.assertIn(209, result)
+        self.assertIn(210, result)
+        self.assertIn(134, result)
+        self.assertIn(136, result)
 
 
 class TestFindCitations(unittest.TestCase):
@@ -262,15 +313,124 @@ class TestCompare(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    loader = unittest.TestLoader()
-    suite = unittest.TestSuite()
-    for cls in [
-        TestSplitZones, TestParseBibliography,
-        TestExpandBracket, TestFindCitations, TestCompare,
-    ]:
-        suite.addTests(loader.loadTestsFromTestCase(cls))
 
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-    sys.exit(0 if result.wasSuccessful() else 1)
+# ---------------------------------------------------------------------------
+# Regression tests — Bug 1, 2, 3 (discovered on real dissertation)
+# ---------------------------------------------------------------------------
+
+class TestBug1MultilineCitations(unittest.TestCase):
+    """Bug 1: citations split across two lines by PyMuPDF."""
+
+    def test_split_two_numbers(self):
+        body = [
+            {"line": "[124; 149;", "page": 2},
+            {"line": "179] text.", "page": 2},
+        ]
+        result = find_citations(body)
+        self.assertEqual(result & {124, 149, 179}, {124, 149, 179})
+
+    def test_split_many_numbers(self):
+        # [4; 91; 115;\n133; 192; 214]
+        body = [
+            {"line": "text [4; 91; 115;", "page": 1},
+            {"line": "133; 192; 214] text.", "page": 1},
+        ]
+        result = find_citations(body)
+        for n in [4, 91, 115, 133, 192, 214]:
+            self.assertIn(n, result)
+
+    def test_split_with_range(self):
+        # [9; 40; 81; 134-136; 147; 194; 209-210;\n213; 220]
+        body = [
+            {"line": "text [9; 40; 81; 134-136; 147; 194; 209-210;", "page": 1},
+            {"line": "213; 220].", "page": 1},
+        ]
+        result = find_citations(body)
+        for n in [9, 40, 81, 134, 135, 136, 147, 194, 209, 210, 213, 220]:
+            self.assertIn(n, result, f"Missing {n}")
+
+    def test_no_false_positives_on_join(self):
+        body = [
+            {"line": "text [5].", "page": 1},
+            {"line": "[7] other text.", "page": 1},
+        ]
+        result = find_citations(body)
+        self.assertIn(5, result)
+        self.assertIn(7, result)
+        # 57 must not appear from joining "5].[7"
+        self.assertNotIn(57, result)
+
+
+class TestBug2UnicodeMinus(unittest.TestCase):
+    """Bug 2: U+2212 MINUS SIGN used as range separator in PDF output."""
+
+    def test_range_u2212(self):
+        body = [{"line": "text [209\u2212210].", "page": 5}]
+        self.assertEqual(find_citations(body), {209, 210})
+
+    def test_range_endash_still_works(self):
+        body = [{"line": "text [134\u2013136].", "page": 5}]
+        self.assertEqual(find_citations(body), {134, 135, 136})
+
+    def test_mixed_dashes_same_bracket(self):
+        body = [{"line": "text [134\u2013136; 209\u2212210].", "page": 3}]
+        self.assertEqual(find_citations(body), {134, 135, 136, 209, 210})
+
+    def test_u2212_multiline_range(self):
+        # Real case: [9; 40; 81; 134-136; 147; 194; 209-210;\n213; 220]
+        body = [
+            {"line": "text [9; 40; 81; 134\u201336; 147; 194; 209\u221210;", "page": 1},
+            {"line": "213; 220].", "page": 1},
+        ]
+        result = find_citations(body)
+        for n in [9, 40, 81, 134, 135, 136, 147, 194, 209, 210, 213, 220]:
+            self.assertIn(n, result, f"Missing {n}")
+
+
+class TestBug3FalseYearEntries(unittest.TestCase):
+    """Bug 3: lines starting with year+dot misidentified as new entry."""
+
+    def _lines(self, texts):
+        return [{"line": t, "page": 200} for t in texts]
+
+    def test_year_continuation_ignored(self):
+        lines = self._lines([
+            "2. Author I. Title / I. Author // Journal. --",
+            "2001. -- No 29. -- P. 2.",
+            "3. Author N. Another title. -- M., 2000. -- 240 p.",
+        ])
+        result = parse_bibliography(lines)
+        self.assertIn(2, result)
+        self.assertIn(3, result)
+        self.assertNotIn(2001, result)
+        self.assertNotIn(2000, result)
+
+    def test_document_number_in_continuation(self):
+        lines = self._lines([
+            "170. Decision of committee dated 15.03.07. No",
+            "1882. -- Zh., 2007. -- 8 p.",
+            "171. On approval of norms. -- K., 2005. -- 12 p.",
+        ])
+        result = parse_bibliography(lines)
+        self.assertIn(170, result)
+        self.assertIn(171, result)
+        self.assertNotIn(1882, result)
+        self.assertIn("1882", result[170])
+
+    def test_valid_entries_999(self):
+        lines = self._lines([
+            "998. Author A. First title.",
+            "999. Author B. Second title.",
+        ])
+        result = parse_bibliography(lines)
+        self.assertIn(998, result)
+        self.assertIn(999, result)
+
+    def test_entry_1000_rejected(self):
+        lines = self._lines(["1000. Not a source, just a year or document number."])
+        result = parse_bibliography(lines)
+        self.assertNotIn(1000, result)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
