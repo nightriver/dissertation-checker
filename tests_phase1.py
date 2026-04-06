@@ -207,6 +207,19 @@ class TestFindCitations(unittest.TestCase):
         body = L(["[95; 113; 170; 178; 235, с. 17]"])
         result = fc(body)
         self.assertLessEqual({95, 113, 170, 178, 235}, result)
+    def test_latin_c_page_marker(self):
+        # Latin c. (not Cyrillic с.) — used in some dissertations
+        for bracket, expected in [
+            ("[123, c. 35]",   {123}),
+            ("[15, c. 489]",   {15}),
+            ("[16, c. 50-53]", {16}),
+            ("[26, c. 158]",   {26}),
+        ]:
+            with self.subTest(bracket=bracket):
+                self.assertEqual(
+                    set(find_citations(L([bracket])).keys()), expected
+                )
+
     def test_large_with_cyrillic(self):
         body = L(["[3; 22; 23; 24; 31, с. 70; 37; 55; 59, с. 26; 75; 79; 85, с. 3; 93; 95; 114 ]"])
         result = fc(body)

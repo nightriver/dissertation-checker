@@ -28,7 +28,9 @@ import re
 _DASHES = "[\u002d\u2013\u2212]"
 
 # Inner bracket chars: digits, whitespace, ;,. dashes + Cyrillic с/С (page marker)
-_INNER = r"[\d\s;,\u002d\u2013\u2212\.\u0441\u0421]"
+# U+0441/U+0421 = Cyrillic с/С  (page marker «с. 11»)
+# U+0063/U+0043 = Latin   c/C   (same marker in some dissertations «c. 35»)
+_INNER = r"[\d\s;,\u002d\u2013\u2212\.\u0441\u0421\u0063\u0043]"
 
 # Standard [ ] and Wingdings PUA \uF05B / \uF05D
 _BRACKET_RE = re.compile(
