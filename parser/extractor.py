@@ -41,19 +41,17 @@ def extract_lines_from_pdf(data: bytes) -> list[dict]:
     except ImportError as e:
         raise ImportError("Бібліотека PyMuPDF не встановлена.") from e
 
-    doc = fitz.open(stream=data, filetype="pdf")
     result: list[dict] = []
     total_chars = 0
 
-    for page_num, page in enumerate(doc, start=1):
-        text = page.get_text("text")
-        total_chars += len(text.strip())
-        for raw_line in text.splitlines():
-            stripped = raw_line.rstrip()
-            if stripped:
-                result.append({"line": stripped, "page": page_num})
-
-    doc.close()
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        for page_num, page in enumerate(doc, start=1):
+            text = page.get_text("text")
+            total_chars += len(text.strip())
+            for raw_line in text.splitlines():
+                stripped = raw_line.rstrip()
+                if stripped:
+                    result.append({"line": stripped, "page": page_num})
 
     if total_chars == 0:
         raise ScannedPDFError(
@@ -70,13 +68,12 @@ def extract_lines_from_docx(data: bytes) -> list[dict]:
     """
     _check_size(data)
 
+    import io
+
     try:
         from docx import Document
-        import io
     except ImportError as e:
         raise ImportError("Бібліотека python-docx не встановлена.") from e
-
-    import io
 
     doc = Document(io.BytesIO(data))
     result: list[dict] = []

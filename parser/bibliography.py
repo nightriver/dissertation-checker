@@ -6,6 +6,7 @@ bibliography.py
 
 from __future__ import annotations
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 
@@ -32,25 +33,41 @@ STOP_WORDS: list[str] = [
     "ABSTRACT",
 ]
 
-# Патерн початку нового бібліографічного запису:
+# Патерн початку нового бібліографічного запису.
 # підтримує  "1. Текст..."  і  "[1] Текст..."
-# Bug 3 fix: обмежуємо номер до MAX_SOURCE_NUM, щоб рядки продовження
-# на зразок "2001. – № 29. – С. 2." (рік видання) не трактувались як
-# новий запис #2001.
-MAX_SOURCE_NUM = 999
 # Text after number is optional: PyMuPDF sometimes puts number on its own line.
 # "11.\n\nБайкулатова..." → "11." matches, empty group(2), next lines become content.
 _ENTRY_START = re.compile(r"^\s*(?:\[)?(\d+)(?:\.|\])\s*(.*)")
 
-# Максимально допустимий номер джерела.
+# Максимально допустимий порядковий номер джерела.
 # Числа понад 999 — це роки в тексті записів (напр. "2005. URL: ...")
 # а не порядкові номери. Реальна дисертація має щонайбільше ~500 джерел.
 _MAX_SOURCE_NUM = 999
 
 
-def _is_valid_entry_num(n: int) -> bool:
-    """True якщо n може бути порядковим номером джерела (не рік, не сміття)."""
-    return 1 <= n <= _MAX_SOURCE_NUM
+def _is_valid_entry(num: int, text_part: str) -> bool:
+    """
+    True якщо (num, text_part) виглядають як початок бібліографічного запису.
+
+    Правила:
+      • num має бути в діапазоні 1..999 (більше — це рік або номер документа)
+      • text_part порожній → номер на окремому рядку, прийнятно
+      • text_part непорожній → перший символ має бути літерою (Unicode),
+        НЕ цифрою.
+
+    Це відкидає рядки-продовження типу:
+        "09.2019)."       → text="2019)."  починається з цифри ✗
+        "12.00.07. Назва" → text="00.07…"  починається з цифри ✗
+        "01.09.2019"      → text="09.2019" починається з цифри ✗
+    І приймає:
+        "10.Адміністративна" → text="Адмін…" починається з літери ✓
+        "11."                → text=""        порожній ✓
+    """
+    if not (1 <= num <= _MAX_SOURCE_NUM):
+        return False
+    if not text_part:
+        return True   # номер на окремому рядку
+    return unicodedata.category(text_part[0]).startswith('L')
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +209,7 @@ def parse_bibliography(bibliography_lines: list[dict]) -> dict[int, str]:
     for item in bibliography_lines:
         line = item["line"]
         m = _ENTRY_START.match(line)
-        if m and _is_valid_entry_num(int(m.group(1))):
+        if m and _is_valid_entry(int(m.group(1)), m.group(2).strip()):
             _flush()
             current_num = int(m.group(1))
             text_part = m.group(2).strip()

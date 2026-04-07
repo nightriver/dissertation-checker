@@ -39,6 +39,11 @@ _BRACKET_RE = re.compile(
 
 _RANGE_RE = re.compile(r"^(\d+)\s*" + _DASHES + r"\s*(\d+)$")
 
+# Maximum allowed span of a source-number range.
+# Ranges wider than this are almost certainly page ranges or garbage,
+# not source ranges (e.g. a dissertation rarely cites 200 consecutive sources).
+_MAX_RANGE_SIZE = 200
+
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
@@ -50,7 +55,7 @@ def _parse_token(token: str) -> set[int]:
     m = _RANGE_RE.match(token)
     if m:
         lo, hi = int(m.group(1)), int(m.group(2))
-        if lo <= hi and (hi - lo) <= 200:
+        if lo <= hi and (hi - lo) <= _MAX_RANGE_SIZE:
             return set(range(lo, hi + 1))
         return set()
     if token.isdigit():
@@ -106,7 +111,7 @@ def find_citations(body_lines: list[dict]) -> dict[int, str]:
     return result
 
 
-def compare(bibliography: dict[int, str], citations: "dict[int, str] | set[int]") -> dict:
+def compare(bibliography: dict[int, str], citations: dict | set) -> dict:
     """
     Compares bibliography dict with citations.
 
