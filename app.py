@@ -3,7 +3,6 @@ app.py — Перевірка джерел дисертації
 Streamlit Community Cloud entry point.
 """
 
-import io
 import streamlit as st
 import pandas as pd
 
@@ -81,22 +80,48 @@ except Exception as e:
     st.error(f"❌ Не вдалося прочитати файл: {e}")
     st.stop()
 
-st.success(f"✅ Файл завантажено: **{filename}** ({len(file_bytes) / 1024 / 1024:.1f} МБ, {len(lines)} рядків)")
+st.success(
+    f"✅ Файл завантажено: **{filename}** "
+    f"({len(file_bytes) / 1024 / 1024:.1f} МБ, {len(lines)} рядків)"
+)
 
 
 # ---------------------------------------------------------------------------
-# Блок 2 — Налаштування пошуку бібліографії
+# Блок 2 — Автоматичний пошук бібліографії
+# Якщо не знайдено — показуємо блок ручного налаштування і зупиняємось.
 # ---------------------------------------------------------------------------
 
 st.divider()
-st.subheader("Налаштування пошуку списку літератури")
 
-manual_mode = st.checkbox("Вказати розташування списку вручну")
+# Спроба автоматичного пошуку (без кнопки — одразу після завантаження)
+zone_result = None
+auto_error: str | None = None
 
-manual_header: str = ""
-manual_page: int | None = None
+try:
+    zone_result = split_zones(lines)
+except BibliographyNotFoundError as e:
+    auto_error = str(e)
+except Exception as e:
+    st.error(f"❌ Помилка при аналізі структури: {e}")
+    st.stop()
 
-if manual_mode:
+if zone_result is not None:
+    # Автоматично знайдено — показуємо тихе підтвердження
+    page_info = (
+        f" (стор. {zone_result.biblio_start_page})"
+        if zone_result.biblio_start_page
+        else ""
+    )
+    st.info(
+        f"✅ Список літератури знайдено автоматично: "
+        f"**«{zone_result.biblio_header_line}»**{page_info}"
+    )
+
+else:
+    # Автоматично не знайдено — показуємо блок ручного вводу
+    st.warning(f"⚠️ {auto_error}")
+    st.subheader("Вкажіть розташування списку літератури вручну")
+
     col1, col2 = st.columns([3, 1])
     with col1:
         manual_header = st.text_input(
@@ -106,20 +131,38 @@ if manual_mode:
     with col2:
         is_pdf = filename.lower().endswith(".pdf")
         if is_pdf:
-            manual_page_input = st.number_input(
+            manual_page = int(st.number_input(
                 "Починаючи зі сторінки №",
-                min_value=1,
-                value=1,
-                step=1,
-            )
-            manual_page = int(manual_page_input)
+                min_value=1, value=1, step=1,
+            ))
         else:
-            st.markdown(" ")  # вирівнювання по висоті
+            st.markdown(" ")
             st.caption("Сторінки недоступні для DOCX")
+            manual_page = None
 
     if not manual_header.strip():
-        st.warning("⚠️ Введіть назву розділу для ручного режиму.")
+        st.info("💡 Введіть назву розділу бібліографії так, як вона написана у файлі.")
         st.stop()
+
+    # Пробуємо ручний пошук
+    try:
+        zone_result = split_zones_manual(lines, manual_header, manual_page)
+    except BibliographyNotFoundError as e:
+        st.error(f"❌ {e}")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Помилка при аналізі структури: {e}")
+        st.stop()
+
+    page_info = (
+        f" (стор. {zone_result.biblio_start_page})"
+        if zone_result.biblio_start_page
+        else ""
+    )
+    st.info(
+        f"✅ Список літератури знайдено вручну: "
+        f"**«{zone_result.biblio_header_line}»**{page_info}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,41 +174,6 @@ run = st.button("🔍 Перевірити джерела", type="primary", use_
 
 if not run:
     st.stop()
-
-
-# ---------------------------------------------------------------------------
-# Розбивка на зони
-# ---------------------------------------------------------------------------
-
-with st.spinner("Пошук списку літератури…"):
-    try:
-        if manual_mode:
-            zone_result = split_zones_manual(lines, manual_header, manual_page)
-        else:
-            zone_result = split_zones(lines)
-    except BibliographyNotFoundError as e:
-        st.error(f"❌ {e}")
-        if not manual_mode:
-            st.info(
-                "💡 Спробуйте ввімкнути **«Вказати розташування списку вручну»** "
-                "і ввести назву розділу бібліографії так, як вона написана у файлі."
-            )
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Помилка при аналізі структури: {e}")
-        st.stop()
-
-# Повідомлення про знайдений заголовок
-page_info = (
-    f" (стор. {zone_result.biblio_start_page})"
-    if zone_result.biblio_start_page
-    else ""
-)
-mode_label = "автоматично" if zone_result.found_automatically else "вручну"
-st.info(
-    f"✅ Список літератури знайдено {mode_label}: "
-    f"**«{zone_result.biblio_header_line}»**{page_info}"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +228,6 @@ orphan_pct = orphan_count / total * 100 if total else 0
 st.divider()
 st.subheader("Результати перевірки")
 
-# Статистика — три картки
 col1, col2, col3 = st.columns(3)
 col1.metric("Всього джерел у списку", total)
 col2.metric("Використано в тексті", used_count, f"{used_pct:.1f}%")
@@ -249,9 +256,8 @@ orphan_rows = [
     {"№": num, "Джерело": bibliography.get(num, "—")}
     for num in orphans_sorted
 ]
-df = pd.DataFrame(orphan_rows)
 st.dataframe(
-    df,
+    pd.DataFrame(orphan_rows),
     use_container_width=True,
     hide_index=True,
     column_config={

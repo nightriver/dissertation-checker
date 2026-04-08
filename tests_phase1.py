@@ -300,5 +300,51 @@ class TestFindCitationsReturnsBracket(unittest.TestCase):
         self.assertIn("89", result[89])
 
 
+
+class TestMissingCommaBeforePage(unittest.TestCase):
+    """Author forgot comma before page marker: [30 с. 334-344] instead of [30, с. 334-344]."""
+
+    def test_expand_no_comma_cyrillic(self):
+        # "30 с. 334-344" — no comma, Cyrillic с
+        self.assertEqual(_expand_bracket("30 с. 334-344"), {30})
+
+    def test_expand_no_comma_latin(self):
+        # "30 c. 334-344" — no comma, Latin c
+        self.assertEqual(_expand_bracket("30 c. 334-344"), {30})
+
+    def test_expand_range_no_comma(self):
+        # "25-27 с. 41-55" — range source, no comma before page
+        self.assertEqual(_expand_bracket("25-27 с. 41-55"), {25, 26, 27})
+
+    def test_mixed_with_and_without_comma(self):
+        # [21, с. 31-33; 30 с. 334-344; 12, с. 31-55]
+        self.assertEqual(
+            _expand_bracket("21, с. 31-33; 30 с. 334-344; 12, с. 31-55"),
+            {21, 30, 12}
+        )
+
+    def test_mixed_range_no_comma(self):
+        # [201 с. 38–39; 25-27 с. 41-55]
+        self.assertEqual(
+            _expand_bracket("201 с. 38 – 39; 25-27 с. 41-55"),
+            {201, 25, 26, 27}
+        )
+
+    def test_comma_present_still_works(self):
+        # Existing behaviour unchanged when comma is present
+        self.assertEqual(_expand_bracket("89, с. 11; 98"), {89, 98})
+        self.assertEqual(_expand_bracket("250, с. 11-19"), {250})
+
+    def test_find_citations_no_comma(self):
+        body = L(["[21, с. 31-33; 30 с. 334-344; 12, с. 31-55]."])
+        result = fc(body)
+        self.assertEqual(result, {21, 30, 12})
+
+    def test_find_citations_range_no_comma(self):
+        body = L(["[201 с. 38 – 39; 25-27 с. 41-55 ]."])
+        result = fc(body)
+        self.assertEqual(result, {201, 25, 26, 27})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

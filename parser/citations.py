@@ -49,7 +49,21 @@ _MAX_RANGE_SIZE = 200
 # ---------------------------------------------------------------------------
 
 def _parse_token(token: str) -> set[int]:
+    """
+    Розбирає один токен: число або діапазон → множина джерел.
+
+    Відрізає хвіст-посилання на сторінку, якщо автор забув кому:
+        "30 с. 334-344"  → "30"    → {30}
+        "25-27 с. 41-55" → "25-27" → {25, 26, 27}
+    Якщо кома є — split(",")[0] вже відрізав сторінку раніше.
+    """
     token = token.strip()
+    if not token:
+        return set()
+    # Trim page-reference suffix at first letter (с., c., p., стор. etc.)
+    m_letter = re.search(r"[a-zA-Z\u0400-\u04ff]", token)
+    if m_letter:
+        token = token[: m_letter.start()].strip()
     if not token:
         return set()
     m = _RANGE_RE.match(token)
