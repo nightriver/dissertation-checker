@@ -166,6 +166,53 @@ else:
 
 
 # ---------------------------------------------------------------------------
+# Блок: Асистент антиплагіату
+# Розміщується після визначення zone_result і до кнопки основної перевірки.
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("🖍 Асистент антиплагіату")
+st.caption(
+    "Створює копію PDF з підсвіченими посиланнями [номер, с. XX] "
+    "для швидкого ручного маркування у сервісі перевірки плагіату."
+)
+
+if filename.lower().endswith(".pdf"):
+
+    # Ініціалізація стану — зберігає згенерований файл між перезапусками скрипту
+    if "highlighted_pdf" not in st.session_state:
+        st.session_state.highlighted_pdf = None
+
+    if st.button("Згенерувати PDF з підсвіткою", use_container_width=True):
+        from parser.highlighter import highlight_citations_pdf
+
+        biblio_page = zone_result.biblio_start_page if zone_result else None
+
+        with st.spinner("Обробка сторінок…"):
+            try:
+                st.session_state.highlighted_pdf = highlight_citations_pdf(
+                    file_bytes, biblio_page
+                )
+            except Exception as e:
+                st.error(f"❌ Помилка при генерації PDF: {e}")
+
+    # Кнопка завантаження відображається тільки після генерації.
+    # session_state зберігає файл між перезапусками — кнопка не зникає
+    # при кліку на download_button (Streamlit перезапускає скрипт).
+    if st.session_state.highlighted_pdf:
+        st.download_button(
+            label="📥 Завантажити PDF з підсвіченими посиланнями",
+            data=st.session_state.highlighted_pdf,
+            file_name=f"{filename.rsplit('.', 1)[0]}_highlighted.pdf",
+            mime="application/pdf",
+            type="primary",
+        )
+
+else:
+    st.info("Підсвітка посилань доступна тільки для PDF файлів.")
+
+
+# ---------------------------------------------------------------------------
 # Блок 3 — Кнопка запуску
 # ---------------------------------------------------------------------------
 
