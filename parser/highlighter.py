@@ -2,6 +2,7 @@
 highlighter.py
 Режим "Асистент антиплагіату":
 створює копію PDF, де всі посилання виду [81, с. 162] підсвічені червоним.
+Підтримує цитати, розірвані на два рядки / два блоки.
 """
 
 from __future__ import annotations
@@ -15,11 +16,11 @@ import fitz  # PyMuPDF
 
 CITATION_PATTERN = re.compile(
     r"(?:\[|\uF05B)"          # відкриваюча дужка (звичайна або Wingdings)
-    r"\s*"                    # можливий пробіл після дужки — для [ 8 2 , с. 75]
-    r"\d"                     # перший символ — обов'язково цифра (не захопить [див. рис. 1])
-    r"[^\]\uF05D]{0,150}"     # вміст, максимум 150 символів
+    r"\s*"                    # можливий пробіл після дужки
+    r"\d"                     # перший символ — обов'язково цифра
+    r"[^\]\uF05D]{0,250}"     # вміст, максимум 250 символів (більше — для довгих розірваних)
     r"(?:\]|\uF05D)",         # закриваюча дужка
-    re.UNICODE,
+    re.UNICODE | re.DOTALL,   # DOTALL дозволяє . збігатися з \n
 )
 
 
@@ -27,36 +28,47 @@ CITATION_PATTERN = re.compile(
 # Внутрішні функції
 # ---------------------------------------------------------------------------
 
-def _build_word_spans(block_words: list) -> tuple[str, list[dict]]:
+def _build_page_spans(words: list) -> tuple[str, list[dict]]:
     """
-    Склеює слова блоку в суцільний рядок і будує маппінг
-    символьних індексів до координат (rect, quad) кожного слова.
+    Склеює ВСІ слова сторінки в суцільний рядок, зберігаючи
+    маппінг символьних індексів → координати (quad) кожного слова.
 
-    Повертає:
-        full_text  — суцільний рядок з пробілами між словами
-        word_spans — список dict з ключами start, end, rect, quad
+    На відміну від попередньої версії, не групує по block_no —
+    це дозволяє ловити цитати, розірвані між блоками/рядками.
+
+    Між словами вставляємо пробіл; між різними block_no — '\n',
+    щоб регулярка не «зшивала» непов'язані фрагменти тексту,
+    але все одно могла перетинати межу рядка всередині однієї цитати.
     """
     full_text = ""
     word_spans = []
     current_idx = 0
+    prev_block = None
 
-    for w in block_words:
-        x0, y0, x1, y1, text = w[0], w[1], w[2], w[3], w[4]
+    for w in words:
+        x0, y0, x1, y1, text, block_no = w[0], w[1], w[2], w[3], w[4], w[5]
         rect = fitz.Rect(x0, y0, x1, y1)
-        quad = rect.quad  # fitz.Quad — потрібен для add_highlight_annot
+        quad = rect.quad
+
+        # Між різними блоками ставимо '\n' — регулярка з re.DOTALL його проковтне,
+        # але це не дасть з'єднати "кінець абзацу[" з "початок наступного]"
+        if prev_block is not None and block_no != prev_block:
+            full_text += "\n"
+            current_idx += 1
 
         start_idx = current_idx
         end_idx = start_idx + len(text)
 
         word_spans.append({
             "start": start_idx,
-            "end": end_idx,
-            "rect": rect,
-            "quad": quad,
+            "end":   end_idx,
+            "quad":  quad,
         })
 
         full_text += text + " "
-        current_idx = end_idx + 1  # +1 враховує пробіл між словами
+        current_idx = end_idx + 1  # +1 враховує пробіл
+
+        prev_block = block_no
 
     return full_text, word_spans
 
@@ -64,36 +76,28 @@ def _build_word_spans(block_words: list) -> tuple[str, list[dict]]:
 def _highlight_page(page: fitz.Page) -> None:
     """
     Знаходить усі посилання на сторінці і додає червону highlight-анотацію.
-    Групування по block_no ізолює колонтитули та підписи від основного тексту.
+    Один виклик add_highlight_annot з кількома quads коректно охоплює
+    цитату, розірвану на два рядки.
     """
-    words = page.get_text("words")  # (x0, y0, x1, y1, text, block_no, line_no, word_no)
+    words = page.get_text("words")  # (x0,y0,x1,y1, text, block_no, line_no, word_no)
     if not words:
         return
 
-    # Групуємо по block_no (w[5])
-    blocks: dict[int, list] = {}
-    for w in words:
-        blocks.setdefault(w[5], []).append(w)
+    full_text, word_spans = _build_page_spans(words)
 
-    for block_words in blocks.values():
-        full_text, word_spans = _build_word_spans(block_words)
+    for match in CITATION_PATTERN.finditer(full_text):
+        m_start, m_end = match.span()
 
-        for match in CITATION_PATTERN.finditer(full_text):
-            m_start, m_end = match.span()
+        quads = [
+            ws["quad"]
+            for ws in word_spans
+            if ws["start"] < m_end and ws["end"] > m_start
+        ]
 
-            # Збираємо quads усіх слів, що перетинаються з діапазоном збігу
-            quads = [
-                ws["quad"]
-                for ws in word_spans
-                if ws["start"] < m_end and ws["end"] > m_start
-            ]
-
-            if quads:
-                # add_highlight_annot приймає список quads — коректно обробляє
-                # посилання, розірвані на два рядки (один annot, кілька quads)
-                annot = page.add_highlight_annot(quads)
-                annot.set_colors(stroke=(1, 0.2, 0.2))  # червоний, текст читається
-                annot.update()
+        if quads:
+            annot = page.add_highlight_annot(quads)
+            annot.set_colors(stroke=(1, 0.2, 0.2))  # червоний
+            annot.update()
 
 
 # ---------------------------------------------------------------------------
