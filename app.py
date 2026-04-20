@@ -157,9 +157,8 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
     st.divider()
     st.markdown("#### 📊 Розподіл джерел за роками видання")
 
-    all_years = []
-    for raw_text in bibliography.values():
-        all_years.extend(extract_years(raw_text))
+    year_map = extract_years(bibliography)  # expects full dict → {num: year|None}
+    all_years = [y for y in year_map.values() if y is not None]
 
     if all_years:
         year_counts = {}
