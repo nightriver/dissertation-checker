@@ -119,3 +119,57 @@ def extract_dissertation_year(lines: list[dict], max_lines: int = 60) -> int | N
             candidates.append(int(match.group(1)))
 
     return max(candidates) if candidates else None
+
+
+# ---------------------------------------------------------------------------
+# Регулярні вирази для витягу ПІБ
+# ---------------------------------------------------------------------------
+
+# Підтримує Title Case і ALL CAPS, дефіси в подвійних прізвищах
+_FULL_NAME_UA = re.compile(
+    r'^([А-ЯІЇЄҐ][а-яіїєґА-ЯІЇЄҐʼ\'\-]+(?:\s+[А-ЯІЇЄҐ][а-яіїєґА-ЯІЇЄҐʼ\'\-]+){1,2})$'
+)
+
+# Формат з ініціалами: "Петренко В. В." або "Петренко В.В."
+_NAME_WITH_INITIALS = re.compile(
+    r'\b([А-ЯІЇЄҐ][а-яіїєґА-ЯІЇЄҐʼ\'\-]{1,}\s+[А-ЯІЇЄҐ]\.\s*[А-ЯІЇЄҐ]\.)'
+)
+
+
+def extract_dissertation_author(lines: list[dict], max_lines: int = 80) -> str | None:
+    """
+    Шукає ПІБ автора дисертації в перших max_lines рядках.
+    lines: list[dict] з ключами "line" та "page" — стандартна структура проєкту.
+
+    Стратегії (по пріоритету):
+    1. Якір "УДК": шукаємо рядок що починається з "УДК",
+       потім дивимося вгору на 1-2 рядки:
+       - Варіант А: рядок i-1 містить 3 слова (повне ПІБ в одному рядку)
+       - Варіант Б: рядок i-1 містить 2 слова + рядок i-2 містить 1 слово
+         (прізвище на окремому рядку, як у СЛУЦЬКА / ТЕТЯНА ІВАНІВНА)
+    2. Резервно: рядок з рівно трьох слів, що не є службовою фразою.
+    """
+    for i, item in enumerate(lines[:max_lines]):
+        text = item["line"].strip()
+
+        # --- Стратегія 1: Якір "УДК" ---
+        if text.upper().startswith("УДК") and i > 0:
+            prev = lines[i - 1]["line"].strip()
+
+            # Варіант А: повне ПІБ в одному рядку перед УДК
+            if len(prev.split()) == 3:
+                return prev.title()
+
+            # Варіант Б: розірване ПІБ (СЛУЦЬКА / ТЕТЯНА ІВАНІВНА)
+            if len(prev.split()) == 2 and i >= 2:
+                prev_prev = lines[i - 2]["line"].strip()
+                if len(prev_prev.split()) == 1 and prev_prev.isupper():
+                    return f"{prev_prev} {prev}".title()
+
+        # --- Стратегія 2: Резервна (3 слова з великої літери) ---
+        if len(text.split()) == 3 and _FULL_NAME_UA.fullmatch(text):
+            lower = text.lower()
+            if "рукопису" not in lower and "праця" not in lower:
+                return text.title()
+
+    return None
