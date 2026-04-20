@@ -48,7 +48,7 @@ def format_page_ranges(pages: list) -> str:
     """Перетворює список номерів сторінок у компактний рядок з діапазонами."""
     if not pages:
         return ""
-    pages = sorted(pages)
+    pages = sorted(int(p) for p in pages)  # cast to int — values may arrive as strings
     ranges = []
     start = end = pages[0]
     for p in pages[1:]:
