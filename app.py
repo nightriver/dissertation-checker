@@ -3,11 +3,15 @@ app.py — Перевірка джерел дисертації
 Streamlit Community Cloud entry point.
 """
 
-import streamlit as st
+import statistics
+
+import altair as alt
 import pandas as pd
+import streamlit as st
 
 from parser.extractor import (
     extract_lines,
+    extract_dissertation_year,
     FileTooLargeError,
     ScannedPDFError,
     UnsupportedFormatError,
@@ -19,6 +23,8 @@ from parser.bibliography import (
     BibliographyNotFoundError,
 )
 from parser.citations import find_citations, compare
+from parser.year_extractor import extract_years
+from parser.dstu_validator import validate_bibliography, DstuStatus
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +235,6 @@ if filename.lower().endswith(".pdf"):
             type="primary",
         )
 
-        # --- Сторінки без посилань ---
         empty_pages: list[int] = st.session_state.empty_pages
         tracked: int = st.session_state.tracked_pages_count
 
@@ -310,13 +315,13 @@ if not citations:
 result = compare(bibliography, citations)
 citations_dict: dict = citations
 orphans_sorted = sorted(result["orphans"])
-used_sorted = sorted(result["used"])
+used_sorted    = sorted(result["used"])
 
-total = len(result["all_sources"])
-used_count = len(result["used"])
+total       = len(result["all_sources"])
+used_count  = len(result["used"])
 orphan_count = len(result["orphans"])
-used_pct = used_count / total * 100 if total else 0
-orphan_pct = orphan_count / total * 100 if total else 0
+used_pct    = used_count  / total * 100 if total else 0
+orphan_pct  = orphan_count / total * 100 if total else 0
 
 
 # ---------------------------------------------------------------------------
@@ -340,27 +345,26 @@ st.divider()
 
 if orphan_count == 0:
     st.success("🎉 Усі джерела зі списку літератури використані в тексті!")
-    st.stop()
+else:
+    orphans_str = ", ".join(str(n) for n in orphans_sorted)
+    st.markdown("**Номери невикористаних джерел:**")
+    st.code(orphans_str, language=None)
 
-orphans_str = ", ".join(str(n) for n in orphans_sorted)
-st.markdown("**Номери невикористаних джерел:**")
-st.code(orphans_str, language=None)
+    st.markdown("**Перелік невикористаних джерел:**")
 
-st.markdown("**Перелік невикористаних джерел:**")
-
-orphan_rows = [
-    {"№": num, "Джерело": bibliography.get(num, "—")}
-    for num in orphans_sorted
-]
-st.dataframe(
-    pd.DataFrame(orphan_rows),
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "№": st.column_config.NumberColumn(width="small"),
-        "Джерело": st.column_config.TextColumn(width="large"),
-    },
-)
+    orphan_rows = [
+        {"№": num, "Джерело": bibliography.get(num, "—")}
+        for num in orphans_sorted
+    ]
+    st.dataframe(
+        pd.DataFrame(orphan_rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "№": st.column_config.NumberColumn(width="small"),
+            "Джерело": st.column_config.TextColumn(width="large"),
+        },
+    )
 
 with st.expander(f"Використані джерела ({used_count})"):
     used_rows = [
@@ -390,3 +394,156 @@ if phantom_count:
             "Можлива помилка нумерації."
         )
         st.write(", ".join(str(n) for n in sorted(result["phantom"])))
+
+
+# ---------------------------------------------------------------------------
+# Блок 5 — Розподіл джерел у часі
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("📅 Розподіл джерел у часі")
+st.caption(
+    "Гістограма показує кількість джерел за роком видання. "
+    "Червона лінія — рік написання дисертації."
+)
+
+auto_diss_year = extract_dissertation_year(lines)
+
+with st.expander(
+    f"Рік дисертації: **{auto_diss_year}**"
+    if auto_diss_year
+    else "⚠️ Рік дисертації не визначено — вкажіть вручну",
+    expanded=(auto_diss_year is None),
+):
+    diss_year = int(
+        st.number_input(
+            "Рік написання дисертації",
+            min_value=1990,
+            max_value=2030,
+            value=int(auto_diss_year or 2023),
+            step=1,
+        )
+    )
+
+years_map   = extract_years(bibliography)
+year_values = [y for y in years_map.values() if y is not None]
+no_year_count = sum(1 for y in years_map.values() if y is None)
+
+if year_values:
+    df_years = pd.DataFrame({"year": year_values})
+
+    hist = (
+        alt.Chart(df_years)
+        .mark_bar(color="#4c78a8", opacity=0.85)
+        .encode(
+            x=alt.X(
+                "year:Q",
+                bin=alt.Bin(step=1),
+                title="Рік видання",
+                axis=alt.Axis(format="d", tickMinStep=1),
+            ),
+            y=alt.Y("count():Q", title="Кількість джерел"),
+            tooltip=[
+                alt.Tooltip("year:Q", title="Рік", format="d"),
+                alt.Tooltip("count():Q", title="Джерел"),
+            ],
+        )
+    )
+
+    rule = (
+        alt.Chart(pd.DataFrame({"year": [diss_year]}))
+        .mark_rule(color="red", strokeWidth=2, strokeDash=[6, 4])
+        .encode(x="year:Q")
+    )
+
+    label = (
+        alt.Chart(
+            pd.DataFrame({"year": [diss_year], "label": [f"Дисертація {diss_year}"]})
+        )
+        .mark_text(align="left", dx=6, dy=-10, color="red", fontSize=12)
+        .encode(x="year:Q", text="label:N")
+    )
+
+    st.altair_chart(
+        (hist + rule + label).properties(width="container", height=320),
+        use_container_width=True,
+    )
+
+    if no_year_count:
+        st.caption(
+            f"ℹ️ Рік не визначено для {no_year_count} джерел — "
+            "вони не відображені на графіку."
+        )
+
+    median_year   = int(statistics.median(year_values))
+    age_threshold = diss_year - 10
+    old_pct       = sum(1 for y in year_values if y < age_threshold) / len(year_values) * 100
+    recent_pct    = sum(1 for y in year_values if y >= diss_year - 5) / len(year_values) * 100
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Медіана року", median_year)
+    col2.metric("Вік медіани", f"{diss_year - median_year} р.")
+    col3.metric(
+        "Старше 10 років",
+        f"{old_pct:.0f}%",
+        delta="⚠️ Багато" if old_pct > 50 else None,
+        delta_color="inverse",
+    )
+    col4.metric("За останні 5 років", f"{recent_pct:.0f}%")
+
+else:
+    st.warning("Не вдалося визначити рік жодного джерела.")
+
+
+# ---------------------------------------------------------------------------
+# Блок 6 — Перевірка ДСТУ 8302:2015
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("📋 Відповідність ДСТУ 8302:2015")
+st.caption(
+    "Єдиний допустимий стандарт оформлення бібліографії для українських дисертацій. "
+    "Перевіряються ключові ознаки: роздільник ' : ', блок '. – ', обсяг у сторінках."
+)
+
+dstu_results  = validate_bibliography(bibliography)
+
+dstu_count    = sum(1 for s in dstu_results.values() if s == DstuStatus.DSTU)
+partial_count = sum(1 for s in dstu_results.values() if s == DstuStatus.PARTIAL)
+other_count   = sum(1 for s in dstu_results.values() if s == DstuStatus.OTHER)
+total_bib     = len(dstu_results)
+
+col1, col2, col3 = st.columns(3)
+col1.metric("✅ Відповідає ДСТУ",    dstu_count,    f"{dstu_count    / total_bib * 100:.0f}%")
+col2.metric("⚠️ Частково",          partial_count, f"{partial_count / total_bib * 100:.0f}%")
+col3.metric(
+    "❌ Не відповідає ДСТУ",
+    other_count,
+    f"{other_count / total_bib * 100:.0f}%",
+    delta_color="inverse" if other_count > 0 else "off",
+)
+
+non_dstu_entries = [
+    {
+        "№": num,
+        "Статус": "⚠️ Частково" if s == DstuStatus.PARTIAL else "❌ Не ДСТУ",
+        "Джерело": bibliography[num],
+    }
+    for num, s in dstu_results.items()
+    if s != DstuStatus.DSTU
+]
+
+if non_dstu_entries:
+    with st.expander(f"Переглянути записи з порушеннями ({len(non_dstu_entries)})"):
+        st.dataframe(
+            pd.DataFrame(non_dstu_entries),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "№":       st.column_config.NumberColumn(width="small"),
+                "Статус":  st.column_config.TextColumn(width="small"),
+                "Джерело": st.column_config.TextColumn(width="large"),
+            },
+        )
+else:
+    st.success("🎉 Усі джерела оформлені відповідно до ДСТУ 8302:2015!")
