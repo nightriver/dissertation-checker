@@ -5,7 +5,7 @@ Streamlit Community Cloud entry point.
 
 import statistics
 
-import altair as alt
+import plotly.graph_objects as go
 import pandas as pd
 import streamlit as st
 
@@ -317,11 +317,11 @@ citations_dict: dict = citations
 orphans_sorted = sorted(result["orphans"])
 used_sorted    = sorted(result["used"])
 
-total       = len(result["all_sources"])
-used_count  = len(result["used"])
+total        = len(result["all_sources"])
+used_count   = len(result["used"])
 orphan_count = len(result["orphans"])
-used_pct    = used_count  / total * 100 if total else 0
-orphan_pct  = orphan_count / total * 100 if total else 0
+used_pct     = used_count   / total * 100 if total else 0
+orphan_pct   = orphan_count / total * 100 if total else 0
 
 
 # ---------------------------------------------------------------------------
@@ -425,49 +425,54 @@ with st.expander(
         )
     )
 
-years_map   = extract_years(bibliography)
-year_values = [y for y in years_map.values() if y is not None]
+years_map     = extract_years(bibliography)
+year_values   = [y for y in years_map.values() if y is not None]
 no_year_count = sum(1 for y in years_map.values() if y is None)
 
 if year_values:
-    df_years = pd.DataFrame({"year": year_values})
+    # Підрахунок кількості джерел по роках
+    from collections import Counter
+    year_counts = Counter(year_values)
+    years_sorted = sorted(year_counts.keys())
+    counts_sorted = [year_counts[y] for y in years_sorted]
 
-    hist = (
-        alt.Chart(df_years)
-        .mark_bar(color="#4c78a8", opacity=0.85)
-        .encode(
-            x=alt.X(
-                "year:Q",
-                bin=alt.Bin(step=1),
-                title="Рік видання",
-                axis=alt.Axis(format="d", tickMinStep=1),
-            ),
-            y=alt.Y("count():Q", title="Кількість джерел"),
-            tooltip=[
-                alt.Tooltip("year:Q", title="Рік", format="d"),
-                alt.Tooltip("count():Q", title="Джерел"),
-            ],
-        )
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=years_sorted,
+        y=counts_sorted,
+        marker_color="#4c78a8",
+        opacity=0.85,
+        name="Джерела",
+        hovertemplate="<b>Рік: %{x}</b><br>Джерел: %{y}<extra></extra>",
+    ))
+
+    fig.add_vline(
+        x=diss_year,
+        line_color="red",
+        line_width=2,
+        line_dash="dash",
+        annotation_text=f"Дисертація {diss_year}",
+        annotation_position="top right",
+        annotation_font_color="red",
+        annotation_font_size=12,
     )
 
-    rule = (
-        alt.Chart(pd.DataFrame({"year": [diss_year]}))
-        .mark_rule(color="red", strokeWidth=2, strokeDash=[6, 4])
-        .encode(x="year:Q")
+    fig.update_layout(
+        xaxis=dict(
+            title="Рік видання",
+            tickformat="d",
+            dtick=1 if len(years_sorted) <= 20 else 2,
+        ),
+        yaxis=dict(title="Кількість джерел"),
+        height=320,
+        margin=dict(l=40, r=20, t=20, b=40),
+        showlegend=False,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
     )
 
-    label = (
-        alt.Chart(
-            pd.DataFrame({"year": [diss_year], "label": [f"Дисертація {diss_year}"]})
-        )
-        .mark_text(align="left", dx=6, dy=-10, color="red", fontSize=12)
-        .encode(x="year:Q", text="label:N")
-    )
-
-    st.altair_chart(
-        (hist + rule + label).properties(width="container", height=320),
-        use_container_width=True,
-    )
+    st.plotly_chart(fig, use_container_width=True)
 
     if no_year_count:
         st.caption(
