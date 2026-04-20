@@ -68,11 +68,6 @@ def cached_extract(data: bytes, fname: str):
 
 @st.cache_data(show_spinner="Аналіз джерел…")
 def cached_analyze(file_bytes: bytes, filename: str, biblio_header: str):
-    """
-    Ключ кешу: file_bytes + biblio_header (змінюється при ручному перевизначенні).
-    zone_result береться з st.session_state.
-    bibliography: dict[int, str] — значення є простими рядками.
-    """
     zone = st.session_state["zone_result"]
     bibliography = parse_bibliography(zone.bibliography)
     citations = find_citations(zone.body)
@@ -106,7 +101,6 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
     used_pct = used_count / total * 100 if total else 0
     orphan_pct = orphan_count / total * 100 if total else 0
 
-    # ── Метрики ──────────────────────────────────────────────────────────────
     st.divider()
     m1, m2, m3 = st.columns(3)
     m1.metric("Джерел у списку", total)
@@ -123,15 +117,11 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
         delta_color="inverse",
     )
 
-    # ── Сирітські джерела ────────────────────────────────────────────────────
     if orphans_sorted:
         st.divider()
         st.markdown("#### ⚠️ Джерела, не згадані у тексті")
         orphan_rows = [
-            {
-                "№": num,
-                "Запис": bibliography.get(num, "—"),
-            }
+            {"№": num, "Запис": bibliography.get(num, "—")}
             for num in orphans_sorted
         ]
         st.dataframe(pd.DataFrame(orphan_rows), use_container_width=True, hide_index=True)
@@ -139,7 +129,6 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
         st.divider()
         st.success("🎉 Усі джерела зі списку згадуються у тексті дисертації!")
 
-    # ── Використані джерела ──────────────────────────────────────────────────
     if used_sorted:
         st.divider()
         with st.expander(f"✅ Використані джерела ({used_count})", expanded=False):
@@ -153,7 +142,6 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
             ]
             st.dataframe(pd.DataFrame(used_rows), use_container_width=True, hide_index=True)
 
-    # ── Фантомні посилання ───────────────────────────────────────────────────
     phantom = sorted(result.get("phantom", []))
     if phantom:
         st.divider()
@@ -165,7 +153,6 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
         ]
         st.dataframe(pd.DataFrame(phantom_rows), use_container_width=True, hide_index=True)
 
-    # ── Розподіл у часі ──────────────────────────────────────────────────────
     st.divider()
     st.markdown("#### 📊 Розподіл джерел за роками видання")
 
@@ -200,7 +187,6 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
     else:
         st.info("Роки видання у джерелах не виявлено.")
 
-    # ── Перевірка ДСТУ 8302:2015 ─────────────────────────────────────────────
     st.divider()
     st.markdown("#### 📐 Перевірка ДСТУ 8302:2015")
 
@@ -357,7 +343,6 @@ except Exception as e:
 
 st.toast(f"Файл завантажено: {filename}", icon="✅")
 
-
 # ---------------------------------------------------------------------------
 # Шапка: автор + рік
 # ---------------------------------------------------------------------------
@@ -381,7 +366,6 @@ with col_year:
     if auto_year:
         st.markdown(f"**📅 {auto_year} р.**")
 
-
 # ---------------------------------------------------------------------------
 # Блок 2 — Пошук бібліографії
 # ---------------------------------------------------------------------------
@@ -399,18 +383,7 @@ except Exception as e:
     st.error(f"❌ Помилка при аналізі структури: {e}")
     st.stop()
 
-if zone_result is not None:
-    page_info = (
-        f" (стор. {zone_result.biblio_start_page})"
-        if zone_result.biblio_start_page
-        else ""
-    )
-    st.info(
-        f"✅ Список літератури знайдено автоматично: "
-        f"**«{zone_result.biblio_header_line}»**{page_info}"
-    )
-
-else:
+if zone_result is None:
     st.warning(f"⚠️ {auto_error}")
     st.subheader("Вкажіть розташування списку літератури вручну")
 
@@ -445,24 +418,12 @@ else:
         st.error(f"❌ Помилка при аналізі структури: {e}")
         st.stop()
 
-    page_info = (
-        f" (стор. {zone_result.biblio_start_page})"
-        if zone_result.biblio_start_page
-        else ""
-    )
-    st.info(
-        f"✅ Список літератури знайдено вручну: "
-        f"**«{zone_result.biblio_header_line}»**{page_info}"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Зберегти zone_result в session_state ПЕРЕД cached_analyze
 # ---------------------------------------------------------------------------
 
 if zone_result is not None:
     st.session_state["zone_result"] = zone_result
-
 
 # ---------------------------------------------------------------------------
 # Вкладки — тільки якщо бібліографія знайдена
