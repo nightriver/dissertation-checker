@@ -70,8 +70,8 @@ def cached_extract(data: bytes, fname: str):
 def cached_analyze(file_bytes: bytes, filename: str, biblio_header: str):
     """
     Ключ кешу: file_bytes + biblio_header (змінюється при ручному перевизначенні).
-    Не приймає list[dict] — хешування великих списків словників займає час.
     zone_result береться з st.session_state.
+    bibliography: dict[int, str] — значення є простими рядками.
     """
     zone = st.session_state["zone_result"]
     bibliography = parse_bibliography(zone.bibliography)
@@ -130,7 +130,7 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
         orphan_rows = [
             {
                 "№": num,
-                "Запис": bibliography.get(num).raw_text if bibliography.get(num) else "—",
+                "Запис": bibliography.get(num, "—"),
             }
             for num in orphans_sorted
         ]
@@ -146,7 +146,7 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
             used_rows = [
                 {
                     "№": num,
-                    "Запис": bibliography.get(num).raw_text if bibliography.get(num) else "—",
+                    "Запис": bibliography.get(num, "—"),
                     "Сторінки посилань": format_page_ranges(citations_dict.get(num, [])) or "—",
                 }
                 for num in used_sorted
@@ -170,8 +170,8 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
     st.markdown("#### 📊 Розподіл джерел за роками видання")
 
     all_years = []
-    for entry in bibliography.values():
-        all_years.extend(extract_years(entry.raw_text))
+    for raw_text in bibliography.values():
+        all_years.extend(extract_years(raw_text))
 
     if all_years:
         year_counts = {}
