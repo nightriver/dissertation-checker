@@ -190,32 +190,34 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
     st.divider()
     st.markdown("#### 📐 Перевірка ДСТУ 8302:2015")
 
+    # validate_bibliography повертає dict[int, DstuStatus]
+    # DstuStatus: DSTU (відповідає) | PARTIAL (частково) | OTHER (інший формат)
     dstu_results = validate_bibliography(bibliography)
-    ok_count = sum(1 for r in dstu_results if r.status == DstuStatus.OK)
-    warn_count = sum(1 for r in dstu_results if r.status == DstuStatus.WARNING)
-    error_count = sum(1 for r in dstu_results if r.status == DstuStatus.ERROR)
+    ok_count      = sum(1 for s in dstu_results.values() if s == DstuStatus.DSTU)
+    partial_count = sum(1 for s in dstu_results.values() if s == DstuStatus.PARTIAL)
+    other_count   = sum(1 for s in dstu_results.values() if s == DstuStatus.OTHER)
 
     dc1, dc2, dc3 = st.columns(3)
-    dc1.metric("✅ Відповідають", ok_count)
-    dc2.metric("⚠️ Зауваження", warn_count)
-    dc3.metric("❌ Порушення", error_count)
+    dc1.metric("✅ Відповідають ДСТУ", ok_count)
+    dc2.metric("⚠️ Частково", partial_count)
+    dc3.metric("❌ Інший формат", other_count)
 
-    errors_and_warnings = [
-        r for r in dstu_results if r.status in (DstuStatus.ERROR, DstuStatus.WARNING)
+    non_dstu = [
+        (num, s) for num, s in dstu_results.items() if s != DstuStatus.DSTU
     ]
 
-    if errors_and_warnings:
+    if non_dstu:
         with st.expander(
-            f"Показати зауваження та порушення ({len(errors_and_warnings)})",
+            f"Показати джерела не за ДСТУ ({len(non_dstu)})",
             expanded=False,
         ):
             dstu_rows = [
                 {
-                    "№": r.source_num,
-                    "Статус": "❌" if r.status == DstuStatus.ERROR else "⚠️",
-                    "Повідомлення": r.message,
+                    "№": num,
+                    "Статус": "⚠️ Частково" if s == DstuStatus.PARTIAL else "❌ Інший формат",
+                    "Запис": bibliography.get(num, "—"),
                 }
-                for r in errors_and_warnings
+                for num, s in sorted(non_dstu)
             ]
             st.dataframe(pd.DataFrame(dstu_rows), use_container_width=True, hide_index=True)
     else:
