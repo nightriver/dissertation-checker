@@ -136,7 +136,8 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
                 {
                     "№": num,
                     "Запис": bibliography.get(num, "—"),
-                    "Сторінки посилань": format_page_ranges(citations_dict.get(num, [])) or "—",
+                    # citations_dict values are bracket strings, e.g. "[89, с. 11; 98]"
+                    "Посилання у тексті": citations_dict.get(num, "") or "—",
                 }
                 for num in used_sorted
             ]
@@ -148,7 +149,7 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
         st.markdown("#### 👻 Фантомні посилання")
         st.caption("Ці номери є у тексті, але відсутні у списку літератури.")
         phantom_rows = [
-            {"№": num, "Сторінки": format_page_ranges(citations_dict.get(num, []))}
+            {"№": num, "Посилання у тексті": citations_dict.get(num, "") or "—"}
             for num in phantom
         ]
         st.dataframe(pd.DataFrame(phantom_rows), use_container_width=True, hide_index=True)
