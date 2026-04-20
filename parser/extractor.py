@@ -5,6 +5,7 @@ extractor.py
 """
 
 from __future__ import annotations
+import re
 from typing import BinaryIO
 
 
@@ -101,3 +102,20 @@ def extract_lines(data: bytes, filename: str) -> list[dict]:
             f"Непідтримуваний формат файлу: «{filename}». "
             "Дозволено лише .pdf та .docx."
         )
+
+
+def extract_dissertation_year(lines: list[dict], max_lines: int = 60) -> int | None:
+    """
+    Шукає рік написання дисертації в перших max_lines рядках.
+    lines: list[dict] з ключами "line" та "page" — стандартна структура проєкту.
+    Повертає int або None.
+    """
+    candidate_pattern = re.compile(r'\b(20[0-2]\d|19[89]\d)\b')
+    candidates: list[int] = []
+
+    for item in lines[:max_lines]:
+        text_line = item["line"]
+        for match in candidate_pattern.finditer(text_line):
+            candidates.append(int(match.group(1)))
+
+    return max(candidates) if candidates else None
