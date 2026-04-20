@@ -40,6 +40,30 @@ st.divider()
 
 
 # ---------------------------------------------------------------------------
+# Допоміжна функція: форматування списку сторінок у діапазони
+# ---------------------------------------------------------------------------
+
+def format_page_ranges(pages: list[int]) -> str:
+    """
+    Перетворює список номерів сторінок у компактний рядок з діапазонами.
+    Приклад: [3, 4, 5, 9, 12, 13] → "3–5, 9, 12–13"
+    """
+    if not pages:
+        return ""
+    pages = sorted(pages)
+    ranges: list[str] = []
+    start = end = pages[0]
+    for p in pages[1:]:
+        if p == end + 1:
+            end = p
+        else:
+            ranges.append(f"{start}–{end}" if end > start else str(start))
+            start = end = p
+    ranges.append(f"{start}–{end}" if end > start else str(start))
+    return ", ".join(ranges)
+
+
+# ---------------------------------------------------------------------------
 # Блок 1 — Завантаження файлу
 # ---------------------------------------------------------------------------
 
@@ -88,12 +112,10 @@ st.success(
 
 # ---------------------------------------------------------------------------
 # Блок 2 — Автоматичний пошук бібліографії
-# Якщо не знайдено — показуємо блок ручного налаштування і зупиняємось.
 # ---------------------------------------------------------------------------
 
 st.divider()
 
-# Спроба автоматичного пошуку (без кнопки — одразу після завантаження)
 zone_result = None
 auto_error: str | None = None
 
@@ -106,7 +128,6 @@ except Exception as e:
     st.stop()
 
 if zone_result is not None:
-    # Автоматично знайдено — показуємо тихе підтвердження
     page_info = (
         f" (стор. {zone_result.biblio_start_page})"
         if zone_result.biblio_start_page
@@ -118,7 +139,6 @@ if zone_result is not None:
     )
 
 else:
-    # Автоматично не знайдено — показуємо блок ручного вводу
     st.warning(f"⚠️ {auto_error}")
     st.subheader("Вкажіть розташування списку літератури вручну")
 
@@ -144,7 +164,6 @@ else:
         st.info("💡 Введіть назву розділу бібліографії так, як вона написана у файлі.")
         st.stop()
 
-    # Пробуємо ручний пошук
     try:
         zone_result = split_zones_manual(lines, manual_header, manual_page)
     except BibliographyNotFoundError as e:
@@ -167,7 +186,6 @@ else:
 
 # ---------------------------------------------------------------------------
 # Блок: Асистент антиплагіату
-# Розміщується після визначення zone_result і до кнопки основної перевірки.
 # ---------------------------------------------------------------------------
 
 st.divider()
@@ -179,9 +197,12 @@ st.caption(
 
 if filename.lower().endswith(".pdf"):
 
-    # Ініціалізація стану — зберігає згенерований файл між перезапусками скрипту
     if "highlighted_pdf" not in st.session_state:
         st.session_state.highlighted_pdf = None
+    if "empty_pages" not in st.session_state:
+        st.session_state.empty_pages = []
+    if "tracked_pages_count" not in st.session_state:
+        st.session_state.tracked_pages_count = 0
 
     if st.button("Згенерувати PDF з підсвіткою", use_container_width=True):
         from parser.highlighter import highlight_citations_pdf
@@ -190,15 +211,15 @@ if filename.lower().endswith(".pdf"):
 
         with st.spinner("Обробка сторінок…"):
             try:
-                st.session_state.highlighted_pdf = highlight_citations_pdf(
+                pdf_out, empty_pages, tracked = highlight_citations_pdf(
                     file_bytes, biblio_page
                 )
+                st.session_state.highlighted_pdf = pdf_out
+                st.session_state.empty_pages = empty_pages
+                st.session_state.tracked_pages_count = tracked
             except Exception as e:
                 st.error(f"❌ Помилка при генерації PDF: {e}")
 
-    # Кнопка завантаження відображається тільки після генерації.
-    # session_state зберігає файл між перезапусками — кнопка не зникає
-    # при кліку на download_button (Streamlit перезапускає скрипт).
     if st.session_state.highlighted_pdf:
         st.download_button(
             label="📥 Завантажити PDF з підсвіченими посиланнями",
@@ -207,6 +228,36 @@ if filename.lower().endswith(".pdf"):
             mime="application/pdf",
             type="primary",
         )
+
+        # --- Сторінки без посилань ---
+        empty_pages: list[int] = st.session_state.empty_pages
+        tracked: int = st.session_state.tracked_pages_count
+
+        st.divider()
+        st.markdown("#### 🔍 Сторінки без посилань")
+        st.caption(
+            "Ці сторінки не містять жодного посилання у форматі [N]. "
+            "Перевірте їх у першу чергу — саме тут найімовірніше "
+            "запозичення без зазначення джерела. "
+            "Перші 2 сторінки (титул, зміст) та бібліографія виключені."
+        )
+
+        if not empty_pages:
+            st.success("🎉 На кожній сторінці тексту є хоча б одне посилання.")
+        else:
+            empty_count = len(empty_pages)
+            pct = empty_count / tracked * 100 if tracked else 0
+
+            col1, col2 = st.columns(2)
+            col1.metric("Сторінок без посилань", empty_count)
+            col2.metric(
+                "Від загального обсягу тексту",
+                f"{pct:.1f}%",
+                help=f"Враховано {tracked} сторінок (без перших 2 і бібліографії)",
+            )
+
+            st.markdown("**Номери сторінок:**")
+            st.code(format_page_ranges(empty_pages), language=None)
 
 else:
     st.info("Підсвітка посилань доступна тільки для PDF файлів.")
@@ -257,7 +308,7 @@ if not citations:
 # ---------------------------------------------------------------------------
 
 result = compare(bibliography, citations)
-citations_dict: dict = citations  # dict[int, str] — first bracket per source
+citations_dict: dict = citations
 orphans_sorted = sorted(result["orphans"])
 used_sorted = sorted(result["used"])
 
@@ -291,12 +342,10 @@ if orphan_count == 0:
     st.success("🎉 Усі джерела зі списку літератури використані в тексті!")
     st.stop()
 
-# Рядок для копіювання
 orphans_str = ", ".join(str(n) for n in orphans_sorted)
 st.markdown("**Номери невикористаних джерел:**")
 st.code(orphans_str, language=None)
 
-# Таблиця сиріт
 st.markdown("**Перелік невикористаних джерел:**")
 
 orphan_rows = [
@@ -313,7 +362,6 @@ st.dataframe(
     },
 )
 
-# Розгорнута секція: використані джерела (для перевірки)
 with st.expander(f"Використані джерела ({used_count})"):
     used_rows = [
         {
@@ -334,7 +382,6 @@ with st.expander(f"Використані джерела ({used_count})"):
         },
     )
 
-# Phantom — посилання без відповідного запису в списку (інформаційно)
 phantom_count = len(result["phantom"])
 if phantom_count:
     with st.expander(f"⚠️ Посилання без відповідного запису в списку ({phantom_count})"):
