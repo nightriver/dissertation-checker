@@ -79,7 +79,7 @@ def cached_analyze(file_bytes: bytes, filename: str, biblio_header: str):
 # render_tab_checker — Перевірка джерел
 # ---------------------------------------------------------------------------
 
-def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
+def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertation_year: int | None = None) -> None:
     bibliography, citations, result = cached_analyze(
         file_bytes, filename, zone_result.biblio_header_line
     )
@@ -169,13 +169,35 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str) -> None:
         counts = [year_counts[y] for y in years_sorted]
 
         fig = go.Figure(go.Bar(x=years_sorted, y=counts, marker_color="#4f98a3"))
+
+        # Вертикальна лінія — рік написання дисертації
+        shapes = []
+        annotations = []
+        if dissertation_year and min(years_sorted) <= dissertation_year <= max(years_sorted):
+            shapes.append(dict(
+                type="line",
+                x0=dissertation_year, x1=dissertation_year,
+                y0=0, y1=1,
+                yref="paper",
+                line=dict(color="#FF5000", width=2, dash="dash"),
+            ))
+            annotations.append(dict(
+                x=dissertation_year, y=1, yref="paper",
+                text=f"Рік дисертації ({dissertation_year})",
+                showarrow=False,
+                xanchor="left", yanchor="bottom",
+                font=dict(color="#FF5000", size=11),
+            ))
+
         fig.update_layout(
             xaxis_title="Рік",
             yaxis_title="Кількість джерел",
             plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0, r=0, t=10, b=0),
+            margin=dict(l=0, r=0, t=30, b=0),
             height=300,
+            shapes=shapes,
+            annotations=annotations,
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -435,7 +457,7 @@ if zone_result is not None:
     tab1, tab2 = st.tabs(["📋 Перевірка джерел", "🖍 Асистент антиплагіату"])
 
     with tab1:
-        render_tab_checker(zone_result, file_bytes, filename)
+        render_tab_checker(zone_result, file_bytes, filename, dissertation_year=auto_year)
 
     with tab2:
         render_tab_highlighter(file_bytes, filename, zone_result)
