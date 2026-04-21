@@ -61,16 +61,33 @@ def format_page_ranges(pages: list) -> str:
     return ", ".join(ranges)
 
 
+def _lines_to_tuple(lines: list[dict]) -> tuple:
+    """
+    Перетворює list[{"line": str, "page": int|None}] у tuple для передачі
+    до кешованої функції: dict не є хешованим, tuple — хешований.
+    """
+    return tuple((item["line"], item.get("page")) for item in lines)
+
+
 @st.cache_data(show_spinner="Читання файлу…")
 def cached_extract(data: bytes, fname: str):
     return extract_lines(data, fname)
 
 
 @st.cache_data(show_spinner="Аналіз джерел…")
-def cached_analyze(file_bytes: bytes, filename: str, biblio_header: str):
-    zone = st.session_state["zone_result"]
-    bibliography = parse_bibliography(zone.bibliography)
-    citations = find_citations(zone.body)
+def cached_analyze(bibliography_lines_tuple: tuple, body_lines_tuple: tuple):
+    """
+    Кешована функція аналізу.
+
+    Отримує дані явно через параметри — без звернень до session state —
+    що гарантує коректну інвалідацію кешу при зміні зони бібліографії
+    (наприклад, при переході між авто- і ручним режимами).
+    """
+    bibliography_lines = [{"line": line, "page": page} for line, page in bibliography_lines_tuple]
+    body_lines = [{"line": line, "page": page} for line, page in body_lines_tuple]
+
+    bibliography = parse_bibliography(bibliography_lines)
+    citations = find_citations(body_lines)
     result = compare(bibliography, citations)
     return bibliography, citations, result
 
@@ -81,7 +98,8 @@ def cached_analyze(file_bytes: bytes, filename: str, biblio_header: str):
 
 def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertation_year: int | None = None) -> None:
     bibliography, citations, result = cached_analyze(
-        file_bytes, filename, zone_result.biblio_header_line
+        _lines_to_tuple(zone_result.bibliography),
+        _lines_to_tuple(zone_result.body),
     )
 
     if not bibliography:
