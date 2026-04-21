@@ -1,7 +1,7 @@
 """
 app.py — Перевірка джерел дисертації
 Streamlit Community Cloud entry point.
-UI v3: Toast, Tabs, Auto-run, Author extraction.
+UI v3: Toast, Tabs, Auto-run, Author extraction + Paragraph Gaps.
 """
 
 import statistics
@@ -27,6 +27,7 @@ from parser.bibliography import (
 from parser.citations import find_citations, compare
 from parser.year_extractor import extract_years
 from parser.dstu_validator import validate_bibliography, DstuStatus
+from parser.paragraph_analyzer import MIN_SUSPICIOUS_SENTENCES
 
 
 # ---------------------------------------------------------------------------
@@ -41,14 +42,13 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------------------------
-# Допоміжні функції (визначені ДО використання)
+# Допоміжні функції
 # ---------------------------------------------------------------------------
 
 def format_page_ranges(pages: list) -> str:
-    """Перетворює список номерів сторінок у компактний рядок з діапазонами."""
     if not pages:
         return ""
-    pages = sorted(int(p) for p in pages)  # cast to int — values may arrive as strings
+    pages = sorted(int(p) for p in pages)
     ranges = []
     start = end = pages[0]
     for p in pages[1:]:
@@ -104,26 +104,13 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
     st.divider()
     m1, m2, m3 = st.columns(3)
     m1.metric("Джерел у списку", total)
-    m2.metric(
-        "Використовуються у тексті",
-        used_count,
-        delta=f"{used_pct:.0f}%",
-        delta_color="normal",
-    )
-    m3.metric(
-        "Не згадуються у тексті",
-        orphan_count,
-        delta=f"-{orphan_pct:.0f}%" if orphan_count else None,
-        delta_color="inverse",
-    )
+    m2.metric("Використовуються у тексті", used_count, delta=f"{used_pct:.0f}%", delta_color="normal")
+    m3.metric("Не згадуються у тексті", orphan_count, delta=f"-{orphan_pct:.0f}%" if orphan_count else None, delta_color="inverse")
 
     if orphans_sorted:
         st.divider()
         st.markdown("#### ⚠️ Джерела, не згадані у тексті")
-        orphan_rows = [
-            {"№": num, "Запис": bibliography.get(num, "—")}
-            for num in orphans_sorted
-        ]
+        orphan_rows = [{"№": num, "Запис": bibliography.get(num, "—")} for num in orphans_sorted]
         st.dataframe(pd.DataFrame(orphan_rows), use_container_width=True, hide_index=True)
     else:
         st.divider()
@@ -136,7 +123,6 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
                 {
                     "№": num,
                     "Запис": bibliography.get(num, "—"),
-                    # citations_dict values are bracket strings, e.g. "[89, с. 11; 98]"
                     "Посилання у тексті": citations_dict.get(num, "") or "—",
                 }
                 for num in used_sorted
@@ -148,16 +134,13 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
         st.divider()
         st.markdown("#### 👻 Фантомні посилання")
         st.caption("Ці номери є у тексті, але відсутні у списку літератури.")
-        phantom_rows = [
-            {"№": num, "Посилання у тексті": citations_dict.get(num, "") or "—"}
-            for num in phantom
-        ]
+        phantom_rows = [{"№": num, "Посилання у тексті": citations_dict.get(num, "") or "—"} for num in phantom]
         st.dataframe(pd.DataFrame(phantom_rows), use_container_width=True, hide_index=True)
 
     st.divider()
     st.markdown("#### 📊 Розподіл джерел за роками видання")
 
-    year_map = extract_years(bibliography)  # expects full dict → {num: year|None}
+    year_map = extract_years(bibliography)
     all_years = [y for y in year_map.values() if y is not None]
 
     if all_years:
@@ -170,34 +153,24 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
 
         fig = go.Figure(go.Bar(x=years_sorted, y=counts, marker_color="#4f98a3"))
 
-        # Вертикальна лінія — рік написання дисертації
         shapes = []
         annotations = []
         if dissertation_year and min(years_sorted) <= dissertation_year <= max(years_sorted):
             shapes.append(dict(
-                type="line",
-                x0=dissertation_year, x1=dissertation_year,
-                y0=0, y1=1,
-                yref="paper",
-                line=dict(color="#FF5000", width=2, dash="dash"),
+                type="line", x0=dissertation_year, x1=dissertation_year, y0=0, y1=1,
+                yref="paper", line=dict(color="#FF5000", width=2, dash="dash"),
             ))
             annotations.append(dict(
-                x=dissertation_year, y=1, yref="paper",
-                text=f"Рік дисертації ({dissertation_year})",
-                showarrow=False,
-                xanchor="left", yanchor="bottom",
+                x=dissertation_year, y=1, yref="paper", text=f"Рік дисертації ({dissertation_year})",
+                showarrow=False, xanchor="left", yanchor="bottom",
                 font=dict(color="#FF5000", size=11),
             ))
 
         fig.update_layout(
-            xaxis_title="Рік",
-            yaxis_title="Кількість джерел",
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0, r=0, t=30, b=0),
-            height=300,
-            shapes=shapes,
-            annotations=annotations,
+            xaxis_title="Рік", yaxis_title="Кількість джерел",
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=0, t=30, b=0), height=300,
+            shapes=shapes, annotations=annotations,
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -212,27 +185,20 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
     st.divider()
     st.markdown("#### 📐 Перевірка ДСТУ 8302:2015")
 
-    # validate_bibliography повертає dict[int, DstuStatus]
-    # DstuStatus: DSTU (відповідає) | PARTIAL (частково) | OTHER (інший формат)
     dstu_results = validate_bibliography(bibliography)
-    ok_count      = sum(1 for s in dstu_results.values() if s == DstuStatus.DSTU)
+    ok_count = sum(1 for s in dstu_results.values() if s == DstuStatus.DSTU)
     partial_count = sum(1 for s in dstu_results.values() if s == DstuStatus.PARTIAL)
-    other_count   = sum(1 for s in dstu_results.values() if s == DstuStatus.OTHER)
+    other_count = sum(1 for s in dstu_results.values() if s == DstuStatus.OTHER)
 
     dc1, dc2, dc3 = st.columns(3)
     dc1.metric("✅ Відповідають ДСТУ", ok_count)
     dc2.metric("⚠️ Частково", partial_count)
     dc3.metric("❌ Інший формат", other_count)
 
-    non_dstu = [
-        (num, s) for num, s in dstu_results.items() if s != DstuStatus.DSTU
-    ]
+    non_dstu = [(num, s) for num, s in dstu_results.items() if s != DstuStatus.DSTU]
 
     if non_dstu:
-        with st.expander(
-            f"Показати джерела не за ДСТУ ({len(non_dstu)})",
-            expanded=False,
-        ):
+        with st.expander(f"Показати джерела не за ДСТУ ({len(non_dstu)})", expanded=False):
             dstu_rows = [
                 {
                     "№": num,
@@ -247,10 +213,56 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
 
 
 # ---------------------------------------------------------------------------
+# Допоміжна функція для рендерингу результатів абзаців
+# ---------------------------------------------------------------------------
+
+def _render_paragraph_gap_results(pgr) -> None:
+    if pgr.docx_mode:
+        st.info("ℹ️ Для DOCX файлів номери сторінок недоступні.")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Всього абзаців", pgr.total_paragraphs)
+    c2.metric("З посиланнями", pgr.cited_paragraphs)
+    c3.metric(
+        "Без посилань",
+        pgr.clean_paragraphs,
+        delta=f"{pgr.clean_pct:.1f}%",
+        delta_color="inverse" if pgr.clean_pct > 30 else "off",
+    )
+
+    if pgr.suspicious:
+        st.divider()
+        st.markdown(f"**⚠️ Великі абзаци без посилань ({len(pgr.suspicious)})**")
+        st.caption(
+            f"Абзаци ≥ {MIN_SUSPICIOUS_SENTENCES} речень без жодного посилання [N]. "
+            "Перевірте їх на наявність запозичень."
+        )
+        rows = [
+            {
+                "Стор. / Розділ": (
+                    str(p["page"]) if p["page"]
+                    else (p.get("context_heading") or "—")
+                ),
+                "Речень": p["sentence_count"],
+                "Початок абзацу": p["text"][:120] + "…" if len(p["text"]) > 120 else p["text"],
+            }
+            for p in pgr.suspicious
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.success("🎉 Великих абзаців без посилань не виявлено!")
+
+
+# ---------------------------------------------------------------------------
 # render_tab_highlighter — Асистент антиплагіату
 # ---------------------------------------------------------------------------
 
-def render_tab_highlighter(file_bytes: bytes, filename: str, zone_result) -> None:
+def render_tab_highlighter(
+    file_bytes: bytes,
+    filename: str,
+    zone_result,
+    lines: list[dict],
+) -> None:
     st.caption(
         "Створює копію PDF з підсвіченими посиланнями [номер, с. XX] "
         "для швидкого ручного маркування у сервісі перевірки плагіату."
@@ -258,70 +270,99 @@ def render_tab_highlighter(file_bytes: bytes, filename: str, zone_result) -> Non
 
     if not filename.lower().endswith(".pdf"):
         st.info("Підсвітка посилань доступна тільки для PDF файлів.")
-        return
+    else:
+        if "highlighted_pdf" not in st.session_state:
+            st.session_state.highlighted_pdf = None
+        if "empty_pages" not in st.session_state:
+            st.session_state.empty_pages = []
+        if "tracked_pages_count" not in st.session_state:
+            st.session_state.tracked_pages_count = 0
 
-    if "highlighted_pdf" not in st.session_state:
-        st.session_state.highlighted_pdf = None
-    if "empty_pages" not in st.session_state:
-        st.session_state.empty_pages = []
-    if "tracked_pages_count" not in st.session_state:
-        st.session_state.tracked_pages_count = 0
+        if st.button("Згенерувати PDF з підсвіткою", use_container_width=True):
+            from parser.highlighter import highlight_citations_pdf
 
-    if st.button("Згенерувати PDF з підсвіткою", use_container_width=True):
-        from parser.highlighter import highlight_citations_pdf
+            biblio_page = zone_result.biblio_start_page if zone_result else None
 
-        biblio_page = zone_result.biblio_start_page if zone_result else None
+            with st.spinner("Обробка сторінок…"):
+                try:
+                    pdf_out, empty_pages, tracked = highlight_citations_pdf(
+                        file_bytes, biblio_page
+                    )
+                    st.session_state.highlighted_pdf = pdf_out
+                    st.session_state.empty_pages = empty_pages
+                    st.session_state.tracked_pages_count = tracked
+                    st.toast("PDF з підсвіткою згенеровано!", icon="✅")
+                except Exception as e:
+                    st.error(f"❌ Помилка при генерації PDF: {e}")
+                    return
 
-        with st.spinner("Обробка сторінок…"):
-            try:
-                pdf_out, empty_pages, tracked = highlight_citations_pdf(
-                    file_bytes, biblio_page
-                )
-                st.session_state.highlighted_pdf = pdf_out
-                st.session_state.empty_pages = empty_pages
-                st.session_state.tracked_pages_count = tracked
-                st.toast("PDF з підсвіткою згенеровано!", icon="✅")
-            except Exception as e:
-                st.error(f"❌ Помилка при генерації PDF: {e}")
-                return
-
-    if st.session_state.highlighted_pdf:
-        st.download_button(
-            label="📥 Завантажити PDF з підсвіченими посиланнями",
-            data=st.session_state.highlighted_pdf,
-            file_name=f"{filename.rsplit('.', 1)[0]}_highlighted.pdf",
-            mime="application/pdf",
-            type="primary",
-        )
-
-        empty_pages = st.session_state.empty_pages
-        tracked = st.session_state.tracked_pages_count
-
-        st.divider()
-        st.markdown("#### 🔍 Сторінки без посилань")
-        st.caption(
-            "Ці сторінки не містять жодного посилання у форматі [N]. "
-            "Перевірте їх у першу чергу — саме тут найімовірніше "
-            "запозичення без зазначення джерела. "
-            "Перші 2 сторінки (титул, зміст) та бібліографія виключені."
-        )
-
-        if not empty_pages:
-            st.success("🎉 На кожній сторінці тексту є хоча б одне посилання.")
-        else:
-            empty_count = len(empty_pages)
-            pct = empty_count / tracked * 100 if tracked else 0
-
-            col1, col2 = st.columns(2)
-            col1.metric("Сторінок без посилань", empty_count)
-            col2.metric(
-                "Від загального обсягу тексту",
-                f"{pct:.1f}%",
-                help=f"Враховано {tracked} сторінок (без перших 2 і бібліографії)",
+        if st.session_state.highlighted_pdf:
+            st.download_button(
+                label="📥 Завантажити PDF з підсвіченими посиланнями",
+                data=st.session_state.highlighted_pdf,
+                file_name=f"{filename.rsplit('.', 1)[0]}_highlighted.pdf",
+                mime="application/pdf",
+                type="primary",
             )
 
-            st.markdown("**Номери сторінок:**")
-            st.code(format_page_ranges(empty_pages), language=None)
+            empty_pages = st.session_state.empty_pages
+            tracked = st.session_state.tracked_pages_count
+
+            st.divider()
+            st.markdown("#### 🔍 Сторінки без посилань")
+            st.caption(
+                "Ці сторінки не містять жодного посилання у форматі [N]. "
+                "Перевірте їх у першу чергу — саме тут найімовірніше "
+                "запозичення без зазначення джерела. "
+                "Перші 2 сторінки (титул, зміст) та бібліографія виключені."
+            )
+
+            if not empty_pages:
+                st.success("🎉 На кожній сторінці тексту є хоча б одне посилання.")
+            else:
+                empty_count = len(empty_pages)
+                pct = empty_count / tracked * 100 if tracked else 0
+
+                col1, col2 = st.columns(2)
+                col1.metric("Сторінок без посилань", empty_count)
+                col2.metric(
+                    "Від загального обсягу тексту",
+                    f"{pct:.1f}%",
+                    help=f"Враховано {tracked} сторінок (без перших 2 і бібліографії)",
+                )
+
+                st.markdown("**Номери сторінок:**")
+                st.code(format_page_ranges(empty_pages), language=None)
+
+    st.divider()
+    st.markdown("#### 🔬 Абзаци без посилань")
+    st.caption(
+        "Аналізуються лише змістовні розділи (Розділ 1, 2, 3…). "
+        "Вступ, зміст, анотація, висновки та бібліографія виключені."
+    )
+
+    if "para_gap_result" not in st.session_state:
+        st.session_state.para_gap_result = None
+
+    if st.button("Проаналізувати абзаци", use_container_width=True, key="btn_para"):
+        from parser.paragraph_analyzer import analyze_paragraph_gaps, ContentBoundsNotFoundError
+        with st.spinner("Аналіз абзаців…"):
+            try:
+                st.session_state.para_gap_result = analyze_paragraph_gaps(
+                    file_bytes,
+                    filename,
+                    lines,
+                    zone_result.biblio_start_page if zone_result else None,
+                )
+                st.toast("Аналіз завершено!", icon="✅")
+            except ContentBoundsNotFoundError as e:
+                st.error(f"❌ {e}")
+            except Exception as e:
+                st.error(f"❌ Помилка при аналізі абзаців: {e}")
+
+    pgr = st.session_state.para_gap_result
+    if pgr:
+        _render_paragraph_gap_results(pgr)
 
 
 # ===========================================================================
@@ -367,10 +408,6 @@ except Exception as e:
 
 st.toast(f"Файл завантажено: {filename}", icon="✅")
 
-# ---------------------------------------------------------------------------
-# Шапка: автор + рік
-# ---------------------------------------------------------------------------
-
 auto_author = extract_dissertation_author(lines)
 auto_year = extract_dissertation_year(lines)
 
@@ -389,10 +426,6 @@ with col_author:
 with col_year:
     if auto_year:
         st.markdown(f"**📅 {auto_year} р.**")
-
-# ---------------------------------------------------------------------------
-# Блок 2 — Пошук бібліографії
-# ---------------------------------------------------------------------------
 
 st.divider()
 
@@ -442,16 +475,8 @@ if zone_result is None:
         st.error(f"❌ Помилка при аналізі структури: {e}")
         st.stop()
 
-# ---------------------------------------------------------------------------
-# Зберегти zone_result в session_state ПЕРЕД cached_analyze
-# ---------------------------------------------------------------------------
-
 if zone_result is not None:
     st.session_state["zone_result"] = zone_result
-
-# ---------------------------------------------------------------------------
-# Вкладки — тільки якщо бібліографія знайдена
-# ---------------------------------------------------------------------------
 
 if zone_result is not None:
     tab1, tab2 = st.tabs(["📋 Перевірка джерел", "🖍 Асистент антиплагіату"])
@@ -460,4 +485,4 @@ if zone_result is not None:
         render_tab_checker(zone_result, file_bytes, filename, dissertation_year=auto_year)
 
     with tab2:
-        render_tab_highlighter(file_bytes, filename, zone_result)
+        render_tab_highlighter(file_bytes, filename, zone_result, lines)
