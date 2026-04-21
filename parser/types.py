@@ -1,13 +1,12 @@
 """
 types.py
-Спільні типи даних для всіх модулів парсера.
+Спільні типи даних для всіх модулів пакету parser.
 """
 
-from __future__ import annotations
 from typing import TypedDict
 
 
 class LineItem(TypedDict):
-    """Стандартна структура рядка документа, що використовується у всіх модулях."""
+    """Один рядок документа з номером сторінки."""
     line: str
     page: int | None

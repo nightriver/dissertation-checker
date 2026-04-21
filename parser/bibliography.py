@@ -34,10 +34,14 @@ STOP_WORDS: list[str] = [
 ]
 
 # Патерн початку нового бібліографічного запису.
-# підтримує  "1. Текст..."  і  "[1] Текст..."
+# Дві чіткі гілки, без асиметричних опціональних дужок:
+#   Гілка 1: "1. Текст..."  — group(1)=номер, group(2)=текст
+#   Гілка 2: "[1] Текст..." — group(3)=номер, group(4)=текст
 # Text after number is optional: PyMuPDF sometimes puts number on its own line.
-# "11.\n\nБайкулатова..." → "11." matches, empty group(2), next lines become content.
-_ENTRY_START = re.compile(r"^\s*(?:\[)?(\d+)(?:\.|\])\s*(.*)")
+# "11.\n\nБайкулатова..." → гілка 1 matches, group(2) empty, next lines become content.
+_ENTRY_START = re.compile(
+    r"^\s*(?:(\d+)\.\s*(.*)|(?:\[(\d+)\])\s*(.*))$"
+)
 
 # Максимально допустимий порядковий номер джерела.
 # Числа понад 999 — це роки в тексті записів (напр. "2005. URL: ...")
@@ -209,12 +213,24 @@ def parse_bibliography(bibliography_lines: list[dict]) -> dict[int, str]:
     for item in bibliography_lines:
         line = item["line"]
         m = _ENTRY_START.match(line)
-        if m and _is_valid_entry(int(m.group(1)), m.group(2).strip()):
-            _flush()
-            current_num = int(m.group(1))
-            text_part = m.group(2).strip()
-            # Number may be alone on line; text starts on next line
-            current_parts = [text_part] if text_part else []
+        if m:
+            # Гілка 1: "N. текст" → group(1), group(2)
+            # Гілка 2: "[N] текст" → group(3), group(4)
+            num_str = m.group(1) if m.group(1) is not None else m.group(3)
+            text_part = (m.group(2) if m.group(1) is not None else m.group(4)) or ""
+            text_part = text_part.strip()
+
+            if _is_valid_entry(int(num_str), text_part):
+                _flush()
+                current_num = int(num_str)
+                # Number may be alone on line; text starts on next line
+                current_parts = [text_part] if text_part else []
+            else:
+                # Схоже на запис, але не валідне — продовження попереднього
+                if current_num is not None:
+                    stripped = line.strip()
+                    if stripped:
+                        current_parts.append(stripped)
         else:
             # Продовження попереднього запису (або заголовок зони — ігноруємо)
             if current_num is not None:

@@ -6,6 +6,7 @@ extractor.py
 
 from __future__ import annotations
 import re
+import datetime
 from typing import BinaryIO
 
 
@@ -104,19 +105,75 @@ def extract_lines(data: bytes, filename: str) -> list[dict]:
         )
 
 
+# ---------------------------------------------------------------------------
+# Якірні фрази для визначення року дисертації
+# ---------------------------------------------------------------------------
+
+# Рік після назви міста з тире: "Київ – 2023", "Харків — 2021"
+_ANCHOR_CITY_YEAR = re.compile(
+    r'(?:Київ|Харків|Львів|Одеса|Дніпро|Запоріжжя|Вінниця|Миколаїв|Суми|Полтава|'
+    r'Чернівці|Черкаси|Херсон|Хмельницький|Рівне|Луцьк|Тернопіль|Ужгород|'
+    r'Кропивницький|Житомир|Чернігів|Івано-Франківськ)'
+    r'\s*[–—\-]\s*(20[0-2]\d|19[89]\d)',
+    re.UNICODE,
+)
+
+# Рік після слова "рік" або "р.": "2023 р.", "2023 рік"
+_ANCHOR_RIK = re.compile(
+    r'\b(20[0-2]\d|19[89]\d)\s+(?:р(?:ік|\.)|рр\.)',
+    re.UNICODE,
+)
+
+# Рік у дужках наприкінці рядка: "(2023)" — типово для титульної сторінки
+_ANCHOR_PARENS_EOL = re.compile(
+    r'\(\s*(20[0-2]\d|19[89]\d)\s*\)\s*$',
+)
+
+# Загальний шаблон року для фолбеку
+_YEAR_GENERIC = re.compile(r'\b(20[0-2]\d|19[89]\d)\b')
+
+
 def extract_dissertation_year(lines: list[dict], max_lines: int = 60) -> int | None:
     """
     Шукає рік написання дисертації в перших max_lines рядках.
     lines: list[dict] з ключами "line" та "page" — стандартна структура проєкту.
     Повертає int або None.
-    """
-    candidate_pattern = re.compile(r'\b(20[0-2]\d|19[89]\d)\b')
-    candidates: list[int] = []
 
+    Алгоритм:
+      Прохід 1 — якірні фрази (пріоритет від специфічного до загального):
+        а) "Місто – РРРР"     (назва міста + тире + рік)
+        б) "РРРР р." / "РРРР рік"
+        в) "(РРРР)" наприкінці рядка
+      Прохід 2 — фолбек: max() серед усіх знайдених років,
+        виключаючи майбутні роки відносно поточної дати.
+    """
+    current_year = datetime.datetime.now().year
+
+    # Прохід 1a: місто + тире + рік
     for item in lines[:max_lines]:
-        text_line = item["line"]
-        for match in candidate_pattern.finditer(text_line):
-            candidates.append(int(match.group(1)))
+        m = _ANCHOR_CITY_YEAR.search(item["line"])
+        if m:
+            return int(m.group(1))
+
+    # Прохід 1b: РРРР р. / РРРР рік
+    for item in lines[:max_lines]:
+        m = _ANCHOR_RIK.search(item["line"])
+        if m:
+            return int(m.group(1))
+
+    # Прохід 1c: (РРРР) наприкінці рядка
+    for item in lines[:max_lines]:
+        m = _ANCHOR_PARENS_EOL.search(item["line"])
+        if m:
+            return int(m.group(1))
+
+    # Прохід 2 — фолбек: max() серед не-майбутніх років
+    candidates: list[int] = []
+    for item in lines[:max_lines]:
+        for match in _YEAR_GENERIC.finditer(item["line"]):
+            y = int(match.group(1))
+            if y <= current_year:
+                candidates.append(y)
 
     return max(candidates) if candidates else None
 
