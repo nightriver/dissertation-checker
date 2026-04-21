@@ -213,11 +213,23 @@ def _extract_paragraphs_pdf(
     start_page: int | None,
     end_page: int | None,
 ) -> list[ParagraphItem]:
-    """Витягує абзаци з PDF у діапазоні сторінок [start_page, end_page]."""
+    """
+    Витягує абзаци з PDF у діапазоні сторінок [start_page, end_page].
+
+    Нова логіка не покладається на page.get_text("blocks"), бо в складних PDF
+    один логічний абзац часто розбивається на кілька дрібних фізичних блоків.
+    Замість цього беремо page.get_text("dict"), збираємо текст построково і
+    склеюємо сусідні рядки в абзац, поки між ними немає великого вертикального
+    розриву.
+    """
     import fitz
+
+    LETTER_RE = re.compile(r'[А-Яа-яІіЇїЄєҐґA-Za-z]')
+    LINE_GAP_FACTOR = 1.5  # розрив > 1.5 висоти рядка = новий абзац
 
     result = []
     idx = 0
+
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         for page_idx, page in enumerate(doc):
             page_num = page_idx + 1
@@ -225,21 +237,51 @@ def _extract_paragraphs_pdf(
                 continue
             if end_page and page_num > end_page:
                 break
-            for block in page.get_text("blocks"):
-                if block[6] != 0:          # не текстовий блок
+
+            text_dict = page.get_text("dict")
+            para_lines: list[str] = []
+            prev_bottom = None
+            prev_line_height = None
+
+            def flush_para() -> None:
+                nonlocal idx
+                text = re.sub(r'\s+', ' ', " ".join(para_lines).strip())
+                if len(text) >= MIN_BLOCK_CHARS and LETTER_RE.search(text):
+                    result.append(ParagraphItem(
+                        text=text,
+                        page=page_num,
+                        sentence_count=_count_sentences(text),
+                        para_index=idx,
+                    ))
+                    idx += 1
+                para_lines.clear()
+
+            for block in text_dict.get("blocks", []):
+                if block.get("type") != 0:
                     continue
-                text = block[4].replace("\n", " ").strip()
-                if len(text) < MIN_BLOCK_CHARS:
-                    continue
-                if not re.search(r'[А-Яа-яІіЇїЄєҐґA-Za-z]', text):
-                    continue
-                result.append(ParagraphItem(
-                    text=text,
-                    page=page_num,
-                    sentence_count=_count_sentences(text),
-                    para_index=idx,
-                ))
-                idx += 1
+
+                for line in block.get("lines", []):
+                    line_text = "".join(span.get("text", "") for span in line.get("spans", [])).strip()
+                    if not line_text:
+                        continue
+
+                    bbox = line.get("bbox", [0, 0, 0, 0])
+                    top = bbox[1]
+                    bottom = bbox[3]
+                    line_height = bottom - top
+
+                    if prev_bottom is not None and prev_line_height is not None:
+                        gap = top - prev_bottom
+                        if gap > prev_line_height * LINE_GAP_FACTOR:
+                            flush_para()
+
+                    para_lines.append(line_text)
+                    prev_bottom = bottom
+                    if line_height > 0:
+                        prev_line_height = line_height
+
+            flush_para()
+
     return result
 
 
