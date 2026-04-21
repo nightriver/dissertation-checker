@@ -72,8 +72,7 @@ def _is_section_trigger(line: str, headers: list[str], exact: bool = False) -> b
 
     clean = line.strip()
     is_short = len(clean) < 60 and len(clean.split()) <= 8
-    # isupper() повертає True якщо рядок містить хоча б одну велику літеру
-    # і не містить малих — підходить для суто uppercase-заголовків
+    # Захист: рядок без жодної літери (напр. "1.") не є заголовком
     is_uppercase = clean.upper() == clean and any(c.isalpha() for c in clean)
     return is_short or is_uppercase
 
@@ -86,42 +85,86 @@ def extract_content_bounds(
     lines: list[dict],
     biblio_start_page: int | None,
 ) -> tuple[int, int]:
-    """Знаходить індекси початку та кінця змістовних розділів."""
-    content_start_idx = None
-    content_end_idx = len(lines) - 1
+    """
+    Знаходить індекси початку та кінця змістовних розділів.
 
+    Алгоритм — двонаправлений пошук:
+
+    1. Визначаємо верхню межу пошуку (початок бібліографії).
+    2. Шукаємо ВИСНОВКИ рухаючись НАЗАД від бібліографії —
+       це гарантує, що ми знайдемо справжні ВИСНОВКИ, а не рядок
+       "Висновки" у ЗМІСТі (де він зустрічається набагато раніше).
+    3. Шукаємо останній ВСТУП до знайдених ВИСНОВКІВ —
+       реальний ВСТУП завжди стоїть пізніше від запису у ЗМІСТі.
+    4. Шукаємо перший РОЗДІЛ після останнього ВСТУПу.
+    5. Фолбек: якщо ВСТУП не знайдено, шукаємо РОЗДІЛ після великого
+       розриву (>100 рядків) — у ЗМІСТі розділи ідуть підряд,
+       а реальний РОЗДІЛ 1 відірваний від ЗМІСТу великим блоком тексту.
+    """
     TOC_LINE_RE = re.compile(r'\.{3,}\s*\d*\s*$')
 
-    for i, item in enumerate(lines):
-        line = item["line"]
+    # 1. Межа пошуку зверху — початок бібліографії (за номером сторінки)
+    search_end_idx = len(lines) - 1
+    if biblio_start_page is not None:
+        for i, item in enumerate(lines):
+            if item.get("page") == biblio_start_page:
+                search_end_idx = i
+                break
 
-        # Пропускаємо рядки оглавлення
+    # 2. Шукаємо ВИСНОВКИ рухаючись НАЗАД — обходимо ЗМІСТ
+    content_end_idx = search_end_idx
+    for i in range(search_end_idx, -1, -1):
+        line = lines[i]["line"]
         if TOC_LINE_RE.search(line.strip()):
             continue
-
-        # exact=True — точний збіг, щоб «Висновки до розділу 1» не зупинив аналіз
         if _is_section_trigger(line, END_SECTION_HEADERS, exact=True):
-            # Захист від i=0: не допускаємо від'ємного індексу
             content_end_idx = max(i - 1, 0)
             break
 
+    # 3. Шукаємо останній ВСТУП до content_end_idx
+    last_vstup_idx = -1
+    for i in range(content_end_idx):
+        line = lines[i]["line"]
+        if TOC_LINE_RE.search(line.strip()):
+            continue
+        if _is_section_trigger(line, ["ВСТУП"], exact=True):
+            last_vstup_idx = i
+
+    start_search_from = last_vstup_idx if last_vstup_idx != -1 else 0
+
+    # 4. Шукаємо перший РОЗДІЛ після останнього ВСТУПу
+    content_start_idx = None
+    for i in range(start_search_from, content_end_idx):
+        line = lines[i]["line"]
+        if TOC_LINE_RE.search(line.strip()):
+            continue
         if _is_section_trigger(line, CHAPTER_HEADERS, exact=False):
-            if content_start_idx is None:
-                content_start_idx = i
+            content_start_idx = i
+            break
+
+    # 5. Фолбек: шукаємо РОЗДІЛ після великого розриву (ознака виходу зі ЗМІСТу)
+    if content_start_idx is None:
+        chap_indices = []
+        for i in range(content_end_idx):
+            line = lines[i]["line"]
+            if TOC_LINE_RE.search(line.strip()):
+                continue
+            if _is_section_trigger(line, CHAPTER_HEADERS, exact=False):
+                chap_indices.append(i)
+
+        if chap_indices:
+            content_start_idx = chap_indices[0]
+            for j in range(len(chap_indices) - 1):
+                gap = chap_indices[j + 1] - chap_indices[j]
+                # Розрив > 100 рядків — ми вийшли зі ЗМІСТу
+                if gap > 100:
+                    content_start_idx = chap_indices[j + 1]
+                    break
 
     if content_start_idx is None:
         raise ContentBoundsNotFoundError(
             "Не вдалося знайти початок змістовних розділів (РОЗДІЛ 1 тощо)."
         )
-
-    # Якщо biblio_start_page відомий і знайдений content_end_idx виявився
-    # пізніше ніж початок бібліографії — беремо мінімум
-    if biblio_start_page is not None:
-        for j, item in enumerate(lines):
-            if item.get("page") == biblio_start_page:
-                if j < content_end_idx:
-                    content_end_idx = max(j - 1, 0)
-                break
 
     return content_start_idx, content_end_idx
 
@@ -209,15 +252,11 @@ def _extract_paragraphs_docx(
     """
     Витягує абзаци з DOCX, фільтруючи за межами змістовних розділів.
 
-    Оскільки DOCX не має номерів сторінок, ми порівнюємо текст параграфів
-    зі списком рядків `all_lines`, щоб визначити, чи потрапляє параграф
-    у зону [content_start_idx, content_end_idx].
-
-    Алгоритм: будуємо множину рядків-заголовків з зони SKIP (до content_start)
-    та зони END (після content_end), і відкидаємо параграфи, що туди входять.
-    Оскільки текстова відповідність ненадійна, використовуємо простіший підхід:
-    відстежуємо, чи пройшли ми перший заголовок РОЗДІЛ, і зупиняємося на
-    першому END_SECTION_HEADERS.
+    Оскільки DOCX не має номерів сторінок, визначаємо зону аналізу
+    безпосередньо за текстом заголовків (аналог двонаправленого пошуку
+    з extract_content_bounds, але по параграфах документа):
+    — чекаємо перший РОЗДІЛ  → in_content_zone = True
+    — зупиняємося на першому END_SECTION_HEADERS
     """
     import io
     from docx import Document
@@ -225,7 +264,7 @@ def _extract_paragraphs_docx(
     doc = Document(io.BytesIO(file_bytes))
     result = []
     last_heading: str | None = None
-    in_content_zone = False  # True після першого РОЗДІЛ
+    in_content_zone = False
     idx = 0
 
     TOC_LINE_RE = re.compile(r'\.{3,}\s*\d*\s*$')
@@ -239,7 +278,6 @@ def _extract_paragraphs_docx(
             last_heading = text or last_heading
 
         # Визначаємо межі зони аналізу через текст заголовків
-        # (аналогічно extract_content_bounds, але по параграфах DOCX)
         if not TOC_LINE_RE.search(text):
             if _is_section_trigger(text, END_SECTION_HEADERS, exact=True):
                 break  # вийшли за межі змістовної зони
