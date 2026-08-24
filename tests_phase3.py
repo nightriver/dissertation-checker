@@ -47,6 +47,15 @@ class TestExtractContentBounds(unittest.TestCase):
         start, end = extract_content_bounds(doc, None)
         self.assertEqual(start, 2)
 
+    def test_chapter_heading_immediately_before_conclusions(self):
+        # РОЗДІЛ стоїть прямо на content_end_idx (останній рядок перед
+        # ВИСНОВКАМИ) — раніше тут була помилка off-by-one, і функція
+        # кидала ContentBoundsNotFoundError замість знаходження розділу.
+        doc = L(["ВСТУП", "Текст вступу.", "РОЗДІЛ 1", "ВИСНОВКИ"])
+        start, end = extract_content_bounds(doc, None)
+        self.assertEqual(start, 2)
+        self.assertEqual(end, 2)
+
 class TestSectionTrigger(unittest.TestCase):
     def test_exact_conclusions(self):
         self.assertTrue(_is_section_trigger("ВИСНОВКИ", END_SECTION_HEADERS, exact=True))
@@ -69,6 +78,16 @@ class TestCountSentences(unittest.TestCase):
     def test_abbreviations(self):
         self.assertEqual(_count_sentences("табл. 1.1. Аналіз показує..."), 1)
         self.assertEqual(_count_sentences("рис. 2.3. Схема відображає..."), 1)
+
+    def test_multilevel_decimal_number(self):
+        # "2.3.4." (три рівні нумерації), як і "1.1.", не є кінцем речення —
+        # узгоджено з поведінкою test_abbreviations вище.
+        self.assertEqual(_count_sentences("Див. пункт 2.3.4. Далі буде."), 1)
+
+    def test_plain_integer_still_splits(self):
+        # Ціле число без десяткової крапки (не нумерація) — крапка й далі
+        # завершує речення як звичайно.
+        self.assertEqual(_count_sentences("Показник дорівнює 42. Далі."), 2)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

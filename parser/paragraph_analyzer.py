@@ -140,8 +140,10 @@ def extract_content_bounds(
     start_search_from = last_vstup_idx if last_vstup_idx != -1 else 0
 
     # 4. Шукаємо перший РОЗДІЛ після останнього ВСТУПу
+    # (включно з content_end_idx — реальний заголовок РОЗДІЛУ може стояти
+    # прямо перед ВИСНОВКАМИ, тобто саме на цьому індексі)
     content_start_idx = None
-    for i in range(start_search_from, content_end_idx):
+    for i in range(start_search_from, content_end_idx + 1):
         line = lines[i]["line"]
         if TOC_LINE_RE.search(line.strip()):
             continue
@@ -152,7 +154,7 @@ def extract_content_bounds(
     # 5. Фолбек: шукаємо РОЗДІЛ після великого розриву (ознака виходу зі ЗМІСТу)
     if content_start_idx is None:
         chap_indices = []
-        for i in range(content_end_idx):
+        for i in range(content_end_idx + 1):
             line = lines[i]["line"]
             if TOC_LINE_RE.search(line.strip()):
                 continue
@@ -184,6 +186,11 @@ _ABBR_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 
+# Багатоскладові номери на кшталт "1.1." / "2.3.4." (нумерація таблиць,
+# рисунків, розділів) — крапки всередині них не є кінцем речення.
+# Часто йдуть одразу після скорочення "табл./рис." (напр. "табл. 1.1.").
+_DECIMAL_NUM_RE = re.compile(r'\d+(?:\.\d+)+\.?')
+
 # Lookbehind без \b — фіксована довжина, стабільний у всіх версіях Python
 # Ігноруємо крапку після одиночної великої літери (ініціали: В., А.)
 _SENTENCE_END = re.compile(
@@ -194,6 +201,7 @@ _SENTENCE_END = re.compile(
 def _count_sentences(text: str) -> int:
     """Підрахунок кількості речень у тексті з ігноруванням скорочень."""
     cleaned = _ABBR_RE.sub(lambda m: m.group(0).replace(".", "\x00"), text)
+    cleaned = _DECIMAL_NUM_RE.sub(lambda m: m.group(0).replace(".", "\x00"), cleaned)
     return len(_SENTENCE_END.findall(cleaned)) + 1
 
 
