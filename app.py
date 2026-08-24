@@ -28,6 +28,13 @@ from parser.citations import find_citations, compare
 from parser.year_extractor import extract_years
 from parser.dstu_validator import validate_bibliography, DstuStatus
 from parser.paragraph_analyzer import MIN_SUSPICIOUS_SENTENCES
+from ui_helpers import (
+    format_number_ranges,
+    lines_to_tuple,
+    tuple_to_lines,
+    make_file_key,
+    reset_file_scoped_state,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -45,30 +52,6 @@ st.set_page_config(
 # Допоміжні функції
 # ---------------------------------------------------------------------------
 
-def format_number_ranges(pages: list) -> str:
-    if not pages:
-        return ""
-    pages = sorted(int(p) for p in pages)
-    ranges = []
-    start = end = pages[0]
-    for p in pages[1:]:
-        if p == end + 1:
-            end = p
-        else:
-            ranges.append(f"{start}–{end}" if end > start else str(start))
-            start = end = p
-    ranges.append(f"{start}–{end}" if end > start else str(start))
-    return ", ".join(ranges)
-
-
-def _lines_to_tuple(lines: list[dict]) -> tuple:
-    """
-    Перетворює list[{"line": str, "page": int|None}] у tuple для передачі
-    до кешованої функції: dict не є хешованим, tuple — хешований.
-    """
-    return tuple((item["line"], item.get("page")) for item in lines)
-
-
 @st.cache_data(show_spinner="Читання файлу…")
 def cached_extract(data: bytes, fname: str):
     return extract_lines(data, fname)
@@ -83,8 +66,8 @@ def cached_analyze(bibliography_lines_tuple: tuple, body_lines_tuple: tuple):
     що гарантує коректну інвалідацію кешу при зміні зони бібліографії
     (наприклад, при переході між авто- і ручним режимами).
     """
-    bibliography_lines = [{"line": line, "page": page} for line, page in bibliography_lines_tuple]
-    body_lines = [{"line": line, "page": page} for line, page in body_lines_tuple]
+    bibliography_lines = tuple_to_lines(bibliography_lines_tuple)
+    body_lines = tuple_to_lines(body_lines_tuple)
 
     bibliography = parse_bibliography(bibliography_lines)
     citations = find_citations(body_lines)
@@ -98,8 +81,8 @@ def cached_analyze(bibliography_lines_tuple: tuple, body_lines_tuple: tuple):
 
 def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertation_year: int | None = None) -> None:
     bibliography, citations, result = cached_analyze(
-        _lines_to_tuple(zone_result.bibliography),
-        _lines_to_tuple(zone_result.body),
+        lines_to_tuple(zone_result.bibliography),
+        lines_to_tuple(zone_result.body),
     )
 
     if not bibliography:
@@ -410,8 +393,16 @@ uploaded = st.file_uploader(
 if not uploaded:
     st.stop()
 
-file_bytes = uploaded.read()
+file_bytes = uploaded.getvalue()
 filename = uploaded.name
+
+# Завантажили інший файл — скидаємо результати попереднього, інакше кнопка
+# завантаження віддасть підсвічений PDF від старого файлу під новим іменем,
+# а «Абзаци без посилань» покажуть цифри від старого документа.
+reset_file_scoped_state(
+    st.session_state,
+    make_file_key(filename, len(file_bytes), getattr(uploaded, "file_id", None)),
+)
 
 try:
     lines = cached_extract(file_bytes, filename)

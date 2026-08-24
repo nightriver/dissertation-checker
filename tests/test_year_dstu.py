@@ -1,3 +1,7 @@
+"""
+Unit tests for year_extractor.py and dstu_validator.py.
+Run: pytest tests/test_year_dstu.py
+"""
 from parser.year_extractor import extract_year, extract_years
 from parser.dstu_validator import check_dstu, DstuStatus
 from parser.extractor import extract_dissertation_year
@@ -81,3 +85,29 @@ def test_dissertation_year_from_lines():
 
 def test_dissertation_year_empty():
     assert extract_dissertation_year([]) is None
+
+
+# --- validate_bibliography / extract_years batch wrappers ---
+
+from parser.dstu_validator import validate_bibliography  # noqa: E402
+
+
+def test_validate_bibliography_maps_every_entry():
+    bib = {
+        1: "Петренко В.А. Назва / В.А. Петренко. – Київ : Либідь, 2018. – 240 с.",
+        2: "Smith J. (2021). The title. Publisher.",
+        3: "Київ : Наукова думка, 2010.",
+    }
+    result = validate_bibliography(bib)
+    assert set(result) == {1, 2, 3}
+    assert result[1] == DstuStatus.DSTU
+    assert result[2] == DstuStatus.OTHER
+    assert result[3] == DstuStatus.PARTIAL
+
+
+def test_validate_bibliography_empty():
+    assert validate_bibliography({}) == {}
+
+
+def test_check_dstu_empty_string():
+    assert check_dstu("") == DstuStatus.OTHER

@@ -1,6 +1,6 @@
 """
-tests_phase3.py  —  Unit tests for paragraph analyzer.
-Run: python tests_phase3.py
+Unit tests for paragraph_analyzer.py.
+Run: pytest tests/test_paragraph_analyzer.py
 """
 
 import unittest
@@ -9,7 +9,6 @@ from parser.paragraph_analyzer import (
     extract_content_bounds,
     _count_sentences,
     END_SECTION_HEADERS,
-    CHAPTER_HEADERS,
     ContentBoundsNotFoundError,
 )
 
@@ -88,6 +87,3 @@ class TestCountSentences(unittest.TestCase):
         # Ціле число без десяткової крапки (не нумерація) — крапка й далі
         # завершує речення як звичайно.
         self.assertEqual(_count_sentences("Показник дорівнює 42. Далі."), 2)
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

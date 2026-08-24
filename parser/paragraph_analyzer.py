@@ -5,9 +5,10 @@ paragraph_analyzer.py
 
 from __future__ import annotations
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from parser.citations import _BRACKET_RE
+from parser.citations import BRACKET_RE, expand_bracket
+from parser.types import LineItem, TOC_LEADER_RE as _TOC_LEADER_RE, is_toc_entry as _is_toc_entry
 
 # ---------------------------------------------------------------------------
 # Константи
@@ -30,20 +31,27 @@ CHAPTER_HEADERS = [
     "ЧАСТИНА",
 ]
 
-SKIP_SECTION_HEADERS = [
-    "ВСТУП",
-    "ЗМІСТ",
-    "ЗМІСТ ДИСЕРТАЦІЇ",
-    "АНОТАЦІЯ",
-    "ABSTRACT",
-    "СПИСОК ПУБЛІКАЦІЙ ЗДОБУВАЧА",
-    "ПОДЯКИ",
-    "ACKNOWLEDGEMENTS",
-]
+# ВСТУП, ЗМІСТ, АНОТАЦІЯ тощо окремим списком НЕ перелічуються: зона аналізу
+# починається з першого РОЗДІЛУ після останнього ВСТУПУ, тому вся передмова
+# відсікається структурно. Раніше тут стояв SKIP_SECTION_HEADERS, на який
+# ніхто не посилався, — обіцянка «вступ і зміст виключені» трималася тільки
+# на ньому й насправді не виконувалася.
 
-END_SECTION_HEADERS = [
+# Заголовок, що завершує змістовну частину: далі йде підсумок, а не аналіз.
+CONTENT_END_HEADERS = [
     "ВИСНОВКИ",
     "ЗАГАЛЬНІ ВИСНОВКИ",
+]
+
+# Секції, які стоять уже ПІСЛЯ висновків. Рухаючись назад і натрапивши на
+# таку секцію, ми лише звужуємо межу й шукаємо далі вгору — справжній кінець
+# змістовної частини (ВИСНОВКИ) розташований вище.
+#
+# Без цього поділу DOCX ловив «СПИСОК ВИКОРИСТАНИХ ДЖЕРЕЛ» (останній маркер у
+# документі) і зупинявся на ньому, через що розділ ВИСНОВКІВ рахувався як
+# змістовний текст. У PDF це не проявлялося лише тому, що там пошук заздалегідь
+# обмежений сторінкою початку бібліографії.
+POST_CONTENT_HEADERS = [
     "СПИСОК ВИКОРИСТАНИХ ДЖЕРЕЛ",
     "СПИСОК ЛІТЕРАТУРИ",
     "СПИСОК ВИКОРИСТАНОЇ ЛІТЕРАТУРИ",
@@ -54,6 +62,8 @@ END_SECTION_HEADERS = [
     "ДОДАТКИ",
     "ДОДАТОК",
 ]
+
+END_SECTION_HEADERS = CONTENT_END_HEADERS + POST_CONTENT_HEADERS
 
 # ---------------------------------------------------------------------------
 # Допоміжні функції
@@ -88,17 +98,18 @@ class ContentBoundsNotFoundError(Exception):
     pass
 
 
-def extract_content_bounds(
-    lines: list[dict],
-    biblio_start_page: int | None,
+def find_content_bounds_in_texts(
+    texts: list[str],
+    search_end_idx: int | None = None,
 ) -> tuple[int, int]:
     """
-    Знаходить індекси початку та кінця змістовних розділів.
+    Ядро пошуку меж змістовних розділів. Працює над простим списком рядків,
+    тому однаково придатне і для рядків PDF, і для параграфів DOCX.
 
     Алгоритм — двонаправлений пошук:
 
-    1. Визначаємо верхню межу пошуку (початок бібліографії).
-    2. Шукаємо ВИСНОВКИ рухаючись НАЗАД від бібліографії —
+    1. Верхня межа пошуку — search_end_idx (початок бібліографії) або кінець.
+    2. Шукаємо ВИСНОВКИ рухаючись НАЗАД від цієї межі —
        це гарантує, що ми знайдемо справжні ВИСНОВКИ, а не рядок
        "Висновки" у ЗМІСТі (де він зустрічається набагато раніше).
     3. Шукаємо останній ВСТУП до знайдених ВИСНОВКІВ —
@@ -107,32 +118,34 @@ def extract_content_bounds(
     5. Фолбек: якщо ВСТУП не знайдено, шукаємо РОЗДІЛ після великого
        розриву (>_MIN_GAP_AFTER_TOC рядків) — у ЗМІСТі розділи ідуть підряд,
        а реальний РОЗДІЛ 1 відірваний від ЗМІСТу великим блоком тексту.
+
+    Рух НАЗАД принциповий: саме він відрізняє справжній заголовок від запису
+    у ЗМІСТі. DOCX-гілка раніше мала власний прохід ВПЕРЕД і через це
+    відкривала зону аналізу прямо на ЗМІСТі.
     """
-    TOC_LINE_RE = re.compile(r'\.{3,}\s*\d*\s*$')
+    if search_end_idx is None:
+        search_end_idx = len(texts) - 1
 
-    # 1. Межа пошуку зверху — початок бібліографії (за номером сторінки)
-    search_end_idx = len(lines) - 1
-    if biblio_start_page is not None:
-        for i, item in enumerate(lines):
-            if item.get("page") == biblio_start_page:
-                search_end_idx = i
-                break
-
-    # 2. Шукаємо ВИСНОВКИ рухаючись НАЗАД — обходимо ЗМІСТ
+    # 2. Шукаємо ВИСНОВКИ рухаючись НАЗАД — обходимо ЗМІСТ.
+    #    Бібліографія та додатки лише звужують межу: справжній кінець
+    #    змістовної частини лежить вище за них.
     content_end_idx = search_end_idx
     for i in range(search_end_idx, -1, -1):
-        line = lines[i]["line"]
-        if TOC_LINE_RE.search(line.strip()):
+        line = texts[i]
+        if _is_toc_entry(line):
             continue
-        if _is_section_trigger(line, END_SECTION_HEADERS, exact=True):
+        if _is_section_trigger(line, POST_CONTENT_HEADERS, exact=True):
+            content_end_idx = max(i - 1, 0)
+            continue
+        if _is_section_trigger(line, CONTENT_END_HEADERS, exact=True):
             content_end_idx = max(i - 1, 0)
             break
 
     # 3. Шукаємо останній ВСТУП до content_end_idx
     last_vstup_idx = -1
     for i in range(content_end_idx):
-        line = lines[i]["line"]
-        if TOC_LINE_RE.search(line.strip()):
+        line = texts[i]
+        if _is_toc_entry(line):
             continue
         if _is_section_trigger(line, ["ВСТУП"], exact=True):
             last_vstup_idx = i
@@ -144,8 +157,8 @@ def extract_content_bounds(
     # прямо перед ВИСНОВКАМИ, тобто саме на цьому індексі)
     content_start_idx = None
     for i in range(start_search_from, content_end_idx + 1):
-        line = lines[i]["line"]
-        if TOC_LINE_RE.search(line.strip()):
+        line = texts[i]
+        if _is_toc_entry(line):
             continue
         if _is_section_trigger(line, CHAPTER_HEADERS, exact=False):
             content_start_idx = i
@@ -155,8 +168,8 @@ def extract_content_bounds(
     if content_start_idx is None:
         chap_indices = []
         for i in range(content_end_idx + 1):
-            line = lines[i]["line"]
-            if TOC_LINE_RE.search(line.strip()):
+            line = texts[i]
+            if _is_toc_entry(line):
                 continue
             if _is_section_trigger(line, CHAPTER_HEADERS, exact=False):
                 chap_indices.append(i)
@@ -175,6 +188,27 @@ def extract_content_bounds(
         )
 
     return content_start_idx, content_end_idx
+
+
+def extract_content_bounds(
+    lines: list[LineItem],
+    biblio_start_page: int | None,
+) -> tuple[int, int]:
+    """
+    Межі змістовних розділів для рядків з номерами сторінок (PDF).
+    Верхня межа пошуку — перший рядок сторінки, на якій починається
+    бібліографія.
+    """
+    search_end_idx = None
+    if biblio_start_page is not None:
+        for i, item in enumerate(lines):
+            if item.get("page") == biblio_start_page:
+                search_end_idx = i
+                break
+
+    return find_content_bounds_in_texts(
+        [item["line"] for item in lines], search_end_idx
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -299,58 +333,50 @@ def _extract_paragraphs_pdf(
     return result
 
 
-def _extract_paragraphs_docx(
-    file_bytes: bytes,
-    content_start_idx: int | None,
-    content_end_idx: int | None,
-    all_lines: list[dict],
-) -> list[ParagraphItem]:
+def _extract_paragraphs_docx(file_bytes: bytes) -> list[ParagraphItem]:
     """
-    Витягує абзаци з DOCX, фільтруючи за межами змістовних розділів.
+    Витягує абзаци з DOCX у межах змістовних розділів.
 
-    Оскільки DOCX не має номерів сторінок, визначаємо зону аналізу
-    безпосередньо за текстом заголовків (аналог двонаправленого пошуку
-    з extract_content_bounds, але по параграфах документа):
-    — чекаємо перший РОЗДІЛ  → in_content_zone = True
-    — зупиняємося на першому END_SECTION_HEADERS
+    Межі рахує те саме ядро, що й для PDF (find_content_bounds_in_texts),
+    тільки над текстами параграфів. Власного проходу ВПЕРЕД більше немає:
+    саме він раніше відкривав зону аналізу на записі ЗМІСТу «РОЗДІЛ 1 …\t12»
+    і тягнув у підрахунок ЗМІСТ, ВСТУП та АНОТАЦІЮ.
+
+    Кидає ContentBoundsNotFoundError, якщо змістовних розділів не видно.
     """
     import io
     from docx import Document
 
     doc = Document(io.BytesIO(file_bytes))
-    result = []
+    paras = list(doc.paragraphs)
+    texts = [p.text.strip() for p in paras]
+
+    start_idx, end_idx = find_content_bounds_in_texts(texts)
+
+    result: list[ParagraphItem] = []
     last_heading: str | None = None
-    in_content_zone = False
     idx = 0
 
-    TOC_LINE_RE = re.compile(r'\.{3,}\s*\d*\s*$')
-
-    for para in doc.paragraphs:
+    for i, para in enumerate(paras):
         style_name = para.style.name if para.style else ""
-        text = para.text.strip()
+        is_heading = "heading" in style_name.lower()
+        text = texts[i]
 
-        # Відстежуємо заголовки для context_heading
-        if "Heading" in style_name or "heading" in style_name:
-            last_heading = text or last_heading
+        # Заголовки відстежуємо і до початку зони — щоб context_heading
+        # правильно вказував на розділ, у якому лежить перший абзац.
+        if is_heading and text:
+            last_heading = text
 
-        # Визначаємо межі зони аналізу через текст заголовків
-        if not TOC_LINE_RE.search(text):
-            if _is_section_trigger(text, END_SECTION_HEADERS, exact=True):
-                break  # вийшли за межі змістовної зони
-            if _is_section_trigger(text, CHAPTER_HEADERS, exact=False):
-                in_content_zone = True
-
-        if not in_content_zone:
+        if i < start_idx or i > end_idx:
             continue
 
-        # Пропускаємо заголовки та короткі рядки
-        if "Heading" in style_name or "heading" in style_name:
+        if is_heading:
             continue
         if len(text) < MIN_BLOCK_CHARS:
             continue
         if not re.search(r'[А-Яа-яІіЇїЄєҐґA-Za-z]', text):
             continue
-        if TOC_LINE_RE.search(text):
+        if _TOC_LEADER_RE.search(text):
             continue
 
         result.append(ParagraphItem(
@@ -368,22 +394,15 @@ def _extract_paragraphs_docx(
 def extract_paragraphs(
     file_bytes: bytes,
     filename: str,
-    content_start_page: int | None,
-    content_end_page: int | None,
-    content_start_idx: int | None = None,
-    content_end_idx: int | None = None,
-    all_lines: list[dict] | None = None,
+    content_start_page: int | None = None,
+    content_end_page: int | None = None,
 ) -> list[ParagraphItem]:
     """Єдина точка входу для PDF і DOCX."""
-    if filename.lower().endswith(".pdf"):
+    lower = filename.lower()
+    if lower.endswith(".pdf"):
         return _extract_paragraphs_pdf(file_bytes, content_start_page, content_end_page)
-    elif filename.lower().endswith(".docx"):
-        return _extract_paragraphs_docx(
-            file_bytes,
-            content_start_idx,
-            content_end_idx,
-            all_lines or [],
-        )
+    elif lower.endswith(".docx"):
+        return _extract_paragraphs_docx(file_bytes)
     return []
 
 
@@ -392,7 +411,13 @@ def extract_paragraphs(
 # ---------------------------------------------------------------------------
 
 def paragraph_has_citation(text: str) -> bool:
-    return bool(_BRACKET_RE.search(text))
+    """
+    True якщо в абзаці є хоча б одне посилання на джерело.
+
+    Недостатньо просто збігу дужки: «a[0]» і «[2020]» дужку дають, а джерела —
+    ні. Тому вміст дужки має розгорнутися хоча б в один валідний номер.
+    """
+    return any(expand_bracket(m.group(1)) for m in BRACKET_RE.finditer(text))
 
 
 # ---------------------------------------------------------------------------
@@ -416,23 +441,27 @@ class ParagraphGapResult:
 def analyze_paragraph_gaps(
     file_bytes: bytes,
     filename: str,
-    lines: list[dict],
+    lines: list[LineItem],
     biblio_start_page: int | None,
 ) -> ParagraphGapResult:
-    content_start_idx, content_end_idx = extract_content_bounds(lines, biblio_start_page)
+    is_docx = filename.lower().endswith(".docx")
 
-    content_start_page = lines[content_start_idx].get("page")
-    content_end_page = lines[content_end_idx].get("page")
-
-    paragraphs = extract_paragraphs(
-        file_bytes,
-        filename,
-        content_start_page,
-        content_end_page,
-        content_start_idx=content_start_idx,
-        content_end_idx=content_end_idx,
-        all_lines=lines,
-    )
+    if is_docx:
+        # DOCX рахує свої межі сам, по параграфах документа. Викликати тут
+        # extract_content_bounds не можна: його результат DOCX-гілці не
+        # потрібен, зате він уміє кинути ContentBoundsNotFoundError і
+        # обірвати аналіз, який чудово пройшов би без нього.
+        paragraphs = extract_paragraphs(file_bytes, filename)
+    else:
+        content_start_idx, content_end_idx = extract_content_bounds(
+            lines, biblio_start_page
+        )
+        paragraphs = extract_paragraphs(
+            file_bytes,
+            filename,
+            lines[content_start_idx].get("page"),
+            lines[content_end_idx].get("page"),
+        )
 
     total = len(paragraphs)
     cited = 0
@@ -454,8 +483,6 @@ def analyze_paragraph_gaps(
                 })
 
     clean_pct = clean / total * 100 if total else 0.0
-
-    is_docx = filename.lower().endswith(".docx")
 
     # Для PDF сортуємо за номером сторінки, для DOCX — за порядком у документі
     if is_docx:

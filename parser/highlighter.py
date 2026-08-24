@@ -12,22 +12,9 @@ highlight_citations_pdf() повертає tuple:
 """
 
 from __future__ import annotations
-import re
 import fitz  # PyMuPDF
 
-
-# ---------------------------------------------------------------------------
-# Регулярний вираз для пошуку посилань
-# ---------------------------------------------------------------------------
-
-CITATION_PATTERN = re.compile(
-    r"(?:\[|\uF05B)"          # відкриваюча дужка (звичайна або Wingdings)
-    r"\s*"                    # можливий пробіл після дужки
-    r"\d"                     # перший символ — обов'язково цифра
-    r"[^\]\uF05D]{0,250}"     # вміст, максимум 250 символів
-    r"(?:\]|\uF05D)",         # закриваюча дужка
-    re.UNICODE | re.DOTALL,
-)
+from parser.citations import BRACKET_RE, expand_bracket
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +69,11 @@ def _highlight_page(page: fitz.Page) -> bool:
     full_text, word_spans = _build_page_spans(words)
 
     found = False
-    for match in CITATION_PATTERN.finditer(full_text):
+    for match in BRACKET_RE.finditer(full_text):
+        # Дужка без жодного валідного номера джерела (формула, індекс
+        # масиву) посиланням не є — не рахуємо й не підсвічуємо.
+        if not expand_bracket(match.group(1)):
+            continue
         found = True
         m_start, m_end = match.span()
 
@@ -128,26 +119,30 @@ def highlight_citations_pdf(
                              виключені)
             [2] int        — кількість відстежуваних сторінок (знаменник для %)
     """
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-
-    # Остання сторінка тіла (0-індекс PyMuPDF)
-    last_body_idx = len(doc) - 1
-    if biblio_start_page and biblio_start_page > 1:
-        last_body_idx = biblio_start_page - 2   # biblio_start_page - 1 → 0-idx, мінус 1
-
     pages_without: list[int] = []
     tracked_count = 0
 
-    for page_idx in range(last_body_idx + 1):
-        page_num = page_idx + 1   # 1-індексований
-        has_citations = _highlight_page(doc[page_idx])
+    # `with` обов'язковий: без нього документ (разом із доданими анотаціями)
+    # висить у пам'яті до збірки сміття, а на 1 ГБ Streamlit Cloud кожен
+    # повторний запуск підсвітки з'їдає ще один повний документ.
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        # Остання сторінка тіла (0-індекс PyMuPDF)
+        last_body_idx = len(doc) - 1
+        if biblio_start_page and biblio_start_page > 1:
+            last_body_idx = biblio_start_page - 2   # biblio_start_page - 1 → 0-idx, мінус 1
 
-        # Перші skip_first сторінок — підсвічуємо, але не відстежуємо
-        if page_num <= skip_first:
-            continue
+        for page_idx in range(last_body_idx + 1):
+            page_num = page_idx + 1   # 1-індексований
+            has_citations = _highlight_page(doc[page_idx])
 
-        tracked_count += 1
-        if not has_citations:
-            pages_without.append(page_num)
+            # Перші skip_first сторінок — підсвічуємо, але не відстежуємо
+            if page_num <= skip_first:
+                continue
 
-    return doc.tobytes(deflate=True), pages_without, tracked_count
+            tracked_count += 1
+            if not has_citations:
+                pages_without.append(page_num)
+
+        out_bytes = doc.tobytes(deflate=True)
+
+    return out_bytes, pages_without, tracked_count

@@ -7,7 +7,9 @@ bibliography.py
 from __future__ import annotations
 import re
 import unicodedata
-from dataclasses import dataclass, field
+
+from parser.types import LineItem, MAX_SOURCE_NUM, is_toc_entry
+from dataclasses import dataclass
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +35,15 @@ STOP_WORDS: list[str] = [
     "ABSTRACT",
 ]
 
+# Мінімум записів, щоб зона вважалася справжнім списком літератури.
+# Нижче цього — це запис у ЗМІСТі, колонтитул або згадка в тексті.
+MIN_BIBLIO_ENTRIES = 3
+
+# Наскільки вужчий (вкладений) кандидат може поступатися ширшому за кількістю
+# записів і все одно вигравати. Ширша зона, що поглинула тіло документа,
+# набирає трохи більше за рахунок нумерованих списків у тексті.
+_CONTAINMENT_RATIO = 0.9
+
 # Патерн початку нового бібліографічного запису.
 # Дві чіткі гілки, без асиметричних опціональних дужок:
 #   Гілка 1: "1. Текст..."  — group(1)=номер, group(2)=текст
@@ -43,10 +54,6 @@ _ENTRY_START = re.compile(
     r"^\s*(?:(\d+)\.\s*(.*)|(?:\[(\d+)\])\s*(.*))$"
 )
 
-# Максимально допустимий порядковий номер джерела.
-# Числа понад 999 — це роки в тексті записів (напр. "2005. URL: ...")
-# а не порядкові номери. Реальна дисертація має щонайбільше ~500 джерел.
-_MAX_SOURCE_NUM = 999
 
 
 def _is_valid_entry(num: int, text_part: str) -> bool:
@@ -67,7 +74,7 @@ def _is_valid_entry(num: int, text_part: str) -> bool:
         "10.Адміністративна" → text="Адмін…" починається з літери ✓
         "11."                → text=""        порожній ✓
     """
-    if not (1 <= num <= _MAX_SOURCE_NUM):
+    if not (1 <= num <= MAX_SOURCE_NUM):
         return False
     if not text_part:
         return True   # номер на окремому рядку
@@ -99,9 +106,9 @@ def _is_stop_word(line: str) -> bool:
 
 @dataclass
 class ZoneSplitResult:
-    body: list[dict]           # зона 1 — основний текст
-    bibliography: list[dict]   # зона 2 — список літератури
-    after: list[dict]          # зона 3 — ігнорується
+    body: list[LineItem]       # зона 1 — основний текст
+    bibliography: list[LineItem]  # зона 2 — список літератури
+    after: list[LineItem]      # зона 3 — ігнорується
     biblio_header_line: str | None = None   # знайдений заголовок
     biblio_start_page: int | None = None    # сторінка початку (PDF)
     found_automatically: bool = True
@@ -111,51 +118,103 @@ class BibliographyNotFoundError(Exception):
     pass
 
 
-def split_zones(lines: list[dict]) -> ZoneSplitResult:
+def _zone_end(lines: list[LineItem], start: int) -> int:
+    """Індекс першого стоп-слова після start, або кінець документа."""
+    for i in range(start + 1, len(lines)):
+        if _is_stop_word(lines[i]["line"]):
+            return i
+    return len(lines)
+
+
+def _select_biblio_header(lines: list[LineItem]) -> int:
     """
-    Ділить список рядків на три зони.
-    Шукає заголовок бібліографії з КІНЦЯ (береться останній збіг),
-    потім шукає вперед перше стоп-слово.
+    Обирає рядок, з якого починається справжній список літератури.
+
+    Раніше бралося просто ОСТАННЄ входження будь-якого заголовка. На реальних
+    дисертаціях це давало грубі помилки: якщо після українського списку йде
+    англомовна анотація зі своїм «REFERENCES», перемагав перекладений список,
+    а справжній потрапляв у зону body — і всі метрики рахувалися не за тим
+    списком.
+
+    Правила відбору:
+      1. Кандидат — будь-який рядок-заголовок, який НЕ є записом ЗМІСТу
+         («СПИСОК ВИКОРИСТАНИХ ДЖЕРЕЛ ...... 185»).
+      2. Зона кандидата — від нього до першого стоп-слова (як і раніше).
+      3. Оцінка кандидата — скільки записів парситься в його зоні.
+      4. Кандидати, що не набрали MIN_BIBLIO_ENTRIES, відкидаються.
+      5. Якщо зона кандидата A містить кандидата B і B набрав майже стільки ж
+         (>= _CONTAINMENT_RATIO), перемагає вужчий B: так відсікається запис
+         у ЗМІСТі, зона якого поглинула і тіло, і справжній список.
+      6. Переможець — максимум за кількістю записів; за рівності — найраніший.
+      7. Якщо жоден кандидат не набрав порогу — відкат до старої поведінки
+         (останній кандидат), щоб UI показав звичне «не виявлено
+         пронумерованих джерел», а не «список не знайдено».
+
+    Зона НЕ обмежується наступним кандидатом навмисно: у PDF заголовок списку
+    часто повторюється колонтитулом на кожній сторінці бібліографії, і саме
+    завдяки необмеженій зоні найраніше входження отримує найбільшу оцінку.
+    """
+    candidates = [
+        i for i, item in enumerate(lines)
+        if _is_biblio_header(item["line"]) and not is_toc_entry(item["line"])
+    ]
+    if not candidates:
+        return -1
+
+    scored: list[tuple[int, int, int]] = []   # (idx, end, score)
+    for idx in candidates:
+        end = _zone_end(lines, idx)
+        score = len(parse_bibliography(lines[idx:end]))
+        scored.append((idx, end, score))
+
+    qualified = [c for c in scored if c[2] >= MIN_BIBLIO_ENTRIES]
+    if not qualified:
+        return candidates[-1]
+
+    # Правило вкладеності: вужчий кандидат усередині ширшого виграє,
+    # якщо втрачає небагато записів.
+    dropped: set[int] = set()
+    for idx_a, end_a, score_a in qualified:
+        for idx_b, _end_b, score_b in qualified:
+            if idx_a < idx_b < end_a and score_b >= score_a * _CONTAINMENT_RATIO:
+                dropped.add(idx_a)
+                break
+
+    remaining = [c for c in qualified if c[0] not in dropped] or qualified
+
+    # Максимум за кількістю записів; за рівності — найраніший.
+    best = max(remaining, key=lambda c: (c[2], -c[0]))
+    return best[0]
+
+
+def split_zones(lines: list[LineItem]) -> ZoneSplitResult:
+    """
+    Ділить список рядків на три зони: body / bibliography / after.
 
     lines: список {"line": str, "page": int | None}
     """
-    biblio_start: int | None = None
-    biblio_header_text: str | None = None
-    biblio_start_page: int | None = None
+    biblio_start = _select_biblio_header(lines)
 
-    # Сканування з кінця → знаходимо останній заголовок бібліографії
-    for i in range(len(lines) - 1, -1, -1):
-        if _is_biblio_header(lines[i]["line"]):
-            biblio_start = i
-            biblio_header_text = lines[i]["line"].strip()
-            biblio_start_page = lines[i].get("page")
-            break
-
-    if biblio_start is None:
+    if biblio_start < 0:
         raise BibliographyNotFoundError(
             "Список літератури не знайдено автоматично. "
             "Вкажіть розташування вручну."
         )
 
-    # Пошук стоп-слова після заголовка → кінець бібліографії
-    biblio_end: int = len(lines)
-    for i in range(biblio_start + 1, len(lines)):
-        if _is_stop_word(lines[i]["line"]):
-            biblio_end = i
-            break
+    biblio_end = _zone_end(lines, biblio_start)
 
     return ZoneSplitResult(
         body=lines[:biblio_start],
         bibliography=lines[biblio_start:biblio_end],
         after=lines[biblio_end:],
-        biblio_header_line=biblio_header_text,
-        biblio_start_page=biblio_start_page,
+        biblio_header_line=lines[biblio_start]["line"].strip(),
+        biblio_start_page=lines[biblio_start].get("page"),
         found_automatically=True,
     )
 
 
 def split_zones_manual(
-    lines: list[dict],
+    lines: list[LineItem],
     header_text: str,
     start_page: int | None = None,
 ) -> ZoneSplitResult:
@@ -194,7 +253,7 @@ def split_zones_manual(
     )
 
 
-def parse_bibliography(bibliography_lines: list[dict]) -> dict[int, str]:
+def parse_bibliography(bibliography_lines: list[LineItem]) -> dict[int, str]:
     """
     Парсить зону bibliography → словник {номер: повний_текст}.
     Підтримує багаторядкові записи: рядки без патерну початку
@@ -239,4 +298,44 @@ def parse_bibliography(bibliography_lines: list[dict]) -> dict[int, str]:
                     current_parts.append(stripped)
 
     _flush()
-    return entries
+    return _drop_isolated_outliers(entries)
+
+
+# Наскільки далеко за основною послідовністю має стояти номер, щоб узагалі
+# розглядатися як випадковий. Дрібні дірки в нумерації (запис, який PyMuPDF
+# розірвав) дають розрив у кілька одиниць — їх чіпати не можна.
+_OUTLIER_MIN_GAP = 20
+
+
+def _drop_isolated_outliers(entries: dict[int, str]) -> dict[int, str]:
+    """
+    Прибирає поодинокі «записи», номер яких випав далеко за межі списку.
+
+    Фрагмент URL або числа в тексті іноді дає рядок на кшталт «457.» посеред
+    списку з 166 джерел — і в результатах з'являється неіснуюче джерело №457,
+    а разом із ним хибні «фантомні посилання».
+
+    Видаляємо номер, лише якщо виконано ОБИДВІ умови:
+      • він далі ніж на _OUTLIER_MIN_GAP за суцільним прогоном від початку;
+      • у нього немає сусіда (num-1 чи num+1) серед розібраних записів.
+    Тобто справжні шматки списку після дірки залишаються недоторканими.
+    """
+    if len(entries) < 3:
+        return entries
+
+    nums = sorted(entries)
+    run_end = nums[0]
+    for n in nums[1:]:
+        if n == run_end + 1:
+            run_end = n
+        else:
+            break
+
+    result: dict[int, str] = {}
+    for n in nums:
+        far_out = n > run_end + _OUTLIER_MIN_GAP
+        has_neighbour = (n - 1) in entries or (n + 1) in entries
+        if far_out and not has_neighbour:
+            continue
+        result[n] = entries[n]
+    return result

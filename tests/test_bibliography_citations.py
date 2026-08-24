@@ -1,25 +1,14 @@
 """
-tests_phase1.py  —  Regression + unit tests for parser package.
-Run: python tests_phase1.py
-No dependencies beyond stdlib.
+Regression + unit tests for bibliography.py and citations.py.
+Run: pytest tests/test_bibliography_citations.py
+
+Neither module imports fitz/docx at import time (extractor and
+paragraph_analyzer import them lazily inside functions), so no stubs are
+needed here — and installing them into sys.modules would shadow the real
+libraries for every other test module in the same pytest session.
 """
-import sys, types, unittest
+import unittest
 
-# ── stubs ────────────────────────────────────────────────────────────────────
-fitz_mod = types.ModuleType("fitz")
-class _FD:
-    def __iter__(self): return iter([])
-    def close(self): pass
-fitz_mod.open = lambda **kw: _FD()
-sys.modules["fitz"] = fitz_mod
-
-docx_mod = types.ModuleType("docx")
-class _DD:
-    paragraphs = []
-docx_mod.Document = lambda f: _DD()
-sys.modules["docx"] = docx_mod
-
-# ── imports ──────────────────────────────────────────────────────────────────
 from parser.bibliography import (
     split_zones, split_zones_manual, parse_bibliography,
     BibliographyNotFoundError,
@@ -346,5 +335,74 @@ class TestMissingCommaBeforePage(unittest.TestCase):
         self.assertEqual(result, {201, 25, 26, 27})
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  citations.py — _parse_token (previously untested) and source-number bounds
+# ═══════════════════════════════════════════════════════════════════════════
+
+from parser.citations import _parse_token, expand_bracket, BRACKET_RE  # noqa: E402
+from parser.types import MAX_SOURCE_NUM  # noqa: E402
+
+
+class TestParseToken(unittest.TestCase):
+    def test_plain_number(self):
+        self.assertEqual(_parse_token("42"), {42})
+
+    def test_empty_and_blank(self):
+        self.assertEqual(_parse_token(""), set())
+        self.assertEqual(_parse_token("   "), set())
+
+    def test_range(self):
+        self.assertEqual(_parse_token("15-18"), {15, 16, 17, 18})
+
+    def test_reversed_range_rejected(self):
+        self.assertEqual(_parse_token("18-15"), set())
+
+    def test_oversized_range_rejected(self):
+        # A 400-wide span is a page range or garbage, not a source range
+        self.assertEqual(_parse_token("1-400"), set())
+
+    def test_page_suffix_without_comma_trimmed(self):
+        self.assertEqual(_parse_token("30 с. 334-344"), {30})
+        self.assertEqual(_parse_token("25-27 с. 41-55"), {25, 26, 27})
+
+    def test_token_that_is_only_a_page_marker(self):
+        self.assertEqual(_parse_token("с. 15"), set())
+
+    def test_non_numeric(self):
+        self.assertEqual(_parse_token("abc"), set())
+
+
+class TestSourceNumberBounds(unittest.TestCase):
+    """A bracket that expands to no valid source number is not a citation."""
+
+    def test_zero_rejected(self):
+        # array index a[0] — used to surface as a phantom citation
+        self.assertEqual(expand_bracket("0"), set())
+
+    def test_year_in_brackets_rejected(self):
+        self.assertEqual(expand_bracket("2020"), set())
+
+    def test_max_source_num_accepted(self):
+        self.assertEqual(expand_bracket(str(MAX_SOURCE_NUM)), {MAX_SOURCE_NUM})
+
+    def test_above_max_rejected(self):
+        self.assertEqual(expand_bracket(str(MAX_SOURCE_NUM + 1)), set())
+
+    def test_range_clipped_to_valid_numbers(self):
+        self.assertEqual(expand_bracket("998-1002"), {998, 999})
+
+    def test_find_citations_drops_array_index(self):
+        self.assertEqual(fc(L(["масив a[0] = 1"])), set())
+
+    def test_find_citations_drops_year_bracket(self):
+        self.assertEqual(fc(L(["у праці [2020] автор"])), set())
+
+    def test_find_citations_keeps_real_reference(self):
+        self.assertEqual(fc(L(["у праці [20] автор"])), {20})
+
+    def test_bracket_regex_still_matches_formula(self):
+        # The regex itself is content-agnostic; rejection happens in
+        # expand_bracket. Documents where the split of duties lives.
+        self.assertTrue(BRACKET_RE.search("[0]"))
+        self.assertEqual(expand_bracket("0"), set())

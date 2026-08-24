@@ -21,6 +21,8 @@ Supported bracket formats:
 from __future__ import annotations
 import re
 
+from parser.types import LineItem, MAX_SOURCE_NUM
+
 # ---------------------------------------------------------------------------
 # Regex constants
 # ---------------------------------------------------------------------------
@@ -33,7 +35,14 @@ _DASHES = "[\u002d\u2013\u2212]"
 _INNER = r"[\d\s;,\u002d\u2013\u2212\.\u0441\u0421\u0063\u0043]"
 
 # Standard [ ] and Wingdings PUA \uF05B / \uF05D
-_BRACKET_RE = re.compile(
+#
+# PUBLIC on purpose: highlighter.py and paragraph_analyzer.py must use THIS
+# definition of "a citation". highlighter.py used to carry its own, looser
+# pattern (any digit-leading bracket with up to 250 arbitrary characters),
+# so formulas like [2x+3] counted as citations there but not here \u2014 and
+# pages whose only bracket was a formula were dropped from the
+# "pages without citations" report they were supposed to appear in.
+BRACKET_RE = re.compile(
     r"(?:\[|\uF05B)(" + _INNER + r"+)(?:\]|\uF05D)"
 )
 
@@ -70,15 +79,29 @@ def _parse_token(token: str) -> set[int]:
     if m:
         lo, hi = int(m.group(1)), int(m.group(2))
         if lo <= hi and (hi - lo) <= _MAX_RANGE_SIZE:
-            return set(range(lo, hi + 1))
+            return {n for n in range(lo, hi + 1) if _is_source_num(n)}
         return set()
-    if token.isdigit():
+    if token.isdigit() and _is_source_num(int(token)):
         return {int(token)}
     return set()
 
 
-def _expand_bracket(content: str) -> set[int]:
+def _is_source_num(num: int) -> bool:
     """
+    Порядковий номер джерела — від 1 до MAX_SOURCE_NUM.
+
+    Симетрично до bibliography._is_valid_entry: те, що не може бути номером
+    джерела у списку, не може бути й посиланням на нього. Відсікає індекси
+    масивів «a[0]» та роки в дужках «[2020]», які раніше потрапляли у
+    «фантомні посилання» й у підсвітку PDF.
+    """
+    return 1 <= num <= MAX_SOURCE_NUM
+
+
+def expand_bracket(content: str) -> set[int]:
+    """
+    Вміст дужки → множина номерів джерел.
+
     Comma semantics depends on presence of semicolons:
       WITH    ';': comma = page separator  → take only first token of each ;-group
       WITHOUT ';': comma = source separator → all tokens are sources
@@ -95,11 +118,15 @@ def _expand_bracket(content: str) -> set[int]:
     return result
 
 
+# Історична назва — тести й зовнішній код можуть посилатися на неї.
+_expand_bracket = expand_bracket
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def find_citations(body_lines: list[dict]) -> dict[int, str]:
+def find_citations(body_lines: list[LineItem]) -> dict[int, str]:
     """
     Scans body zone and returns a dict mapping each cited source number
     to the first bracket string in which it appeared.
@@ -115,10 +142,10 @@ def find_citations(body_lines: list[dict]) -> dict[int, str]:
     full_text = " ".join(item["line"] for item in body_lines)
     result: dict[int, str] = {}
 
-    for match in _BRACKET_RE.finditer(full_text):
+    for match in BRACKET_RE.finditer(full_text):
         bracket_str = match.group(0)   # full bracket including [ ]
         inner = match.group(1)
-        for num in _expand_bracket(inner):
+        for num in expand_bracket(inner):
             if num not in result:      # keep first occurrence only
                 result[num] = bracket_str
 
