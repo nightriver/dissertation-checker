@@ -45,7 +45,7 @@ st.set_page_config(
 # Допоміжні функції
 # ---------------------------------------------------------------------------
 
-def format_page_ranges(pages: list) -> str:
+def format_number_ranges(pages: list) -> str:
     if not pages:
         return ""
     pages = sorted(int(p) for p in pages)
@@ -128,6 +128,8 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
     if orphans_sorted:
         st.divider()
         st.markdown("#### ⚠️ Джерела, не згадані у тексті")
+        st.markdown("**Номери джерел:**")
+        st.code(format_number_ranges(orphans_sorted), language=None)
         orphan_rows = [{"№": num, "Запис": bibliography.get(num, "—")} for num in orphans_sorted]
         st.dataframe(pd.DataFrame(orphan_rows), use_container_width=True, hide_index=True)
     else:
@@ -152,6 +154,8 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
         st.divider()
         st.markdown("#### 👻 Фантомні посилання")
         st.caption("Ці номери є у тексті, але відсутні у списку літератури.")
+        st.markdown("**Номери посилань:**")
+        st.code(format_number_ranges(phantom), language=None)
         phantom_rows = [{"№": num, "Посилання у тексті": citations_dict.get(num, "") or "—"} for num in phantom]
         st.dataframe(pd.DataFrame(phantom_rows), use_container_width=True, hide_index=True)
 
@@ -350,7 +354,7 @@ def render_tab_highlighter(
                 )
 
                 st.markdown("**Номери сторінок:**")
-                st.code(format_page_ranges(empty_pages), language=None)
+                st.code(format_number_ranges(empty_pages), language=None)
 
     st.divider()
     st.markdown("#### 🔬 Абзаци без посилань")
