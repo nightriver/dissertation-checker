@@ -4,6 +4,7 @@ types.py
 """
 
 import re
+from enum import Enum
 from typing import TypedDict
 
 
@@ -11,6 +12,18 @@ class LineItem(TypedDict):
     """Один рядок документа з номером сторінки."""
     line: str
     page: int | None
+
+
+class Severity(Enum):
+    """
+    Спільна шкала для всіх аналітичних перевірок (анахронізми, дублікати,
+    гомогліфи) — щоб UI малював їх однаково.
+
+    PROOF   — технічно неможливо, пояснити оформленням не можна.
+    SUSPECT — аномалія: потрібен погляд людини, вироку немає.
+    """
+    PROOF   = "proof"
+    SUSPECT = "suspect"
 
 
 # Максимально допустимий порядковий номер джерела.

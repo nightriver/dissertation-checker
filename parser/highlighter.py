@@ -143,6 +143,6 @@ def highlight_citations_pdf(
             if not has_citations:
                 pages_without.append(page_num)
 
-        out_bytes = doc.tobytes(deflate=True)
+        out_bytes = doc.tobytes(deflate=True, garbage=3)
 
     return out_bytes, pages_without, tracked_count

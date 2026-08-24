@@ -114,6 +114,37 @@ class TestExtractYear(unittest.TestCase):
     def test_parens_at_end_of_line(self):
         self.assertEqual(extract_dissertation_year(L(["Дисертація (2021)"])), 2021)
 
+    def test_city_and_year_on_separate_lines(self):
+        """На титульних PDF «Київ» і «2023» майже завжди різні рядки."""
+        self.assertEqual(extract_dissertation_year(L(["Київ", "2023"])), 2023)
+
+    def test_city_and_year_with_blank_line_between(self):
+        self.assertEqual(extract_dissertation_year(L(["Львів", "", "2021"])), 2021)
+
+    def test_city_line_with_trailing_dash(self):
+        self.assertEqual(extract_dissertation_year(L(["Одеса –", "2020 р."])), 2020)
+
+    def test_new_city_in_list_is_recognised(self):
+        self.assertEqual(extract_dissertation_year(L(["Острог", "2022"])), 2022)
+
+    def test_apostrophe_city_is_recognised(self):
+        self.assertEqual(
+            extract_dissertation_year(L(["Кам’янець-Подільський", "2018"])), 2018
+        )
+
+    def test_year_too_far_after_city_is_ignored(self):
+        """Дивимось лише два наступні рядки — далі це вже не титульний блок."""
+        doc = L(["Київ", "", "", "2016", "Огляд 2020"])
+        self.assertEqual(extract_dissertation_year(doc), 2020)
+
+    def test_same_line_city_year_wins_over_separate_lines(self):
+        doc = L(["Львів", "2021", "Київ – 2023"])
+        self.assertEqual(extract_dissertation_year(doc), 2023)
+
+    def test_separate_lines_win_over_rik_anchor(self):
+        doc = L(["Подано 2019 р.", "Харків", "2022"])
+        self.assertEqual(extract_dissertation_year(doc), 2022)
+
     def test_city_anchor_wins_over_rik(self):
         doc = L(["Подано 2019 р.", "Харків — 2022"])
         self.assertEqual(extract_dissertation_year(doc), 2022)

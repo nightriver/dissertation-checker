@@ -4,7 +4,9 @@ Streamlit Community Cloud entry point.
 UI v3: Toast, Tabs, Auto-run, Author extraction + Paragraph Gaps.
 """
 
+import datetime
 import statistics
+from dataclasses import dataclass
 
 import plotly.graph_objects as go
 import pandas as pd
@@ -25,9 +27,13 @@ from parser.bibliography import (
     BibliographyNotFoundError,
 )
 from parser.citations import find_citations, compare
-from parser.year_extractor import extract_years
+from parser.year_extractor import extract_years_with_confidence
 from parser.dstu_validator import validate_bibliography, DstuStatus
 from parser.paragraph_analyzer import MIN_SUSPICIOUS_SENTENCES
+from parser.anomalies import find_anachronisms
+from parser.duplicates import DuplicateGroup, find_duplicates
+from parser.text_forensics import scan_text_forensics
+from parser.types import Severity
 from ui_helpers import (
     format_number_ranges,
     lines_to_tuple,
@@ -47,18 +53,61 @@ st.set_page_config(
     layout="centered",
 )
 
+SEVERITY_LABEL = {
+    Severity.PROOF: "🔴 Неможливо",
+    Severity.SUSPECT: "🟡 Підозріло",
+}
+
+DUPLICATE_KIND_LABEL = {
+    "exact": "Точний збіг",
+    "same_title_diff_year": "Та сама назва, інший рік",
+    "near": "Майже ідентичні",
+}
+
 
 # ---------------------------------------------------------------------------
-# Допоміжні функції
+# Кешовані обчислення
 # ---------------------------------------------------------------------------
+
+@dataclass
+class AnalysisBundle:
+    """
+    Один зібраний результат аналізу бібліографії: один парсинг, один запис
+    у кеші, усі похідні дані поруч.
+
+    Анахронізми сюди НЕ входять: вони залежать від року дисертації, який
+    експерт може ввести вручну, тобто змінюються без зміни бібліографії.
+    Вони дешеві (O(n)) і рахуються поза кешем.
+    """
+    bibliography: dict[int, str]
+    citations: dict[int, str]
+    result: dict
+    years: dict[int, int | None]
+    year_confidence: dict[int, str]
+    dstu: dict[int, DstuStatus]
+    duplicates: list[DuplicateGroup]
+
 
 @st.cache_data(show_spinner="Читання файлу…")
 def cached_extract(data: bytes, fname: str):
     return extract_lines(data, fname)
 
 
+@st.cache_data(show_spinner="Аналіз структури…")
+def cached_split_zones(lines_tuple: tuple):
+    """
+    Кешоване визначення зон документа.
+
+    split_zones() всередині робить повний parse_bibliography() на кожного
+    кандидата-заголовка. Коли заголовок повторюється колонтитулом на десятках
+    сторінок, без кешу це десятки повних парсингів хвоста документа на КОЖНЕ
+    натискання будь-якого віджета.
+    """
+    return split_zones(tuple_to_lines(lines_tuple))
+
+
 @st.cache_data(show_spinner="Аналіз джерел…")
-def cached_analyze(bibliography_lines_tuple: tuple, body_lines_tuple: tuple):
+def cached_analyze(bibliography_lines_tuple: tuple, body_lines_tuple: tuple) -> AnalysisBundle:
     """
     Кешована функція аналізу.
 
@@ -72,19 +121,169 @@ def cached_analyze(bibliography_lines_tuple: tuple, body_lines_tuple: tuple):
     bibliography = parse_bibliography(bibliography_lines)
     citations = find_citations(body_lines)
     result = compare(bibliography, citations)
-    return bibliography, citations, result
+    years, confidence = extract_years_with_confidence(bibliography)
+
+    return AnalysisBundle(
+        bibliography=bibliography,
+        citations=citations,
+        result=result,
+        years=years,
+        year_confidence=confidence,
+        dstu=validate_bibliography(bibliography),
+        duplicates=find_duplicates(bibliography, years),
+    )
+
+
+@st.cache_data(show_spinner="Пошук підміни символів…")
+def cached_forensics(lines_tuple: tuple):
+    return scan_text_forensics(tuple_to_lines(lines_tuple))
+
+
+# ---------------------------------------------------------------------------
+# Секції вкладки «Перевірка джерел»
+# ---------------------------------------------------------------------------
+
+def _render_anachronisms(anachronisms: dict, bibliography: dict[int, str]) -> None:
+    """
+    Заголовок навмисно не «Неможливі джерела»: у секції живуть і 🔴, і 🟡,
+    і назва «неможливі» обмовляла б 🟡-знахідки.
+    """
+    st.divider()
+    st.markdown("#### 🔴 Джерела новіші за дисертацію")
+    st.caption(
+        "Джерело не може бути видане пізніше за роботу, яка на нього посилається. "
+        "🟡 — різниця в один рік або неточно визначений рік видання: "
+        "це може бути рік подання проти року захисту."
+    )
+
+    # 🔴 згори, всередині рівня — за спаданням різниці: найгірше видно
+    # без прокручування.
+    order = sorted(
+        anachronisms.items(),
+        key=lambda item: (item[1].severity is not Severity.PROOF, -item[1].delta),
+    )
+    rows = [
+        {
+            "№": num,
+            "Рівень": SEVERITY_LABEL[hit.severity],
+            "Рік видання": hit.source_year,
+            "Різниця": f"+{hit.delta}" if hit.delta > 0 else "—",
+            "Підстава": hit.reason,
+            "Запис": bibliography.get(num, "—"),
+        }
+        for num, hit in order
+    ]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_duplicates(duplicates: list[DuplicateGroup], bibliography: dict[int, str]) -> None:
+    st.divider()
+    st.markdown("#### 🟡 Дублікати у списку")
+    st.caption(
+        "Записи з однаковою або майже однаковою назвою. Це може бути й помилка "
+        "оформлення (два видання однієї монографії), тож останнє слово за вами."
+    )
+
+    rows = []
+    for index, group in enumerate(duplicates, start=1):
+        for num in group.numbers:
+            rows.append({
+                "Група": index,
+                "№": num,
+                "Схожість": f"{group.similarity:.2f}",
+                "Тип": DUPLICATE_KIND_LABEL.get(group.kind, group.kind),
+                "Запис": bibliography.get(num, "—"),
+            })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # Скільки позицій списку є повторами — для нормативного мінімуму в 200
+    # джерел це прямо стосується того, чи набрано норму насправді.
+    extra = sum(len(group.numbers) - 1 for group in duplicates)
+    total = len(bibliography)
+    unique = total - extra
+    st.caption(
+        f"У списку {total} позицій, з них {extra} — повтори. "
+        f"Унікальних джерел: {unique}."
+    )
+
+
+def _render_year_chart(
+    years: dict[int, int | None],
+    anachronisms: dict,
+    dissertation_year: int | None,
+) -> None:
+    normal_counts: dict[int, int] = {}
+    flagged_counts: dict[int, int] = {}
+
+    for num, year in years.items():
+        if year is None:
+            continue
+        bucket = flagged_counts if num in anachronisms else normal_counts
+        bucket[year] = bucket.get(year, 0) + 1
+
+    all_years = sorted(set(normal_counts) | set(flagged_counts))
+    if not all_years:
+        st.info("Роки видання у джерелах не виявлено.")
+        return
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=all_years,
+        y=[normal_counts.get(y, 0) for y in all_years],
+        name="Звичайні джерела",
+        marker_color="#4f98a3",
+    ))
+    if flagged_counts:
+        fig.add_trace(go.Bar(
+            x=all_years,
+            y=[flagged_counts.get(y, 0) for y in all_years],
+            name="Анахронізми",
+            marker_color="#d13b3b",
+        ))
+
+    shapes = []
+    annotations = []
+    if dissertation_year and min(all_years) <= dissertation_year <= max(all_years):
+        shapes.append(dict(
+            type="line", x0=dissertation_year, x1=dissertation_year, y0=0, y1=1,
+            yref="paper", line=dict(color="#FF5000", width=2, dash="dash"),
+        ))
+        annotations.append(dict(
+            x=dissertation_year, y=1, yref="paper", text=f"Рік дисертації ({dissertation_year})",
+            showarrow=False, xanchor="left", yanchor="bottom",
+            font=dict(color="#FF5000", size=11),
+        ))
+
+    fig.update_layout(
+        barmode="stack",
+        xaxis_title="Рік", yaxis_title="Кількість джерел",
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0, r=0, t=30, b=0), height=300,
+        shapes=shapes, annotations=annotations,
+        showlegend=bool(flagged_counts),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    values = [y for y in years.values() if y is not None]
+    if len(values) >= 2:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Найстаріше джерело", min(values))
+        c2.metric("Медіана", int(statistics.median(values)))
+        c3.metric("Найновіше джерело", max(values))
 
 
 # ---------------------------------------------------------------------------
 # render_tab_checker — Перевірка джерел
 # ---------------------------------------------------------------------------
 
-def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertation_year: int | None = None) -> None:
-    bibliography, citations, result = cached_analyze(
+def render_tab_checker(zone_result, dissertation_year: int | None = None) -> None:
+    bundle = cached_analyze(
         lines_to_tuple(zone_result.bibliography),
         lines_to_tuple(zone_result.body),
     )
 
+    bibliography = bundle.bibliography
     if not bibliography:
         st.error(
             "❌ У знайденому розділі не виявлено пронумерованих джерел. "
@@ -92,7 +291,8 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
         )
         return
 
-    citations_dict = citations
+    result = bundle.result
+    citations_dict = bundle.citations
     orphans_sorted = sorted(result["orphans"])
     used_sorted = sorted(result["used"])
 
@@ -102,11 +302,45 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
     used_pct = used_count / total * 100 if total else 0
     orphan_pct = orphan_count / total * 100 if total else 0
 
+    anachronisms = find_anachronisms(
+        bundle.years,
+        bundle.year_confidence,
+        dissertation_year,
+        current_year=datetime.datetime.now().year,
+    )
+    duplicates = bundle.duplicates
+
+    # Додаткові колонки з'являються ТІЛЬКИ коли знахідки є — щоб на чистій
+    # роботі не висів нуль, який нема з чим співвіднести. Тому жорсткий індекс
+    # cols[3] не годиться: метрики збираються в список і розкладаються
+    # за фактичною довжиною.
     st.divider()
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Джерел у списку", total)
-    m2.metric("Використовуються у тексті", used_count, delta=f"{used_pct:.0f}%", delta_color="normal")
-    m3.metric("Не згадуються у тексті", orphan_count, delta=f"-{orphan_pct:.0f}%" if orphan_count else None, delta_color="inverse")
+    metrics = [
+        ("Джерел у списку", total, None, "normal"),
+        ("Використовуються у тексті", used_count, f"{used_pct:.0f}%", "normal"),
+        (
+            "Не згадуються у тексті",
+            orphan_count,
+            f"-{orphan_pct:.0f}%" if orphan_count else None,
+            "inverse",
+        ),
+    ]
+    if anachronisms:
+        metrics.append(("🔴 Анахронізмів", len(anachronisms), None, "off"))
+    if duplicates:
+        metrics.append(("🟡 Дублікатів", len(duplicates), None, "off"))
+
+    cols = st.columns(len(metrics))
+    for col, (label, value, delta, delta_color) in zip(cols, metrics):
+        col.metric(label, value, delta=delta, delta_color=delta_color)
+
+    # Анахронізми й дублікати йдуть ДО сиріт: сирота — це привід подивитися,
+    # а джерело з майбутнього — знахідка.
+    if anachronisms:
+        _render_anachronisms(anachronisms, bibliography)
+
+    if duplicates:
+        _render_duplicates(duplicates, bibliography)
 
     if orphans_sorted:
         st.divider()
@@ -144,53 +378,12 @@ def render_tab_checker(zone_result, file_bytes: bytes, filename: str, dissertati
 
     st.divider()
     st.markdown("#### 📊 Розподіл джерел за роками видання")
-
-    year_map = extract_years(bibliography)
-    all_years = [y for y in year_map.values() if y is not None]
-
-    if all_years:
-        year_counts = {}
-        for y in all_years:
-            year_counts[y] = year_counts.get(y, 0) + 1
-
-        years_sorted = sorted(year_counts.keys())
-        counts = [year_counts[y] for y in years_sorted]
-
-        fig = go.Figure(go.Bar(x=years_sorted, y=counts, marker_color="#4f98a3"))
-
-        shapes = []
-        annotations = []
-        if dissertation_year and min(years_sorted) <= dissertation_year <= max(years_sorted):
-            shapes.append(dict(
-                type="line", x0=dissertation_year, x1=dissertation_year, y0=0, y1=1,
-                yref="paper", line=dict(color="#FF5000", width=2, dash="dash"),
-            ))
-            annotations.append(dict(
-                x=dissertation_year, y=1, yref="paper", text=f"Рік дисертації ({dissertation_year})",
-                showarrow=False, xanchor="left", yanchor="bottom",
-                font=dict(color="#FF5000", size=11),
-            ))
-
-        fig.update_layout(
-            xaxis_title="Рік", yaxis_title="Кількість джерел",
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0, r=0, t=30, b=0), height=300,
-            shapes=shapes, annotations=annotations,
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        if len(all_years) >= 2:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Найстаріше джерело", min(all_years))
-            c2.metric("Медіана", int(statistics.median(all_years)))
-            c3.metric("Найновіше джерело", max(all_years))
-    else:
-        st.info("Роки видання у джерелах не виявлено.")
+    _render_year_chart(bundle.years, anachronisms, dissertation_year)
 
     st.divider()
     st.markdown("#### 📐 Перевірка ДСТУ 8302:2015")
 
-    dstu_results = validate_bibliography(bibliography)
+    dstu_results = bundle.dstu
     ok_count = sum(1 for s in dstu_results.values() if s == DstuStatus.DSTU)
     partial_count = sum(1 for s in dstu_results.values() if s == DstuStatus.PARTIAL)
     other_count = sum(1 for s in dstu_results.values() if s == DstuStatus.OTHER)
@@ -259,6 +452,59 @@ def _render_paragraph_gap_results(pgr) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Підміна символів
+# ---------------------------------------------------------------------------
+
+def _render_homoglyphs(lines: list[dict], is_pdf: bool) -> None:
+    st.divider()
+    st.markdown("#### 🔤 Підміна символів")
+    st.caption(
+        "Кириличні літери, замінені візуально однаковими латинськими або "
+        "грецькими — типовий спосіб обійти пошук збігів. Скануються всі "
+        "розділи, включно зі списком літератури."
+    )
+
+    forensics = cached_forensics(lines_to_tuple(lines))
+
+    if forensics.total_words == 0:
+        st.info("У документі не виявлено тексту для аналізу.")
+        return
+
+    if not forensics.hits:
+        st.success("🎉 Підміни символів не виявлено.")
+        return
+
+    metric_cols = st.columns(3 if is_pdf else 2)
+    metric_cols[0].metric("Уражених слів", len(forensics.hits))
+    metric_cols[1].metric("Від обсягу тексту", f"{forensics.affected_pct:.2f}%")
+    if is_pdf:
+        metric_cols[2].metric("Сторінок", len(forensics.pages_affected))
+
+    if forensics.likely_encoding_issue:
+        st.error(
+            "⚠️ Підміни рівномірно розподілені по всьому документу. "
+            "Це радше дефект шрифту або конвертера PDF, ніж навмисна підміна: "
+            "справжня підміна точкова за визначенням. "
+            "Не робіть висновку про порушення на цій підставі."
+        )
+
+    rows = [
+        {
+            "Сторінка": hit.page if hit.page is not None else "—",
+            "У документі": hit.word,
+            "Мало бути": hit.restored,
+            "Правило": "Змішане слово" if hit.rule == "mixed" else "Самотня літера",
+        }
+        for hit in forensics.hits
+    ]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    if is_pdf and forensics.pages_affected:
+        st.markdown("**Номери сторінок:**")
+        st.code(format_number_ranges(forensics.pages_affected), language=None)
+
+
+# ---------------------------------------------------------------------------
 # render_tab_highlighter — Асистент антиплагіату
 # ---------------------------------------------------------------------------
 
@@ -273,7 +519,9 @@ def render_tab_highlighter(
         "для швидкого ручного маркування у сервісі перевірки плагіату."
     )
 
-    if not filename.lower().endswith(".pdf"):
+    is_pdf = filename.lower().endswith(".pdf")
+
+    if not is_pdf:
         st.info("Підсвітка посилань доступна тільки для PDF файлів.")
     else:
         if "highlighted_pdf" not in st.session_state:
@@ -338,6 +586,8 @@ def render_tab_highlighter(
 
                 st.markdown("**Номери сторінок:**")
                 st.code(format_number_ranges(empty_pages), language=None)
+
+    _render_homoglyphs(lines, is_pdf)
 
     st.divider()
     st.markdown("#### 🔬 Абзаци без посилань")
@@ -424,7 +674,7 @@ st.toast(f"Файл завантажено: {filename}", icon="✅")
 auto_author = extract_dissertation_author(lines)
 auto_year = extract_dissertation_year(lines)
 
-col_author, col_year = st.columns([4, 1])
+col_author, col_year = st.columns([3, 2])
 with col_author:
     if auto_author:
         st.markdown(f"**👤 {auto_author}**")
@@ -436,9 +686,28 @@ with col_author:
                 label_visibility="collapsed",
             )
             auto_author = manual_author.strip() or None
+
+# Рік дисертації — обов'язковий супутник перевірки на анахронізми: якщо
+# автовизначення помилилось або повернуло None, увесь блок або мовчить,
+# або бреше. Тому показуємо, що саме визначила програма, і даємо виправити:
+# введене значення перекриває автоматичне.
 with col_year:
-    if auto_year:
-        st.markdown(f"**📅 {auto_year} р.**")
+    with st.expander(f"📅 Рік дисертації: {auto_year or '—'}", expanded=not auto_year):
+        st.caption(
+            "Від цього року залежить перевірка «джерело новіше за дисертацію». "
+            "Якщо визначено неправильно — виправте."
+        )
+        manual_year = st.number_input(
+            "Рік дисертації",
+            min_value=1980,
+            max_value=datetime.datetime.now().year + 1,
+            value=auto_year,
+            step=1,
+            format="%d",
+            label_visibility="collapsed",
+        )
+
+dissertation_year = int(manual_year) if manual_year else None
 
 st.divider()
 
@@ -446,7 +715,7 @@ zone_result = None
 auto_error = None
 
 try:
-    zone_result = split_zones(lines)
+    zone_result = cached_split_zones(lines_to_tuple(lines))
 except BibliographyNotFoundError as e:
     auto_error = str(e)
 except Exception as e:
@@ -489,13 +758,10 @@ if zone_result is None:
         st.stop()
 
 if zone_result is not None:
-    st.session_state["zone_result"] = zone_result
-
-if zone_result is not None:
     tab1, tab2 = st.tabs(["📋 Перевірка джерел", "🖍 Асистент антиплагіату"])
 
     with tab1:
-        render_tab_checker(zone_result, file_bytes, filename, dissertation_year=auto_year)
+        render_tab_checker(zone_result, dissertation_year=dissertation_year)
 
     with tab2:
         render_tab_highlighter(file_bytes, filename, zone_result, lines)
