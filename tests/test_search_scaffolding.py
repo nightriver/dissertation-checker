@@ -27,12 +27,12 @@ MODULE_NAMES = [
 
 
 @pytest.mark.parametrize("module_name", MODULE_NAMES)
-def test_kozhen_modul_karkasu_importuietsya(module_name):
+def test_кожен_модуль_каркаса_імпортується(module_name):
     module = importlib.import_module(module_name)
     assert module is not None
 
 
-def test_versiini_konstanty_ye_neporozhnimy_strokamy():
+def test_версійні_константи_є_непорожніми_рядками():
     import parser.searchdoc as searchdoc
     import search
     import search.calques as calques
