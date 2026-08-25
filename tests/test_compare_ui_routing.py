@@ -26,3 +26,13 @@ def test_compare_query_opens_only_two_file_screen():
     labels = [button.label for button in app.button]
     assert "← Повернутися до перевірки джерел" in labels
     assert "Порівняти" in labels
+
+
+def test_back_button_removes_only_mode_query_parameter():
+    app = AppTest.from_file(APP_PATH)
+    app.query_params["mode"] = "compare"
+    app.query_params["keep"] = "value"
+    app.run(timeout=30)
+    app.button[0].click().run(timeout=30)
+    assert "mode" not in app.query_params
+    assert app.query_params["keep"] in ("value", ["value"])

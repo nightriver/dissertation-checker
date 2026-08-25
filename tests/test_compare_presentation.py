@@ -44,3 +44,24 @@ def test_table_contains_legend_colors_and_escaped_cells():
     assert MATCH_COLOR in table
     assert DIFF_COLOR in table
     assert "змінений" in table
+    assert "overflow-x:auto" in table
+    assert "змінений<br></td>" not in table
+
+
+def test_pdf_word_per_line_is_rendered_horizontally():
+    lines = [{"line": f"слово{index}", "page": 1} for index in range(15)]
+    tokens = tokenize_lines(lines)
+    segment = compare_tokens(tokens, tokens).segments[0]
+    rendered = render_fragment_html(lines, tokens, segment.a_start, segment.a_end, segment.a_spans)
+    assert "<br>" not in rendered
+    assert "слово0" in rendered and "слово14" in rendered
+
+
+def test_long_segment_is_collapsible_in_table():
+    text = " ".join(f"довгий{index}" for index in range(140))
+    lines = _lines(text)
+    tokens = tokenize_lines(lines)
+    segment = compare_tokens(tokens, tokens).segments[0]
+    table = render_comparison_table([segment], lines, tokens, lines, tokens)
+    assert "<details>" in table
+    assert "compare-full-fragment" in table

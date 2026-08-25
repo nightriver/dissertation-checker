@@ -10,6 +10,9 @@ from compare.matcher import (
     deduplicate_segments,
     split_candidate,
     find_candidates,
+    merge_candidates,
+    Fingerprint,
+    _add_frequent_seeds,
 )
 from compare.normalize import tokenize_lines
 
@@ -71,6 +74,33 @@ def test_seed_gap_eighty_starts_another_chain():
 def test_candidate_3200_is_split_with_200_overlap():
     chunks = split_candidate(Candidate(0, 3200, 0, 3200, 10))
     assert [(chunk.a_start, chunk.a_end) for chunk in chunks] == [(0, 3000), (2800, 3200)]
+
+
+def test_overlapping_candidates_are_merged_before_alignment():
+    merged = merge_candidates([
+        Candidate(0, 30, 10, 40, 3),
+        Candidate(25, 50, 35, 60, 4),
+    ])
+    assert merged == [Candidate(0, 50, 10, 60, 7)]
+
+
+def test_frequent_fingerprint_enriches_but_does_not_create_chain():
+    digest = b"x" * 32
+    fingerprints = [Fingerprint(digest, 5)]
+    postings = {digest: list(range(params.MAX_FINGERPRINT_POSTINGS))}
+    assert _add_frequent_seeds([], fingerprints, postings) == []
+    enriched = _add_frequent_seeds([[Seed(0, 0), Seed(10, 10)]], fingerprints, postings)
+    assert enriched == [[Seed(0, 0), Seed(5, 5), Seed(10, 10)]]
+
+
+def test_acceptance_thresholds_live_in_params():
+    assert (
+        params.MIN_MATCHED_LOW,
+        params.MIN_SIMILARITY,
+        params.MIN_VERBATIM_LOW,
+        params.MIN_MATCHED_HIGH,
+        params.MIN_VERBATIM_HIGH,
+    ) == (25, 0.45, 15, 40, 30)
 
 
 def test_truncated_stems_are_available_but_disabled():

@@ -11,6 +11,7 @@ from parser.types import LineItem
 
 MATCH_COLOR = "#fff59d"
 DIFF_COLOR = "#b2ebf2"
+MAX_INLINE_SEGMENT_TOKENS = 120
 
 
 def format_physical_pages(tokens: Sequence[CompareToken], start: int, end: int) -> str:
@@ -54,6 +55,22 @@ def _styled(value: str, operation: str | None) -> str:
     return f'<span title="відмінність" style="background:{DIFF_COLOR}">{escaped}</span>'
 
 
+def _line_separator(
+    lines: Sequence[LineItem], previous_line: int, current_line: int, split_word: bool
+) -> str:
+    previous_page = lines[previous_line].get("page")
+    current_page = lines[current_line].get("page")
+    has_blank_line = any(
+        not (lines[index].get("line") or "").strip()
+        for index in range(previous_line + 1, current_line)
+    )
+    if split_word or has_blank_line or (
+        previous_page is not None and current_page is not None and previous_page != current_page
+    ):
+        return "<br>"
+    return " "
+
+
 def render_fragment_html(
     lines: Sequence[LineItem],
     tokens: Sequence[CompareToken],
@@ -92,7 +109,7 @@ def render_fragment_html(
             else:
                 previous_text = lines[previous_line].get("line") or ""
                 output.append(html.escape(previous_text[previous_end:]))
-                output.append("<br>")
+                output.append(_line_separator(lines, previous_line, part.line_index, part_index > 0))
                 output.append(html.escape(text[:part.char_start]))
             output.append(_styled(text[part.char_start:part.char_end], operation))
             previous_line = part.line_index
@@ -111,6 +128,25 @@ def render_fragment_html(
     return "".join(output)
 
 
+def _render_collapsible_fragment(
+    lines: Sequence[LineItem],
+    tokens: Sequence[CompareToken],
+    start: int,
+    end: int,
+    spans: Sequence[DiffSpan],
+) -> str:
+    full = render_fragment_html(lines, tokens, start, end, spans)
+    if end - start <= MAX_INLINE_SEGMENT_TOKENS:
+        return full
+    preview_size = MAX_INLINE_SEGMENT_TOKENS // 2
+    beginning = render_fragment_html(lines, tokens, start, start + preview_size, spans, 0)
+    ending = render_fragment_html(lines, tokens, end - preview_size, end, spans, 0)
+    return (
+        f'<details><summary>{beginning} … {ending}</summary>'
+        f'<div class="compare-full-fragment">{full}</div></details>'
+    )
+
+
 def render_comparison_table(
     segments: Sequence[TextSegment],
     lines_a: Sequence[LineItem], tokens_a: Sequence[CompareToken],
@@ -118,8 +154,12 @@ def render_comparison_table(
 ) -> str:
     rows: list[str] = []
     for number, segment in enumerate(segments, 1):
-        left = render_fragment_html(lines_a, tokens_a, segment.a_start, segment.a_end, segment.a_spans)
-        right = render_fragment_html(lines_b, tokens_b, segment.b_start, segment.b_end, segment.b_spans)
+        left = _render_collapsible_fragment(
+            lines_a, tokens_a, segment.a_start, segment.a_end, segment.a_spans
+        )
+        right = _render_collapsible_fragment(
+            lines_b, tokens_b, segment.b_start, segment.b_end, segment.b_spans
+        )
         place = html.escape(
             f"{format_physical_pages(tokens_a, segment.a_start, segment.a_end)} / "
             f"{format_physical_pages(tokens_b, segment.b_start, segment.b_end)}"
@@ -131,16 +171,24 @@ def render_comparison_table(
         if segment.possibly_boilerplate:
             labels.append("типова формула")
         label_html = f"<small>{html.escape(' · '.join(labels))}</small>" if labels else ""
+        kind_html = kind + (f"<br>{label_html}" if label_html else "")
         indicators = html.escape(
             f"{segment.matched} слів · {segment.coverage_a:.0%}/{segment.coverage_b:.0%} · "
             f"схожість {segment.similarity:.0%}"
         )
         rows.append(
             f"<tr><td>{number}</td><td>{left}</td><td>{right}</td><td>{place}</td>"
-            f"<td>{kind}<br>{label_html}</td><td>{indicators}</td></tr>"
+            f"<td>{kind_html}</td><td>{indicators}</td></tr>"
         )
     return (
-        '<div class="compare-table"><table><thead><tr><th>№</th>'
+        '<style>'
+        '.compare-table{overflow-x:auto;margin:0.5rem 0 1rem;}'
+        '.compare-table table{border-collapse:collapse;min-width:1050px;width:100%;font-size:.92rem;}'
+        '.compare-table th,.compare-table td{border:1px solid rgba(128,128,128,.35);padding:.55rem;vertical-align:top;line-height:1.45;}'
+        '.compare-table th{position:sticky;top:0;background:var(--background-color,#fff);text-align:left;}'
+        '.compare-table th:nth-child(1){width:3rem}.compare-table th:nth-child(2),.compare-table th:nth-child(3){width:32%;}'
+        '.compare-table details summary{cursor:pointer}.compare-full-fragment{margin-top:.6rem;padding-top:.6rem;border-top:1px dashed #aaa;}'
+        '</style><div class="compare-table"><table><thead><tr><th>№</th>'
         '<th>Перевірювана дисертація</th><th>Ймовірне джерело</th><th>Місце</th>'
         '<th>Тип</th><th>Показники</th></tr></thead><tbody>'
         + "".join(rows) + "</tbody></table></div>"

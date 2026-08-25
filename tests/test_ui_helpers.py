@@ -141,6 +141,12 @@ class TestPairScopedState(unittest.TestCase):
         self.assertEqual(state["unrelated"], "keep")
         self.assertTrue(all(key not in state for key in PAIR_SCOPED_KEYS))
 
+    def test_real_filter_widget_keys_are_pair_scoped(self):
+        self.assertIn("compare_type_filter", PAIR_SCOPED_KEYS)
+        self.assertIn("compare_sort", PAIR_SCOPED_KEYS)
+        self.assertIn("compare_show_normative", PAIR_SCOPED_KEYS)
+        self.assertNotIn("compare_filters", PAIR_SCOPED_KEYS)
+
     def test_same_pair_is_noop(self):
         state = {}
         key = make_pair_key(b"a", b"b")

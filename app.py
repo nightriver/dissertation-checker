@@ -644,7 +644,8 @@ def render_tab_highlighter(
 def render_two_file_compare_page() -> None:
     """Окремий екран; основний сценарій нижче лишається недоторканим."""
     if st.button("← Повернутися до перевірки джерел", key="compare_back"):
-        st.query_params.clear()
+        if "mode" in st.query_params:
+            del st.query_params["mode"]
         st.rerun()
 
     st.title("Порівняння двох робіт")
@@ -695,8 +696,18 @@ def render_two_file_compare_page() -> None:
 
     lines_a, error_a = read_uploaded(uploaded_a, data_a)
     lines_b, error_b = read_uploaded(uploaded_b, data_b)
+    prepared_preview_a = cached_prepare_compare(lines_to_tuple(lines_a)) if lines_a else None
+    prepared_preview_b = cached_prepare_compare(lines_to_tuple(lines_b)) if lines_b else None
 
-    def render_file_info(uploaded, lines, error):
+    def excluded_description(prepared):
+        details = []
+        reason_labels = {"title_page": "титул", "toc": "зміст", "bibliography": "бібліографію"}
+        for excluded in prepared.excluded:
+            place = format_physical_pages(prepared.all_tokens, excluded.start, excluded.end)
+            details.append(f"{reason_labels[excluded.reason]} ({place})")
+        return ", ".join(details)
+
+    def render_file_info(uploaded, lines, error, prepared):
         if uploaded is None:
             return
         st.caption(f"{uploaded.name} · {uploaded.name.rsplit('.', 1)[-1].upper()}")
@@ -708,17 +719,26 @@ def render_two_file_compare_page() -> None:
         st.caption(f"Текстових рядків: {text_lines} · аркушів PDF: {len(pages) if pages else '—'}")
         if text_lines < 10:
             st.warning("Тексту дуже мало; результат може бути неповним.")
+        if prepared.bibliography_warning:
+            st.warning(prepared.bibliography_warning)
+        if prepared.excluded:
+            st.caption("Виключено з основного текстового порівняння: " + excluded_description(prepared))
 
     with left_column:
-        render_file_info(uploaded_a, lines_a, error_a)
+        render_file_info(uploaded_a, lines_a, error_a, prepared_preview_a)
     with right_column:
-        render_file_info(uploaded_b, lines_b, error_b)
+        render_file_info(uploaded_b, lines_b, error_b, prepared_preview_b)
 
     identical = data_a is not None and data_b is not None and hash_a == hash_b
     if identical:
         st.error("Завантажено той самий файл з обох боків (збігається SHA-256).")
     ready = bool(lines_a is not None and lines_b is not None and not identical)
     if st.button("Порівняти", type="primary", use_container_width=True, disabled=not ready):
+        with st.spinner("Читання файлів завершено…"):
+            pass
+        with st.spinner("Підготовка текстів…"):
+            cached_prepare_compare(lines_to_tuple(lines_a))
+            cached_prepare_compare(lines_to_tuple(lines_b))
         with st.spinner("Пошук кандидатів і вирівнювання фрагментів…"):
             st.session_state.compare_result = cached_compare_documents(
                 lines_to_tuple(lines_a), lines_to_tuple(lines_b)
@@ -746,17 +766,14 @@ def render_two_file_compare_page() -> None:
     strict_b = result.covered_tokens_b_strict / result.analyzed_tokens_b if result.analyzed_tokens_b else 0.0
     metric_hits, metric_a, metric_b = st.columns(3)
     metric_hits.metric("Знайдені фрагменти", len(accepted))
-    metric_a.metric("Покриття дисертації", f"{coverage_a:.1%}", f"{strict_a:.1%} без нормативних")
-    metric_b.metric("Покриття джерела", f"{coverage_b:.1%}", f"{strict_b:.1%} без нормативних")
-
-    for label, prepared in (("ліворуч", prepared_a), ("праворуч", prepared_b)):
-        if prepared.excluded:
-            details = []
-            reason_labels = {"title_page": "титул", "toc": "зміст", "bibliography": "бібліографію"}
-            for excluded in prepared.excluded:
-                place = format_physical_pages(prepared.all_tokens, excluded.start, excluded.end)
-                details.append(f"{reason_labels[excluded.reason]} ({place})")
-            st.caption(f"Виключено з основного текстового порівняння {label}: " + ", ".join(details))
+    metric_a.metric(
+        "Покриття дисертації", f"{coverage_a:.1%}",
+        f"{strict_a:.1%} без нормативних", delta_color="off",
+    )
+    metric_b.metric(
+        "Покриття джерела", f"{coverage_b:.1%}",
+        f"{strict_b:.1%} без нормативних", delta_color="off",
+    )
 
     st.markdown("#### Окреме порівняння списків літератури")
     biblio = result.biblio

@@ -98,3 +98,4 @@ class PreparedDocument:
     all_tokens: list[CompareToken]
     excluded: tuple[ExcludedRange, ...]
     resembles_dissertation: bool
+    bibliography_warning: str | None = None

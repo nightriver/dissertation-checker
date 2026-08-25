@@ -41,7 +41,9 @@ _FILE_KEY = "current_file_key"
 PAIR_SCOPED_KEYS: tuple[str, ...] = (
     "compare_result",
     "compare_visible_limit",
-    "compare_filters",
+    "compare_type_filter",
+    "compare_sort",
+    "compare_show_normative",
 )
 _PAIR_KEY = "current_compare_pair_key"
 

@@ -103,6 +103,36 @@ def chain_seeds(seeds: Iterable[Seed]) -> list[list[Seed]]:
     return [chain for chain in chains if len(chain) >= params.MIN_SEEDS_PER_CHAIN]
 
 
+def _add_frequent_seeds(
+    chains: list[list[Seed]],
+    fingerprints_a: Sequence[Fingerprint],
+    postings: dict[bytes, list[int]],
+) -> list[list[Seed]]:
+    """Частий відбиток не створює ланцюг, але уточнює вже знайдений."""
+    frequent_a = [
+        fingerprint for fingerprint in fingerprints_a
+        if len(postings.get(fingerprint.digest, ())) >= params.MAX_FINGERPRINT_POSTINGS
+    ]
+    augmented: list[list[Seed]] = []
+    for chain in chains:
+        first, last = chain[0], chain[-1]
+        base_drift = sum(seed.b_pos - seed.a_pos for seed in chain) / len(chain)
+        additions: list[Seed] = []
+        for fingerprint in frequent_a:
+            if not (first.a_pos <= fingerprint.position <= last.a_pos):
+                continue
+            possible = [
+                b_pos for b_pos in postings[fingerprint.digest]
+                if first.b_pos <= b_pos <= last.b_pos
+                and abs((b_pos - fingerprint.position) - base_drift) <= params.MAX_CHAIN_DRIFT
+            ]
+            if possible:
+                best = min(possible, key=lambda b_pos: abs((b_pos - fingerprint.position) - base_drift))
+                additions.append(Seed(fingerprint.position, best))
+        augmented.append(sorted(set(chain + additions), key=lambda seed: (seed.a_pos, seed.b_pos)))
+    return augmented
+
+
 def _candidate_from_chain(chain: Sequence[Seed], len_a: int, len_b: int) -> Candidate:
     context = params.FINGERPRINT_K + params.WINNOW_WINDOW
     return Candidate(
@@ -137,6 +167,31 @@ def split_candidate(candidate: Candidate) -> list[Candidate]:
     return chunks
 
 
+def merge_candidates(candidates: Iterable[Candidate]) -> list[Candidate]:
+    """Об'єднує вкладені, перекривні та зовсім сусідні області до вирівнювання."""
+    ordered = sorted(candidates, key=lambda item: (item.a_start, item.b_start))
+    if not ordered:
+        return []
+    merged = [ordered[0]]
+    for candidate in ordered[1:]:
+        current = merged[-1]
+        close_a = candidate.a_start <= current.a_end + params.CANDIDATE_MERGE_GAP
+        close_b = candidate.b_start <= current.b_end + params.CANDIDATE_MERGE_GAP
+        drift_current = current.b_start - current.a_start
+        drift_candidate = candidate.b_start - candidate.a_start
+        if close_a and close_b and abs(drift_candidate - drift_current) <= params.MAX_CHAIN_DRIFT:
+            merged[-1] = Candidate(
+                min(current.a_start, candidate.a_start),
+                max(current.a_end, candidate.a_end),
+                min(current.b_start, candidate.b_start),
+                max(current.b_end, candidate.b_end),
+                current.seed_count + candidate.seed_count,
+            )
+        else:
+            merged.append(candidate)
+    return merged
+
+
 def find_candidates(
     tokens_a: Sequence[CompareToken],
     tokens_b: Sequence[CompareToken],
@@ -154,11 +209,14 @@ def find_candidates(
         for b_pos in postings.get(fingerprint.digest, ())
         if len(postings[fingerprint.digest]) < params.MAX_FINGERPRINT_POSTINGS
     ]
-    chains = chain_seeds(seeds)
+    chains = _add_frequent_seeds(chain_seeds(seeds), fingerprints_a, postings)
+    raw_candidates = merge_candidates(
+        _candidate_from_chain(chain, len(tokens_a), len(tokens_b)) for chain in chains
+    )
     candidates = [
         chunk
-        for chain in chains
-        for chunk in split_candidate(_candidate_from_chain(chain, len(tokens_a), len(tokens_b)))
+        for candidate in raw_candidates
+        for chunk in split_candidate(candidate)
         if chunk.length >= params.MIN_CANDIDATE_TOKENS
     ]
     candidates.sort(
@@ -267,7 +325,9 @@ def align_candidate(
 
     len_a, len_b = len(words_a), len(words_b)
     similarity = 2 * matched / (len_a + len_b) if len_a + len_b else 0.0
-    passes_low = (matched >= 25 and similarity >= 0.45) or longest >= 15
+    passes_low = (
+        matched >= params.MIN_MATCHED_LOW and similarity >= params.MIN_SIMILARITY
+    ) or longest >= params.MIN_VERBATIM_LOW
     if not passes_low:
         return None
     raw_a = " ".join(token.raw for token in tokens_a[a_start:a_start + len_a])
@@ -283,7 +343,9 @@ def align_candidate(
         is_possibly_normative(words_a, raw_a)
         or is_possibly_normative(words_b, raw_b)
     )
-    passes_high = (matched >= 40 and similarity >= 0.45) or longest >= 30
+    passes_high = (
+        matched >= params.MIN_MATCHED_HIGH and similarity >= params.MIN_SIMILARITY
+    ) or longest >= params.MIN_VERBATIM_HIGH
     status = "accepted_normative" if normative and passes_high else (
         "normative_only" if normative else "accepted"
     )

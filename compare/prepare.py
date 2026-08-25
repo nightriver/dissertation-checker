@@ -10,6 +10,7 @@ from parser.types import LineItem, is_toc_entry
 
 
 _SPACE_RE = re.compile(r"\s+")
+_PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
 
 
 def _heading_kind(text: str) -> str | None:
@@ -23,11 +24,30 @@ def _heading_kind(text: str) -> str | None:
     return None
 
 
+def _is_toc_header(text: str) -> bool:
+    letters_only = re.sub(r"[^А-ЯЁЇІЄҐA-Z]", "", text.upper())
+    return letters_only == "ЗМІСТ"
+
+
+def _next_nonempty_text(lines: list[LineItem], index: int) -> str:
+    for item in lines[index + 1:]:
+        text = (item.get("line") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _is_toc_heading(lines: list[LineItem], index: int) -> bool:
+    """Підтримує PDF, де номер сторінки винесено в окремий рядок."""
+    text = lines[index].get("line") or ""
+    return is_toc_entry(text) or bool(_PAGE_NUMBER_RE.fullmatch(_next_nonempty_text(lines, index)))
+
+
 def resembles_dissertation(lines: list[LineItem]) -> bool:
     kinds = {
         kind
-        for item in lines
-        if not is_toc_entry(item.get("line") or "")
+        for index, item in enumerate(lines)
+        if not _is_toc_heading(lines, index)
         if (kind := _heading_kind(item.get("line") or ""))
     }
     return {"intro", "chapter", "conclusions"}.issubset(kinds)
@@ -46,18 +66,32 @@ def prepare_document(lines: list[LineItem]) -> PreparedDocument:
     if not resembles_dissertation(lines):
         return PreparedDocument(tokens, tokens, (), False)
 
-    content_line = next(
-        index
-        for index, item in enumerate(lines)
-        if _heading_kind(item.get("line") or "") and not is_toc_entry(item.get("line") or "")
-    )
+    actual_intro = [
+        index for index, item in enumerate(lines)
+        if _heading_kind(item.get("line") or "") == "intro"
+        and not _is_toc_heading(lines, index)
+    ]
+    actual_structure = [
+        index for index, item in enumerate(lines)
+        if _heading_kind(item.get("line") or "")
+        and not _is_toc_heading(lines, index)
+    ]
+    content_line = (actual_intro or actual_structure)[0]
     toc_line = next(
         (
             index for index, item in enumerate(lines[:content_line])
-            if _SPACE_RE.sub(" ", (item.get("line") or "").strip().upper()) == "ЗМІСТ"
+            if _is_toc_header(item.get("line") or "")
         ),
         None,
     )
+    if toc_line is None:
+        toc_line = next(
+            (
+                index for index, item in enumerate(lines[:content_line])
+                if _heading_kind(item.get("line") or "") and _is_toc_heading(lines, index)
+            ),
+            None,
+        )
     content_token = _token_boundary(tokens, content_line)
     excluded: list[ExcludedRange] = []
     if toc_line is None:
@@ -88,6 +122,11 @@ def prepare_document_for_comparison(lines: list[LineItem]):
         entries = parse_bibliography(zones.bibliography)
     except BibliographyNotFoundError:
         zones = None
+    if zones is not None and len(entries) < MIN_BIBLIO_ENTRIES:
+        prepared.bibliography_warning = (
+            f"Список літератури розпізнано невпевнено: знайдено {len(entries)} "
+            f"записів із мінімальних {MIN_BIBLIO_ENTRIES}; його залишено в текстовому порівнянні."
+        )
     if zones is not None and len(entries) >= MIN_BIBLIO_ENTRIES:
         start_line = len(zones.body)
         end_line = start_line + len(zones.bibliography)
