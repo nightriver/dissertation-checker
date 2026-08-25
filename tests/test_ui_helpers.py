@@ -12,11 +12,14 @@ from ui_helpers import (
     make_file_key,
     reset_file_scoped_state,
     is_compare_mode,
+    is_search_mode,
     PAIR_SCOPED_KEYS,
     file_sha256,
     make_pair_key,
     reset_pair_scoped_state,
     has_usable_text_lines,
+    validate_search_upload,
+    MAX_SEARCH_PDF_BYTES,
 )
 
 
@@ -165,3 +168,35 @@ class TestUsableCompareText(unittest.TestCase):
     def test_nonempty_text_is_usable(self):
         self.assertTrue(has_usable_text_lines([{"line": "Текст", "page": None}]))
         self.assertFalse(has_usable_text_lines([{"line": "   ", "page": None}]))
+
+
+class TestSearchMode(unittest.TestCase):
+    def test_search_mode_is_explicit(self):
+        self.assertTrue(is_search_mode({"mode": "search"}))
+        self.assertFalse(is_search_mode({}))
+        self.assertFalse(is_search_mode({"mode": "compare"}))
+
+    def test_search_mode_accepts_legacy_list_value(self):
+        self.assertTrue(is_search_mode({"mode": ["search"]}))
+        self.assertFalse(is_search_mode({"mode": []}))
+
+    def test_search_and_compare_mode_are_mutually_exclusive(self):
+        for value in ("search", "compare"):
+            self.assertNotEqual(is_search_mode({"mode": value}), is_compare_mode({"mode": value}))
+
+
+class TestValidateSearchUpload(unittest.TestCase):
+    def test_accepts_small_pdf(self):
+        self.assertIsNone(validate_search_upload("thesis.pdf", 1024))
+
+    def test_accepts_pdf_at_exact_limit(self):
+        self.assertIsNone(validate_search_upload("thesis.pdf", MAX_SEARCH_PDF_BYTES))
+
+    def test_rejects_docx(self):
+        self.assertIsNotNone(validate_search_upload("thesis.docx", 1024))
+
+    def test_rejects_oversized_pdf(self):
+        self.assertIsNotNone(validate_search_upload("thesis.pdf", MAX_SEARCH_PDF_BYTES + 1))
+
+    def test_extension_check_is_case_insensitive(self):
+        self.assertIsNone(validate_search_upload("thesis.PDF", 1024))

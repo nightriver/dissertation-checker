@@ -41,10 +41,12 @@ from ui_helpers import (
     make_file_key,
     reset_file_scoped_state,
     is_compare_mode,
+    is_search_mode,
     file_sha256,
     make_pair_key,
     reset_pair_scoped_state,
     has_usable_text_lines,
+    validate_search_upload,
 )
 from compare.matcher import compare_documents
 from compare.prepare import prepare_document_for_comparison
@@ -829,17 +831,65 @@ def render_two_file_compare_page() -> None:
         st.rerun()
 
 
+def render_manual_search_page() -> None:
+    """
+    Окремий екран ручного пошуку джерел (PLAN_SEARCH.md).
+    Крок 1: маршрут і завантаження файлу. Розмітка розділів, канали
+    сигналів і побудова запитів приєднуються наступними кроками плану.
+    """
+    if st.button("← Повернутися до перевірки джерел", key="search_back"):
+        if "mode" in st.query_params:
+            del st.query_params["mode"]
+        st.rerun()
+
+    st.title("Пошук джерел вручну")
+    st.caption(
+        "Готує запити для ручного пошуку в зовнішніх системах. Не визначає "
+        "плагіат і не обходить видачу автоматично — шукає й оцінює результат людина."
+    )
+
+    uploaded = st.file_uploader(
+        "Дисертація (PDF із текстовим шаром)",
+        type=["pdf"],
+        key="search_upload",
+        help="Лише PDF, до 30 МБ. DOCX у цьому режимі не підтримується.",
+    )
+    if uploaded is None:
+        return
+
+    data = uploaded.getvalue()
+    error = validate_search_upload(uploaded.name, len(data))
+    if error:
+        st.error(f"❌ {error}")
+        return
+
+    st.caption(f"{uploaded.name} · {len(data) / (1024 * 1024):.1f} МБ · SHA-256 {file_sha256(data)[:12]}…")
+    st.info(
+        "Розбір розділів, канали сигналів A/N/B/K/T/L і побудова запитів ще не "
+        "реалізовані — режим у розробці за PLAN_SEARCH.md."
+    )
+
+
 if is_compare_mode(st.query_params):
     render_two_file_compare_page()
     st.stop()
 
-header_main, header_compare = st.columns([4, 1])
+if is_search_mode(st.query_params):
+    render_manual_search_page()
+    st.stop()
+
+header_main, header_compare, header_search = st.columns([3, 1, 1])
 with header_main:
     st.title("📚 Перевірка джерел дисертації")
 with header_compare:
     st.markdown(" ")
     if st.button("Порівняти дві роботи →", key="open_compare", use_container_width=True):
         st.query_params["mode"] = "compare"
+        st.rerun()
+with header_search:
+    st.markdown(" ")
+    if st.button("Пошук джерел вручну →", key="open_search", use_container_width=True):
+        st.query_params["mode"] = "search"
         st.rerun()
 st.caption(
     "Автоматичне виявлення невикористаних бібліографічних джерел у тексті дисертації."

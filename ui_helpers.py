@@ -22,6 +22,14 @@ def is_compare_mode(query_params: MutableMapping[str, Any]) -> bool:
     return value == "compare"
 
 
+def is_search_mode(query_params: MutableMapping[str, Any]) -> bool:
+    """Повертає True лише для окремого режиму ручного пошуку джерел."""
+    value = query_params.get("mode")
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    return value == "search"
+
+
 # ---------------------------------------------------------------------------
 # Ключі стану, прив'язані до конкретного завантаженого файлу
 # ---------------------------------------------------------------------------
@@ -74,6 +82,22 @@ def reset_file_scoped_state(state: MutableMapping[str, Any], file_key: str) -> b
 
 def file_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+# Ліміт байтів PDF для ?mode=search (PLAN_SEARCH.md, §2).
+MAX_SEARCH_PDF_BYTES = 30 * 1024 * 1024
+
+
+def validate_search_upload(filename: str, size: int) -> str | None:
+    """
+    Перевірка перед запуском парсера ?mode=search: рівно один PDF до 30 МБ.
+    Повертає повідомлення про помилку або None, якщо файл прийнятний.
+    """
+    if not filename.lower().endswith(".pdf"):
+        return "Режим ручного пошуку приймає лише PDF із текстовим шаром."
+    if size > MAX_SEARCH_PDF_BYTES:
+        return "Файл більший за 30 МБ. Завантажте менший PDF."
+    return None
 
 
 def has_usable_text_lines(lines: list[LineItem] | None) -> bool:
