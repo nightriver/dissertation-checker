@@ -16,3 +16,9 @@ ROADMAP.md
 PLAN_SEARCH.md
 PLAN_SEARCH_COMPARE.md
 PLAN_COMPARE_TWO_FILES.md
+PLAN_SEARCH_PROGRESS.md
+
+# Другі локальні venv і кеші
+.venv312/
+.uv-cache/
+tmp/

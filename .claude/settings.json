@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(.venv312\\Scripts\\python.exe -m pytest:*)",
+      "Bash(.venv312/Scripts/python.exe -m pytest:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Read(./.venv/**)",
+      "Read(./.venv312/**)",
+      "Read(./tmp/**)",
+      "Read(./PLAN_SEARCH_COMPARE.md)"
+    ]
+  }
+}
