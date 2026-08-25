@@ -16,6 +16,7 @@ from ui_helpers import (
     file_sha256,
     make_pair_key,
     reset_pair_scoped_state,
+    has_usable_text_lines,
 )
 
 
@@ -154,3 +155,13 @@ class TestPairScopedState(unittest.TestCase):
         state["compare_result"] = "kept"
         self.assertFalse(reset_pair_scoped_state(state, key))
         self.assertEqual(state["compare_result"], "kept")
+
+
+class TestUsableCompareText(unittest.TestCase):
+    def test_empty_extraction_is_not_usable(self):
+        self.assertFalse(has_usable_text_lines([]))
+        self.assertFalse(has_usable_text_lines(None))
+
+    def test_nonempty_text_is_usable(self):
+        self.assertTrue(has_usable_text_lines([{"line": "Текст", "page": None}]))
+        self.assertFalse(has_usable_text_lines([{"line": "   ", "page": None}]))

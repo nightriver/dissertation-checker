@@ -44,6 +44,7 @@ from ui_helpers import (
     file_sha256,
     make_pair_key,
     reset_pair_scoped_state,
+    has_usable_text_lines,
 )
 from compare.matcher import compare_documents
 from compare.prepare import prepare_document_for_comparison
@@ -688,14 +689,21 @@ def render_two_file_compare_page() -> None:
         if uploaded is None or data is None:
             return None, None
         try:
-            return cached_extract(data, uploaded.name), None
+            extracted = cached_extract(data, uploaded.name)
+            if not has_usable_text_lines(extracted):
+                return None, (
+                    "У файлі не знайдено текстових абзаців. "
+                    "Перевірте, чи текст не розміщено лише в таблицях або зображеннях."
+                )
+            return extracted, None
         except (FileTooLargeError, ScannedPDFError, UnsupportedFormatError) as exc:
             return None, str(exc)
         except Exception as exc:
             return None, f"Не вдалося прочитати файл: {exc}"
 
-    lines_a, error_a = read_uploaded(uploaded_a, data_a)
-    lines_b, error_b = read_uploaded(uploaded_b, data_b)
+    with st.spinner("Читання файлів…"):
+        lines_a, error_a = read_uploaded(uploaded_a, data_a)
+        lines_b, error_b = read_uploaded(uploaded_b, data_b)
     prepared_preview_a = cached_prepare_compare(lines_to_tuple(lines_a)) if lines_a else None
     prepared_preview_b = cached_prepare_compare(lines_to_tuple(lines_b)) if lines_b else None
 
@@ -734,8 +742,6 @@ def render_two_file_compare_page() -> None:
         st.error("Завантажено той самий файл з обох боків (збігається SHA-256).")
     ready = bool(lines_a is not None and lines_b is not None and not identical)
     if st.button("Порівняти", type="primary", use_container_width=True, disabled=not ready):
-        with st.spinner("Читання файлів завершено…"):
-            pass
         with st.spinner("Підготовка текстів…"):
             cached_prepare_compare(lines_to_tuple(lines_a))
             cached_prepare_compare(lines_to_tuple(lines_b))

@@ -44,6 +44,48 @@ def test_toc_heading_with_page_number_on_next_line_is_not_content_boundary():
     assert [item.reason for item in prepared.excluded] == ["title_page", "toc"]
 
 
+def test_multiline_toc_entry_without_adjacent_page_number_is_not_content_boundary():
+    prepared = prepare_document(_lines(
+        "Титульний аркуш",
+        "ЗМІСТ",
+        "ВСТУП",
+        "Актуальність, мета та завдання дослідження",
+        "5",
+        "РОЗДІЛ 1. Поняття адміністративно-правового статусу",
+        "громадянина та його зміст",
+        "15",
+        "ВИСНОВКИ",
+        "180",
+        "ВСТУП",
+        "Справжній авторський вступ",
+        "РОЗДІЛ 1 Теоретичні засади",
+        "Основний текст",
+        "ВИСНОВКИ",
+        "Підсумковий текст",
+    ))
+    assert prepared.resembles_dissertation
+    assert prepared.tokens[0].normalized == "вступ"
+    assert prepared.tokens[1].normalized == "справжній"
+
+
+def test_word_contents_inside_main_text_is_not_mistaken_for_toc_header():
+    prepared = prepare_document(_lines(
+        "Титульний аркуш",
+        "ВСТУП……5",
+        "РОЗДІЛ 1. Теоретичні засади……15",
+        "ВСТУП",
+        "Справжній авторський вступ",
+        "зміст",
+        "РОЗДІЛ 1 Теоретичні засади",
+        "Основний текст",
+        "ВИСНОВКИ",
+        "Підсумковий текст",
+    ))
+    assert prepared.resembles_dissertation
+    assert prepared.tokens[0].normalized == "вступ"
+    assert prepared.tokens[1].normalized == "справжній"
+
+
 def test_non_dissertation_is_not_trimmed():
     lines = _lines("Міністерство освіти і науки України", "Текст статті")
     prepared = prepare_document(lines)

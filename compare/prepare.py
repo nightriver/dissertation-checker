@@ -43,10 +43,39 @@ def _is_toc_heading(lines: list[LineItem], index: int) -> bool:
     return is_toc_entry(text) or bool(_PAGE_NUMBER_RE.fullmatch(_next_nonempty_text(lines, index)))
 
 
+def _find_content_line(lines: list[LineItem]) -> int | None:
+    """Знаходить справжній ВСТУП, навіть якщо записи ЗМІСТ перенесені."""
+    intros = [
+        index for index, item in enumerate(lines)
+        if _heading_kind(item.get("line") or "") == "intro"
+    ]
+    if not intros:
+        return None
+    toc_header = next(
+        (
+            index
+            for index, item in enumerate(lines[:intros[0]])
+            if _is_toc_header(item.get("line") or "")
+        ),
+        None,
+    )
+    if toc_header is not None:
+        after_header = [index for index in intros if index > toc_header]
+        if len(after_header) >= 2:
+            return after_header[-1]
+        if len(after_header) == 1 and not _is_toc_heading(lines, after_header[0]):
+            return after_header[0]
+        return None
+    return next((index for index in intros if not _is_toc_heading(lines, index)), None)
+
+
 def resembles_dissertation(lines: list[LineItem]) -> bool:
+    content_line = _find_content_line(lines)
+    if content_line is None:
+        return False
     kinds = {
         kind
-        for index, item in enumerate(lines)
+        for index, item in enumerate(lines[content_line:], content_line)
         if not _is_toc_heading(lines, index)
         if (kind := _heading_kind(item.get("line") or ""))
     }
@@ -66,17 +95,8 @@ def prepare_document(lines: list[LineItem]) -> PreparedDocument:
     if not resembles_dissertation(lines):
         return PreparedDocument(tokens, tokens, (), False)
 
-    actual_intro = [
-        index for index, item in enumerate(lines)
-        if _heading_kind(item.get("line") or "") == "intro"
-        and not _is_toc_heading(lines, index)
-    ]
-    actual_structure = [
-        index for index, item in enumerate(lines)
-        if _heading_kind(item.get("line") or "")
-        and not _is_toc_heading(lines, index)
-    ]
-    content_line = (actual_intro or actual_structure)[0]
+    content_line = _find_content_line(lines)
+    assert content_line is not None  # гарантує resembles_dissertation вище
     toc_line = next(
         (
             index for index, item in enumerate(lines[:content_line])

@@ -76,6 +76,11 @@ def file_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def has_usable_text_lines(lines: list[LineItem] | None) -> bool:
+    """Порожній DOCX або файл лише з таблицями не можна порівнювати як текст."""
+    return bool(lines and any((item.get("line") or "").strip() for item in lines))
+
+
 def make_pair_key(checked: bytes, source: bytes) -> str:
     """Ролі входять до ключа, тому A/B та B/A — різні порівняння."""
     return f"checked:{file_sha256(checked)}|source:{file_sha256(source)}"

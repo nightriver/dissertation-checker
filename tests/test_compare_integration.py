@@ -2,6 +2,7 @@ import pytest
 
 from compare.matcher import compare_documents
 from parser.extractor import ScannedPDFError, extract_lines
+from ui_helpers import has_usable_text_lines
 
 
 COMMON = " ".join(f"commonword{index}" for index in range(20))
@@ -41,3 +42,9 @@ def test_scanned_pdf_error_is_local_and_other_file_still_reads(empty_pdf, make_d
     with pytest.raises(ScannedPDFError):
         extract_lines(empty_pdf, "scan.pdf")
     assert valid
+
+
+def test_empty_docx_is_rejected_as_unusable_compare_text(make_docx):
+    lines = extract_lines(make_docx([]), "empty.docx")
+    assert lines == []
+    assert not has_usable_text_lines(lines)
