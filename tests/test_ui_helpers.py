@@ -11,6 +11,11 @@ from ui_helpers import (
     tuple_to_lines,
     make_file_key,
     reset_file_scoped_state,
+    is_compare_mode,
+    PAIR_SCOPED_KEYS,
+    file_sha256,
+    make_pair_key,
+    reset_pair_scoped_state,
 )
 
 
@@ -108,3 +113,38 @@ class TestMakeFileKey(unittest.TestCase):
 
     def test_same_name_different_size_differs(self):
         self.assertNotEqual(make_file_key("a.pdf", 10), make_file_key("a.pdf", 11))
+
+
+class TestCompareMode(unittest.TestCase):
+    def test_compare_mode_is_explicit(self):
+        self.assertTrue(is_compare_mode({"mode": "compare"}))
+        self.assertFalse(is_compare_mode({}))
+        self.assertFalse(is_compare_mode({"mode": "other"}))
+
+    def test_compare_mode_accepts_legacy_list_value(self):
+        self.assertTrue(is_compare_mode({"mode": ["compare"]}))
+        self.assertFalse(is_compare_mode({"mode": []}))
+
+
+class TestPairScopedState(unittest.TestCase):
+    def test_pair_key_uses_content_hash_and_roles(self):
+        key = make_pair_key(b"left", b"right")
+        self.assertIn(file_sha256(b"left"), key)
+        self.assertNotEqual(key, make_pair_key(b"right", b"left"))
+
+    def test_changing_one_file_clears_only_pair_state(self):
+        state = {key: "old" for key in PAIR_SCOPED_KEYS}
+        state["unrelated"] = "keep"
+        reset_pair_scoped_state(state, make_pair_key(b"a", b"b"))
+        state.update({key: "result" for key in PAIR_SCOPED_KEYS})
+        self.assertTrue(reset_pair_scoped_state(state, make_pair_key(b"a", b"c")))
+        self.assertEqual(state["unrelated"], "keep")
+        self.assertTrue(all(key not in state for key in PAIR_SCOPED_KEYS))
+
+    def test_same_pair_is_noop(self):
+        state = {}
+        key = make_pair_key(b"a", b"b")
+        self.assertTrue(reset_pair_scoped_state(state, key))
+        state["compare_result"] = "kept"
+        self.assertFalse(reset_pair_scoped_state(state, key))
+        self.assertEqual(state["compare_result"], "kept")

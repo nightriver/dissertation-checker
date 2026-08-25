@@ -117,6 +117,22 @@ def restore_word(word: str) -> str:
     return "".join(HOMOGLYPHS.get(ch, ch) for ch in word)
 
 
+def normalize_mixed_homoglyphs(text: str) -> str:
+    """
+    Виправляє гомогліфи лише в змішаних кириличних підтокенах.
+
+    На відміну від ``restore_word``, ця публічна функція безпечна для
+    англійського тексту: суцільні латинські слова залишаються без змін.
+    """
+    letters_re = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+    def restore_if_mixed(match: re.Match) -> str:
+        value = match.group(0)
+        return restore_word(value) if _is_mixed_hit(value) else value
+
+    return letters_re.sub(restore_if_mixed, text)
+
+
 def _is_mixed_hit(subtoken: str) -> bool:
     """
     H1 — змішане слово: підтокен містить літери двох систем письма, кирилиця

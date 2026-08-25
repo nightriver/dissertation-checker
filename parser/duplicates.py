@@ -17,6 +17,7 @@ from difflib import SequenceMatcher
 from typing import Literal, Optional
 
 from parser.types import Severity
+from parser.text_forensics import normalize_mixed_homoglyphs
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +55,13 @@ _STOPWORDS = {
 }
 
 TitleMethod = Literal["dstu", "full"]
+
+
+@dataclass(frozen=True)
+class BibliographicKey:
+    author: str
+    year: int | None
+    title: str
 
 
 def normalize_title(title: str) -> str:
@@ -105,6 +113,32 @@ def extract_title(entry: str) -> tuple[str, TitleMethod]:
         return normalize_title(entry), "full"
 
     return normalized, "dstu"
+
+
+def extract_author(entry: str) -> str:
+    """Окремий сумісний API автора; контракт ``extract_title`` не змінює."""
+    head = normalize_mixed_homoglyphs(entry.strip())
+    authors: list[str] = []
+    while True:
+        match = _AUTHOR_RE.match(head)
+        if not match or match.end() == 0:
+            break
+        authors.append(match.group(0).strip(" ,;"))
+        head = head[match.end():]
+    return normalize_title(" ".join(authors))
+
+
+def make_bibliographic_key(entry: str) -> BibliographicKey:
+    """Окремий ключ «автор + рік + назва» для міждокументного зіставлення."""
+    from parser.year_extractor import extract_year
+
+    normalized_entry = normalize_mixed_homoglyphs(entry)
+    title, _method = extract_title(normalized_entry)
+    return BibliographicKey(
+        author=extract_author(normalized_entry),
+        year=extract_year(normalized_entry),
+        title=title,
+    )
 
 
 # ---------------------------------------------------------------------------

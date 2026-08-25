@@ -1,0 +1,102 @@
+"""Підготовка структурних зон документа до текстового порівняння."""
+
+from __future__ import annotations
+
+import re
+
+from compare.normalize import tokenize_lines
+from compare.types import ExcludedRange, PreparedDocument
+from parser.types import LineItem, is_toc_entry
+
+
+_SPACE_RE = re.compile(r"\s+")
+
+
+def _heading_kind(text: str) -> str | None:
+    normalized = _SPACE_RE.sub(" ", text.strip().upper())
+    if normalized == "ВСТУП":
+        return "intro"
+    if re.match(r"^РОЗДІЛ\s+\d+\b", normalized):
+        return "chapter"
+    if normalized.startswith("ВИСНОВКИ"):
+        return "conclusions"
+    return None
+
+
+def resembles_dissertation(lines: list[LineItem]) -> bool:
+    kinds = {
+        kind
+        for item in lines
+        if not is_toc_entry(item.get("line") or "")
+        if (kind := _heading_kind(item.get("line") or ""))
+    }
+    return {"intro", "chapter", "conclusions"}.issubset(kinds)
+
+
+def _token_boundary(tokens, line_index: int) -> int:
+    for index, token in enumerate(tokens):
+        if token.parts[0].line_index >= line_index:
+            return index
+    return len(tokens)
+
+
+def prepare_document(lines: list[LineItem]) -> PreparedDocument:
+    """Виключає титул/ЗМІСТ лише у файлу з надійною структурою дисертації."""
+    tokens = tokenize_lines(lines)
+    if not resembles_dissertation(lines):
+        return PreparedDocument(tokens, tokens, (), False)
+
+    content_line = next(
+        index
+        for index, item in enumerate(lines)
+        if _heading_kind(item.get("line") or "") and not is_toc_entry(item.get("line") or "")
+    )
+    toc_line = next(
+        (
+            index for index, item in enumerate(lines[:content_line])
+            if _SPACE_RE.sub(" ", (item.get("line") or "").strip().upper()) == "ЗМІСТ"
+        ),
+        None,
+    )
+    content_token = _token_boundary(tokens, content_line)
+    excluded: list[ExcludedRange] = []
+    if toc_line is None:
+        if content_token:
+            excluded.append(ExcludedRange(0, content_token, "title_page"))
+    else:
+        toc_token = _token_boundary(tokens, toc_line)
+        if toc_token:
+            excluded.append(ExcludedRange(0, toc_token, "title_page"))
+        if content_token > toc_token:
+            excluded.append(ExcludedRange(toc_token, content_token, "toc"))
+    return PreparedDocument(tokens[content_token:], tokens, tuple(excluded), True)
+
+
+def prepare_document_for_comparison(lines: list[LineItem]):
+    """Додатково виносить надійно розпізнану бібліографію в окремий прохід."""
+    from parser.bibliography import (
+        BibliographyNotFoundError,
+        MIN_BIBLIO_ENTRIES,
+        parse_bibliography,
+        split_zones,
+    )
+
+    prepared = prepare_document(lines)
+    entries = {}
+    try:
+        zones = split_zones(lines)
+        entries = parse_bibliography(zones.bibliography)
+    except BibliographyNotFoundError:
+        zones = None
+    if zones is not None and len(entries) >= MIN_BIBLIO_ENTRIES:
+        start_line = len(zones.body)
+        end_line = start_line + len(zones.bibliography)
+        start_token = _token_boundary(prepared.all_tokens, start_line)
+        end_token = _token_boundary(prepared.all_tokens, end_line)
+        prepared.tokens = [
+            token for token in prepared.tokens
+            if not (start_line <= token.parts[0].line_index < end_line)
+        ]
+        if end_token > start_token:
+            prepared.excluded += (ExcludedRange(start_token, end_token, "bibliography"),)
+    return prepared, entries

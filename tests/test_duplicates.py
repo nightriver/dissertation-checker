@@ -6,7 +6,7 @@
 
 from difflib import SequenceMatcher
 
-from parser.duplicates import extract_title, find_duplicates
+from parser.duplicates import extract_author, extract_title, find_duplicates, make_bibliographic_key
 from parser.types import Severity
 
 
@@ -21,6 +21,17 @@ def test_title_author_first_with_colon_separator():
     )
     assert method == "dstu"
     assert title == "цифрова трансформація публічного управління"
+
+
+def test_separate_author_and_key_api_keeps_extract_title_contract():
+    entry = "Івaнов І. І. Цифрова економіка України. Київ, 2019."
+    title_result = extract_title(entry)
+    assert isinstance(title_result, tuple) and len(title_result) == 2
+    assert extract_author(entry) == "іванов"
+    key = make_bibliographic_key(entry)
+    assert key.author == "іванов"
+    assert key.year == 2019
+    assert key.title == "цифрова економіка україни"
 
 
 def test_title_first_with_slash_separator():

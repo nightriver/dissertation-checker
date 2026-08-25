@@ -1,0 +1,19 @@
+"""Єдине місце стартових порогів алгоритму з розділу 6.3 плану."""
+
+FINGERPRINT_K = 5
+WINNOW_WINDOW = 4
+MAX_FINGERPRINT_POSTINGS = 40
+MAX_SEED_GAP = 60
+MAX_CHAIN_DRIFT = 120
+MIN_SEEDS_PER_CHAIN = 2
+MIN_CANDIDATE_TOKENS = 15
+MAX_CANDIDATE_TOKENS = 3000
+CANDIDATE_OVERLAP = 200
+MAX_CHAINS = 5000
+
+FUZZY_THRESHOLD = 0.75
+FUZZY_SHORT_THRESHOLD = 0.70
+
+# Розділ 6.7: лишається вимкненим, доки немає відомих пар для калібрування.
+USE_TRUNCATED_STEMS = False
+TRUNCATED_STEM_LENGTH = 6

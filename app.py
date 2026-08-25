@@ -40,7 +40,14 @@ from ui_helpers import (
     tuple_to_lines,
     make_file_key,
     reset_file_scoped_state,
+    is_compare_mode,
+    file_sha256,
+    make_pair_key,
+    reset_pair_scoped_state,
 )
+from compare.matcher import compare_documents
+from compare.prepare import prepare_document_for_comparison
+from compare.presentation import format_physical_pages, render_comparison_table
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +144,16 @@ def cached_analyze(bibliography_lines_tuple: tuple, body_lines_tuple: tuple) -> 
 @st.cache_data(show_spinner="Пошук підміни символів…")
 def cached_forensics(lines_tuple: tuple):
     return scan_text_forensics(tuple_to_lines(lines_tuple))
+
+
+@st.cache_data(show_spinner="Підготовка тексту…")
+def cached_prepare_compare(lines_tuple: tuple):
+    return prepare_document_for_comparison(tuple_to_lines(lines_tuple))[0]
+
+
+@st.cache_data(show_spinner="Пошук і вирівнювання збігів…")
+def cached_compare_documents(lines_a_tuple: tuple, lines_b_tuple: tuple):
+    return compare_documents(tuple_to_lines(lines_a_tuple), tuple_to_lines(lines_b_tuple))
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +641,183 @@ def render_tab_highlighter(
 # ГОЛОВНИЙ ПОТІК СТОРІНКИ
 # ===========================================================================
 
-st.title("📚 Перевірка джерел дисертації")
+def render_two_file_compare_page() -> None:
+    """Окремий екран; основний сценарій нижче лишається недоторканим."""
+    if st.button("← Повернутися до перевірки джерел", key="compare_back"):
+        st.query_params.clear()
+        st.rerun()
+
+    st.title("Порівняння двох робіт")
+    st.caption(
+        "Завантажте перевірювану дисертацію та ймовірне джерело. "
+        "Система показує текстові збіги для експертної перевірки й не визначає напрям запозичення."
+    )
+    st.info(
+        "Знаходить дослівні збіги та змінені фрагменти, у яких збереглися точні "
+        "послідовності слів. Не виявляє повністю перефразований текст."
+    )
+
+    left_column, right_column = st.columns(2)
+    with left_column:
+        uploaded_a = st.file_uploader(
+            "Перевірювана дисертація", type=["pdf", "docx"],
+            key="compare_checked_upload", help="PDF із текстовим шаром або DOCX, до 30 МБ",
+        )
+    with right_column:
+        uploaded_b = st.file_uploader(
+            "Ймовірне джерело", type=["pdf", "docx"],
+            key="compare_source_upload", help="PDF із текстовим шаром або DOCX, до 30 МБ",
+        )
+
+    data_a = uploaded_a.getvalue() if uploaded_a else None
+    data_b = uploaded_b.getvalue() if uploaded_b else None
+    hash_a = file_sha256(data_a) if data_a is not None else "—"
+    hash_b = file_sha256(data_b) if data_b is not None else "—"
+    pair_key = (
+        make_pair_key(data_a, data_b)
+        if data_a is not None and data_b is not None
+        else f"checked:{hash_a}|source:{hash_b}"
+    )
+    reset_pair_scoped_state(st.session_state, pair_key)
+
+    lines_a = lines_b = None
+    error_a = error_b = None
+
+    def read_uploaded(uploaded, data):
+        if uploaded is None or data is None:
+            return None, None
+        try:
+            return cached_extract(data, uploaded.name), None
+        except (FileTooLargeError, ScannedPDFError, UnsupportedFormatError) as exc:
+            return None, str(exc)
+        except Exception as exc:
+            return None, f"Не вдалося прочитати файл: {exc}"
+
+    lines_a, error_a = read_uploaded(uploaded_a, data_a)
+    lines_b, error_b = read_uploaded(uploaded_b, data_b)
+
+    def render_file_info(uploaded, lines, error):
+        if uploaded is None:
+            return
+        st.caption(f"{uploaded.name} · {uploaded.name.rsplit('.', 1)[-1].upper()}")
+        if error:
+            st.error(f"❌ {error}")
+            return
+        pages = sorted({item.get("page") for item in lines if item.get("page") is not None})
+        text_lines = sum(bool((item.get("line") or "").strip()) for item in lines)
+        st.caption(f"Текстових рядків: {text_lines} · аркушів PDF: {len(pages) if pages else '—'}")
+        if text_lines < 10:
+            st.warning("Тексту дуже мало; результат може бути неповним.")
+
+    with left_column:
+        render_file_info(uploaded_a, lines_a, error_a)
+    with right_column:
+        render_file_info(uploaded_b, lines_b, error_b)
+
+    identical = data_a is not None and data_b is not None and hash_a == hash_b
+    if identical:
+        st.error("Завантажено той самий файл з обох боків (збігається SHA-256).")
+    ready = bool(lines_a is not None and lines_b is not None and not identical)
+    if st.button("Порівняти", type="primary", use_container_width=True, disabled=not ready):
+        with st.spinner("Пошук кандидатів і вирівнювання фрагментів…"):
+            st.session_state.compare_result = cached_compare_documents(
+                lines_to_tuple(lines_a), lines_to_tuple(lines_b)
+            )
+            st.session_state.compare_visible_limit = 100
+
+    result = st.session_state.get("compare_result")
+    if result is None or lines_a is None or lines_b is None:
+        return
+
+    prepared_a = cached_prepare_compare(lines_to_tuple(lines_a))
+    prepared_b = cached_prepare_compare(lines_to_tuple(lines_b))
+    if not result.analysis_complete:
+        st.warning(
+            f"⚠ Аналіз обмежено: оброблено {result.candidates_processed} із "
+            f"{result.candidates_total} областей-кандидатів. Наведені відсотки — "
+            "нижня оцінка, реальне покриття може бути більшим."
+        )
+
+    accepted = [segment for segment in result.segments if segment.status != "normative_only"]
+    normative_only_count = sum(segment.status == "normative_only" for segment in result.segments)
+    coverage_a = result.covered_tokens_a / result.analyzed_tokens_a if result.analyzed_tokens_a else 0.0
+    coverage_b = result.covered_tokens_b / result.analyzed_tokens_b if result.analyzed_tokens_b else 0.0
+    strict_a = result.covered_tokens_a_strict / result.analyzed_tokens_a if result.analyzed_tokens_a else 0.0
+    strict_b = result.covered_tokens_b_strict / result.analyzed_tokens_b if result.analyzed_tokens_b else 0.0
+    metric_hits, metric_a, metric_b = st.columns(3)
+    metric_hits.metric("Знайдені фрагменти", len(accepted))
+    metric_a.metric("Покриття дисертації", f"{coverage_a:.1%}", f"{strict_a:.1%} без нормативних")
+    metric_b.metric("Покриття джерела", f"{coverage_b:.1%}", f"{strict_b:.1%} без нормативних")
+
+    for label, prepared in (("ліворуч", prepared_a), ("праворуч", prepared_b)):
+        if prepared.excluded:
+            details = []
+            reason_labels = {"title_page": "титул", "toc": "зміст", "bibliography": "бібліографію"}
+            for excluded in prepared.excluded:
+                place = format_physical_pages(prepared.all_tokens, excluded.start, excluded.end)
+                details.append(f"{reason_labels[excluded.reason]} ({place})")
+            st.caption(f"Виключено з основного текстового порівняння {label}: " + ", ".join(details))
+
+    st.markdown("#### Окреме порівняння списків літератури")
+    biblio = result.biblio
+    if biblio is None or not (biblio.parsed_a and biblio.parsed_b):
+        st.warning("Список літератури не розпізнано — порівняння списків недоступне.")
+    else:
+        common = biblio.common_exact + biblio.common_near
+        order_text = (
+            f" · серії спільного порядку: {sum(biblio.order_runs)}"
+            if biblio.order_signal_applicable else " · порядок не оцінюється: обидва списки алфавітні"
+        )
+        st.info(
+            f"{biblio.entries_a} і {biblio.entries_b} записів · спільних джерел: {common} "
+            f"(точних {biblio.common_exact}, близьких {biblio.common_near}){order_text}"
+        )
+
+    st.markdown("#### Текстові збіги")
+    st.markdown("**🟡 збігається · 🩵 відрізняється** · покриття рахується за точними збігами")
+    filter_column, sort_column = st.columns(2)
+    with filter_column:
+        type_filter = st.selectbox("Тип", ["усі", "дослівний", "змінений"], key="compare_type_filter")
+    with sort_column:
+        sort_mode = st.selectbox("Сортування", ["за місцем", "за схожістю"], key="compare_sort")
+    show_normative = st.checkbox(
+        f"Показати ймовірно нормативні збіги ({normative_only_count})",
+        value=False,
+        key="compare_show_normative",
+    )
+    visible = [
+        segment for segment in result.segments
+        if (segment.status != "normative_only" or show_normative)
+        and (type_filter == "усі" or (type_filter == "дослівний") == (segment.kind == "verbatim"))
+    ]
+    if sort_mode == "за схожістю":
+        visible.sort(key=lambda segment: segment.similarity, reverse=True)
+    else:
+        visible.sort(key=lambda segment: (segment.a_start, segment.status == "accepted_normative"))
+    limit = st.session_state.get("compare_visible_limit", 100)
+    st.markdown(
+        render_comparison_table(
+            visible[:limit], lines_a, prepared_a.tokens, lines_b, prepared_b.tokens
+        ),
+        unsafe_allow_html=True,
+    )
+    if len(visible) > limit and st.button("Показати ще", key="compare_show_more"):
+        st.session_state.compare_visible_limit = limit + 100
+        st.rerun()
+
+
+if is_compare_mode(st.query_params):
+    render_two_file_compare_page()
+    st.stop()
+
+header_main, header_compare = st.columns([4, 1])
+with header_main:
+    st.title("📚 Перевірка джерел дисертації")
+with header_compare:
+    st.markdown(" ")
+    if st.button("Порівняти дві роботи →", key="open_compare", use_container_width=True):
+        st.query_params["mode"] = "compare"
+        st.rerun()
 st.caption(
     "Автоматичне виявлення невикористаних бібліографічних джерел у тексті дисертації."
 )

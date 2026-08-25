@@ -9,8 +9,17 @@ app.py виконує код Streamlit на рівні модуля, тому і
 from __future__ import annotations
 
 from typing import Any, Iterable, MutableMapping
+import hashlib
 
 from parser.types import LineItem
+
+
+def is_compare_mode(query_params: MutableMapping[str, Any]) -> bool:
+    """Повертає True лише для окремого режиму порівняння двох робіт."""
+    value = query_params.get("mode")
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    return value == "compare"
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +37,13 @@ FILE_SCOPED_KEYS: tuple[str, ...] = (
 )
 
 _FILE_KEY = "current_file_key"
+
+PAIR_SCOPED_KEYS: tuple[str, ...] = (
+    "compare_result",
+    "compare_visible_limit",
+    "compare_filters",
+)
+_PAIR_KEY = "current_compare_pair_key"
 
 
 def make_file_key(name: str, size: int, file_id: str | None = None) -> str:
@@ -50,6 +66,24 @@ def reset_file_scoped_state(state: MutableMapping[str, Any], file_key: str) -> b
         return False
     state[_FILE_KEY] = file_key
     for key in FILE_SCOPED_KEYS:
+        state.pop(key, None)
+    return True
+
+
+def file_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def make_pair_key(checked: bytes, source: bytes) -> str:
+    """Ролі входять до ключа, тому A/B та B/A — різні порівняння."""
+    return f"checked:{file_sha256(checked)}|source:{file_sha256(source)}"
+
+
+def reset_pair_scoped_state(state: MutableMapping[str, Any], pair_key: str) -> bool:
+    if state.get(_PAIR_KEY) == pair_key:
+        return False
+    state[_PAIR_KEY] = pair_key
+    for key in PAIR_SCOPED_KEYS:
         state.pop(key, None)
     return True
 
