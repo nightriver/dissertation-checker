@@ -1,0 +1,281 @@
+{
+  "schema_version": 1,
+  "source": "manual review, PLAN_SEARCH.md step 2 (§22)",
+  "documents": [
+    {
+      "file": "Работа май-docx-2.pdf",
+      "sha256": "3a741270f09483ddca17b670df646004de18b2b9dd7131982f1f01d731d1dde5",
+      "expected_pages": 346,
+      "headings": {
+        "intro_page": 25,
+        "first_chapter_page": 35,
+        "conclusions_page": 291,
+        "bibliography_page": 295
+      },
+      "author_text_min_words": 26885,
+      "bibliography_entry_count_observed": 300,
+      "zone_examples": {
+        "quoted_text": {
+          "page": 26,
+          "word_count": 2,
+          "fragment_sha256": "994684dac712157e"
+        },
+        "author_text": {
+          "page": 25,
+          "word_count": 9,
+          "fragment_sha256": "30a3585152fd4eea"
+        }
+      },
+      "citation_example": {
+        "source_ordinal": 1,
+        "bracket_text_sha256": "080a9ed428559ef6",
+        "page": 45,
+        "bibliography_entry_sha256": "8c888b7e774e9073"
+      }
+    },
+    {
+      "file": "Гончарова-Парфьонова_дисертація.pdf",
+      "sha256": "969a494a9f33fb8e8f0953f45d3b83e718623ded9bc6cede71a6b599d65ad865",
+      "expected_pages": 205,
+      "headings": {
+        "intro_page": 19,
+        "first_chapter_page": 29,
+        "conclusions_page": 170,
+        "bibliography_page": 179
+      },
+      "author_text_min_words": 18950,
+      "bibliography_entry_count_observed": 202,
+      "zone_examples": {
+        "quoted_text": {
+          "page": 21,
+          "word_count": 5,
+          "fragment_sha256": "a65cb8ce9b65e8e5"
+        },
+        "author_text": {
+          "page": 19,
+          "word_count": 9,
+          "fragment_sha256": "835c481359409b32"
+        }
+      },
+      "citation_example": {
+        "source_ordinal": 1,
+        "bracket_text_sha256": "1205bf32b9ef44c9",
+        "page": 117,
+        "bibliography_entry_sha256": "981910ec9da3acba"
+      }
+    },
+    {
+      "file": "DISSERTAZIYA.doc.pdf",
+      "sha256": "be6e42c962e80a9fc6aea5a23eca0a14f2164e806cc7d5ee0f90ab840c355424",
+      "expected_pages": 152,
+      "headings": {
+        "intro_page": 3,
+        "first_chapter_page": 10,
+        "conclusions_page": 117,
+        "bibliography_page": 125
+      },
+      "author_text_min_words": 25023,
+      "bibliography_entry_count_observed": 418,
+      "zone_examples": {
+        "quoted_text": {
+          "page": 18,
+          "word_count": 3,
+          "fragment_sha256": "0c5e6c48ffdcc2e9"
+        },
+        "author_text": {
+          "page": 3,
+          "word_count": 9,
+          "fragment_sha256": "264af7d4362c62b4"
+        }
+      },
+      "citation_example": {
+        "source_ordinal": 2,
+        "bracket_text_sha256": "a5f5460b5659e25a",
+        "page": 6,
+        "bibliography_entry_sha256": "5b417089fc70cf6d"
+      }
+    },
+    {
+      "file": "diss-doc.pdf",
+      "sha256": "206435aa79b82df7838af4c70de502237715f37f5eec97803a72efdea35f5b70",
+      "expected_pages": 232,
+      "headings": {
+        "intro_page": 5,
+        "first_chapter_page": 14,
+        "conclusions_page": 175,
+        "bibliography_page": 196
+      },
+      "author_text_min_words": 27972,
+      "bibliography_entry_count_observed": 356,
+      "zone_examples": {
+        "quoted_text": {
+          "page": 7,
+          "word_count": 4,
+          "fragment_sha256": "1781454a81d0dfdf"
+        },
+        "author_text": {
+          "page": 5,
+          "word_count": 8,
+          "fragment_sha256": "ef623382d947ce9f"
+        }
+      },
+      "citation_example": {
+        "source_ordinal": 1,
+        "bracket_text_sha256": "97bd350d4e9cf321",
+        "page": 37,
+        "bibliography_entry_sha256": "9d1c93238957f4fc"
+      }
+    },
+    {
+      "file": "diskor-корецька.pdf",
+      "sha256": "51216bcff7bf7f1167e713f3db3f367cc9ff43f4abbee5c3056c4c8884d6188d",
+      "expected_pages": 193,
+      "headings": {
+        "intro_page": 17,
+        "first_chapter_page": 25,
+        "conclusions_page": 162,
+        "bibliography_page": 167
+      },
+      "author_text_min_words": 18515,
+      "bibliography_entry_count_observed": 253,
+      "zone_examples": {
+        "quoted_text": {
+          "page": 19,
+          "word_count": 11,
+          "fragment_sha256": "b5076bdb6bfed5f4"
+        },
+        "author_text": {
+          "page": 17,
+          "word_count": 9,
+          "fragment_sha256": "8345c553ee723e22"
+        }
+      },
+      "citation_example": {
+        "source_ordinal": 1,
+        "bracket_text_sha256": "8a1004293dbdd5f4",
+        "page": null,
+        "bibliography_entry_sha256": "2c6c4df19c96afbf"
+      }
+    },
+    {
+      "file": "diser.pdf",
+      "sha256": "58ddb14aeb1490dbc218ad5fd7627236a6a4c7a292fbce94d30b263a5b28ced5",
+      "expected_pages": 323,
+      "headings": {
+        "intro_page": 14,
+        "first_chapter_page": 23,
+        "conclusions_page": 249,
+        "bibliography_page": 255
+      },
+      "author_text_min_words": 43417,
+      "bibliography_entry_count_observed": 505,
+      "zone_examples": {
+        "quoted_text": {
+          "page": 17,
+          "word_count": 3,
+          "fragment_sha256": "8b699ee9796bf3a1"
+        },
+        "author_text": {
+          "page": 14,
+          "word_count": 14,
+          "fragment_sha256": "c0f42d01de3e68f8"
+        }
+      },
+      "citation_example": {
+        "source_ordinal": 1,
+        "bracket_text_sha256": "080a9ed428559ef6",
+        "page": 198,
+        "bibliography_entry_sha256": "a03018a4d9729fde"
+      }
+    },
+    {
+      "file": "dis2005_bayar_kandidat.PDF",
+      "sha256": "a182fed05a3be2e9fed96b5974b741fbebcf47b5e2e2137b2a2174f3a11b788e",
+      "expected_pages": 144,
+      "headings": {
+        "intro_page": 3,
+        "first_chapter_page": 9,
+        "conclusions_page": 121,
+        "bibliography_page": 129
+      },
+      "author_text_min_words": 22447,
+      "bibliography_entry_count_observed": 308,
+      "zone_examples": {
+        "quoted_text": null,
+        "author_text": {
+          "page": 3,
+          "word_count": 11,
+          "fragment_sha256": "7b11e0f5320bb24e"
+        }
+      },
+      "citation_example": {
+        "source_ordinal": 1,
+        "bracket_text_sha256": "080a9ed428559ef6",
+        "page": 16,
+        "bibliography_entry_sha256": "66d8fe1e67da1cca"
+      }
+    },
+    {
+      "file": "dis.doc-КОЦЮБА.pdf",
+      "sha256": "b8baed782d3dc34bc024dc03e8fe9d936ba6458d6cda93a122647dc3dfd3f7e7",
+      "expected_pages": 231,
+      "headings": {
+        "intro_page": 5,
+        "first_chapter_page": 10,
+        "conclusions_page": 146,
+        "bibliography_page": 149
+      },
+      "author_text_min_words": 14838,
+      "bibliography_entry_count_observed": 233,
+      "zone_examples": {
+        "quoted_text": {
+          "page": 8,
+          "word_count": 5,
+          "fragment_sha256": "4bbe252f6a1a1f5d"
+        },
+        "author_text": {
+          "page": 5,
+          "word_count": 9,
+          "fragment_sha256": "15334c32c2ca690e"
+        }
+      },
+      "citation_example": {
+        "source_ordinal": 1,
+        "bracket_text_sha256": "c499cbec877460e8",
+        "page": 8,
+        "bibliography_entry_sha256": "454aa4f5d6c30c8a"
+      }
+    },
+    {
+      "file": "Dis-doc-марченко.pdf",
+      "sha256": "9920ba21806de458f5b8838574d25f94012d207e0064f1e037627573c0f0b1a4",
+      "expected_pages": 189,
+      "headings": {
+        "intro_page": 14,
+        "first_chapter_page": 21,
+        "conclusions_page": 162,
+        "bibliography_page": 171
+      },
+      "author_text_min_words": 17974,
+      "bibliography_entry_count_observed": 166,
+      "zone_examples": {
+        "quoted_text": {
+          "page": 25,
+          "word_count": 4,
+          "fragment_sha256": "6750fc973f7133af"
+        },
+        "author_text": {
+          "page": 14,
+          "word_count": 8,
+          "fragment_sha256": "8880ffccc207ac44"
+        }
+      },
+      "citation_example": {
+        "source_ordinal": 1,
+        "bracket_text_sha256": "080a9ed428559ef6",
+        "page": 117,
+        "bibliography_entry_sha256": "6ddab930c463223d"
+      }
+    }
+  ]
+}
