@@ -43,6 +43,12 @@ def _is_toc_heading(lines: list[LineItem], index: int) -> bool:
     return is_toc_entry(text) or bool(_PAGE_NUMBER_RE.fullmatch(_next_nonempty_text(lines, index)))
 
 
+def _is_toc_boundary_marker(text: str) -> bool:
+    """Ознака завершеного запису ЗМІСТу, включно з окремим номером сторінки."""
+    stripped = text.strip()
+    return is_toc_entry(stripped) or bool(_PAGE_NUMBER_RE.fullmatch(stripped))
+
+
 def _find_content_line(lines: list[LineItem]) -> int | None:
     """Знаходить справжній ВСТУП, навіть якщо записи ЗМІСТ перенесені."""
     intros = [
@@ -59,13 +65,18 @@ def _find_content_line(lines: list[LineItem]) -> int | None:
         ),
         None,
     )
-    if toc_header is not None:
-        after_header = [index for index in intros if index > toc_header]
-        if len(after_header) >= 2:
-            return after_header[-1]
-        if len(after_header) == 1 and not _is_toc_heading(lines, after_header[0]):
-            return after_header[0]
-        return None
+    marker_start = toc_header + 1 if toc_header is not None else 0
+    last_intro = intros[-1]
+    toc_end = next(
+        (
+            index
+            for index in range(last_intro - 1, marker_start - 1, -1)
+            if _is_toc_boundary_marker(lines[index].get("line") or "")
+        ),
+        None,
+    )
+    if toc_end is not None:
+        return next((index for index in intros if index > toc_end), None)
     return next((index for index in intros if not _is_toc_heading(lines, index)), None)
 
 
@@ -96,7 +107,8 @@ def prepare_document(lines: list[LineItem]) -> PreparedDocument:
         return PreparedDocument(tokens, tokens, (), False)
 
     content_line = _find_content_line(lines)
-    assert content_line is not None  # гарантує resembles_dissertation вище
+    if content_line is None:
+        return PreparedDocument(tokens, tokens, (), False)
     toc_line = next(
         (
             index for index, item in enumerate(lines[:content_line])

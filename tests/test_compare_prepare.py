@@ -86,6 +86,34 @@ def test_word_contents_inside_main_text_is_not_mistaken_for_toc_header():
     assert prepared.tokens[1].normalized == "справжній"
 
 
+def test_repeated_intro_page_headers_do_not_discard_intro_paragraphs():
+    prepared = prepare_document(_lines(
+        "Титульний аркуш",
+        "ЗМІСТ",
+        "ВСТУП",
+        "5",
+        "РОЗДІЛ 1. Тема",
+        "15",
+        "ВИСНОВКИ",
+        "180",
+        "ВСТУП",
+        "Перший абзац вступу",
+        "ВСТУП",
+        "Другий абзац вступу",
+        "ВСТУП",
+        "Третій абзац вступу",
+        "РОЗДІЛ 1 Тема",
+        "Основний текст",
+        "ВИСНОВКИ",
+        "Підсумковий текст",
+    ))
+    assert prepared.resembles_dissertation
+    assert [token.normalized for token in prepared.tokens[:5]] == [
+        "вступ", "перший", "абзац", "вступу", "вступ",
+    ]
+    assert sum(token.normalized == "вступ" for token in prepared.tokens) == 3
+
+
 def test_non_dissertation_is_not_trimmed():
     lines = _lines("Міністерство освіти і науки України", "Текст статті")
     prepared = prepare_document(lines)
