@@ -47,10 +47,15 @@ from ui_helpers import (
     reset_pair_scoped_state,
     has_usable_text_lines,
     validate_search_upload,
+    reset_search_scoped_state,
 )
 from compare.matcher import compare_documents
 from compare.prepare import prepare_document_for_comparison
 from compare.presentation import format_physical_pages, render_comparison_table
+from parser.searchdoc import NoTextLayerError
+from search.engines import ENGINES
+from search.presentation import STATUS_LABELS, build_query_card
+from search.ui_logic import apply_status_action, build_initial_query_states, run_search_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -831,11 +836,16 @@ def render_two_file_compare_page() -> None:
         st.rerun()
 
 
+# Порядок опцій радіо-кнопки; підписи — з `search.presentation.STATUS_LABELS`,
+# щоб не тримати другу копію словника (§17).
+_SEARCH_STATUS_OPTIONS = tuple(STATUS_LABELS.keys())
+
+
 def render_manual_search_page() -> None:
     """
     Окремий екран ручного пошуку джерел (PLAN_SEARCH.md).
-    Крок 1: маршрут і завантаження файлу. Розмітка розділів, канали
-    сигналів і побудова запитів приєднуються наступними кроками плану.
+    Крок 3 (§22): тонкий наскрізний зріз — лише канал A, без карти
+    розділів з виправленнями, лічильників K і аккордеонів (крок 14/15).
     """
     if st.button("← Повернутися до перевірки джерел", key="search_back"):
         if "mode" in st.query_params:
@@ -864,10 +874,68 @@ def render_manual_search_page() -> None:
         return
 
     st.caption(f"{uploaded.name} · {len(data) / (1024 * 1024):.1f} МБ · SHA-256 {file_sha256(data)[:12]}…")
+
+    file_key = make_file_key(uploaded.name, len(data), getattr(uploaded, "file_id", None))
+    reset_search_scoped_state(st.session_state, file_key)
+
+    if "search_result" not in st.session_state:
+        try:
+            with st.spinner("Розбір PDF і пошук кандидатів…"):
+                result = run_search_pipeline(data)
+        except NoTextLayerError as exc:
+            st.error(f"❌ {exc}")
+            return
+        st.session_state.search_result = result
+        st.session_state.search_query_states = build_initial_query_states(result)
+
+    result = st.session_state.search_result
+    states = st.session_state.search_query_states
+
     st.info(
-        "Розбір розділів, канали сигналів A/N/B/K/T/L і побудова запитів ще не "
-        "реалізовані — режим у розробці за PLAN_SEARCH.md."
+        f"Аркушів: {result.document.n_pages} · знайдено запитів: {len(result.queries)}. "
+        "Реалізовано лише канал A (§22, крок 3); N, B, K, T, L — крок 9."
     )
+    for warning in result.warnings:
+        st.caption(f"⚠ {warning}")
+
+    if not result.queries:
+        st.warning("Жодного запиту не згенеровано для цього PDF на поточному кроці розробки.")
+        return
+
+    today = datetime.date.today()
+    for query in result.queries:
+        state = states[query.query_id]
+        card = build_query_card(query, state, ENGINES, today)
+        with st.container(border=True):
+            st.markdown(f"**{card.channel_label}** {card.query_text}")
+            st.caption(f"{card.page_label} · донор: {card.donor_text}")
+            st.code(card.query_text)
+            for link in card.engine_links:
+                if link.url:
+                    st.link_button(link.label, link.url)
+                else:
+                    st.link_button(f"{link.label} · відкрити сайт", link.home_url)
+            st.caption("Фрагмент для Ctrl+F:")
+            st.code(card.anchor_text)
+            selected = st.radio(
+                "Статус",
+                _SEARCH_STATUS_OPTIONS,
+                index=_SEARCH_STATUS_OPTIONS.index(state.status),
+                format_func=lambda code: STATUS_LABELS[code],
+                key=f"search_status_{query.query_id}",
+                horizontal=True,
+            )
+            if selected != state.status:
+                if selected == "found":
+                    found_engine = card.engine_links[0].label if card.engine_links else "Google"
+                    st.session_state.search_query_states = apply_status_action(
+                        states, query.query_id, "found", found_engine=found_engine
+                    )
+                else:
+                    st.session_state.search_query_states = apply_status_action(
+                        states, query.query_id, selected
+                    )
+                st.rerun()
 
 
 if is_compare_mode(st.query_params):

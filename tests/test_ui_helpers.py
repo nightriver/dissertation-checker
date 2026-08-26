@@ -14,9 +14,11 @@ from ui_helpers import (
     is_compare_mode,
     is_search_mode,
     PAIR_SCOPED_KEYS,
+    SEARCH_SCOPED_KEYS,
     file_sha256,
     make_pair_key,
     reset_pair_scoped_state,
+    reset_search_scoped_state,
     has_usable_text_lines,
     validate_search_upload,
     MAX_SEARCH_PDF_BYTES,
@@ -168,6 +170,32 @@ class TestUsableCompareText(unittest.TestCase):
     def test_nonempty_text_is_usable(self):
         self.assertTrue(has_usable_text_lines([{"line": "Текст", "page": None}]))
         self.assertFalse(has_usable_text_lines([{"line": "   ", "page": None}]))
+
+
+class TestSearchScopedState(unittest.TestCase):
+    """§22, крок 3: скидання стану ?mode=search при зміні файлу (за зразком TestPairScopedState)."""
+
+    def test_changing_file_clears_only_search_state(self):
+        state = {key: "old" for key in SEARCH_SCOPED_KEYS}
+        state["unrelated"] = "keep"
+        reset_search_scoped_state(state, make_file_key("a.pdf", 1))
+        state.update({key: "result" for key in SEARCH_SCOPED_KEYS})
+        self.assertTrue(reset_search_scoped_state(state, make_file_key("b.pdf", 2)))
+        self.assertEqual(state["unrelated"], "keep")
+        self.assertTrue(all(key not in state for key in SEARCH_SCOPED_KEYS))
+
+    def test_real_search_state_keys_are_search_scoped(self):
+        self.assertIn("search_result", SEARCH_SCOPED_KEYS)
+        self.assertIn("search_query_states", SEARCH_SCOPED_KEYS)
+        self.assertNotIn("compare_result", SEARCH_SCOPED_KEYS)
+
+    def test_same_file_is_noop(self):
+        state = {}
+        key = make_file_key("a.pdf", 1)
+        self.assertTrue(reset_search_scoped_state(state, key))
+        state["search_result"] = "kept"
+        self.assertFalse(reset_search_scoped_state(state, key))
+        self.assertEqual(state["search_result"], "kept")
 
 
 class TestSearchMode(unittest.TestCase):

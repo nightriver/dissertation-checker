@@ -55,6 +55,13 @@ PAIR_SCOPED_KEYS: tuple[str, ...] = (
 )
 _PAIR_KEY = "current_compare_pair_key"
 
+# Ключі стану режиму ?mode=search, прив'язані до конкретного PDF (§22, крок 3).
+SEARCH_SCOPED_KEYS: tuple[str, ...] = (
+    "search_result",
+    "search_query_states",
+)
+_SEARCH_KEY = "current_search_file_key"
+
 
 def make_file_key(name: str, size: int, file_id: str | None = None) -> str:
     """
@@ -115,6 +122,16 @@ def reset_pair_scoped_state(state: MutableMapping[str, Any], pair_key: str) -> b
         return False
     state[_PAIR_KEY] = pair_key
     for key in PAIR_SCOPED_KEYS:
+        state.pop(key, None)
+    return True
+
+
+def reset_search_scoped_state(state: MutableMapping[str, Any], file_key: str) -> bool:
+    """Скидає результат і триаж попереднього PDF режиму ?mode=search при зміні файлу."""
+    if state.get(_SEARCH_KEY) == file_key:
+        return False
+    state[_SEARCH_KEY] = file_key
+    for key in SEARCH_SCOPED_KEYS:
         state.pop(key, None)
     return True
 
