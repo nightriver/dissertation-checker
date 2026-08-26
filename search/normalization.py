@@ -4,10 +4,18 @@ search/normalization.py
 символів `NormalizedText.origins` до вихідного `raw_text`. Специфікація —
 PLAN_SEARCH.md, §7.
 
-Крок 3 (§22) реалізує лише мінімальний тонкий зріз конвеєра: NFKC,
-видалення м'якого переносу (soft hyphen) та символьну карту походження.
-Нормалізація апострофів, гоміогліфів, склейка переносу через дефіс і повна
-токенізація зі скороченнями — крок 4.
+Конвеєр (§7): 1) Unicode NFKC; 2) нормалізація апострофів; 3) видалення
+soft hyphen; 4) склейка буквеного переносу через дефіс лише в тексті аналізу;
+5) нормалізація відомих гоміогліфів; 6) casefold — застосовується той, кому
+потрібне порівняння (у самому `NormalizedText.text` регістр зберігається,
+щоб можна було показати знахідку в природному вигляді); 7) токенізація.
+
+Апострофна заміна навмисно виконується РАНІШЕ посимвольного NFKC для
+символів з таблиці апострофів: NFKC у U+00B4 (ACUTE ACCENT) розкладає його
+на два символи (пробіл + комбінований акцент), що суперечило б вимозі
+"один вихідний символ на позицію апострофа". Для решти символів порядок
+1→2 із §7 еквівалентний посимвольному проходу, бо апострофні кодпоінти не
+чіпають одне одного.
 """
 
 from __future__ import annotations
@@ -21,6 +29,33 @@ from search.types import CharOrigin, NormalizedText, RawSpan, SearchToken, Sourc
 # нормалізованому тексті; вихідний `raw_text` не змінюється (§7, п.3).
 _SOFT_HYPHEN = "­"
 
+# Символи-апострофи, що приводяться до прямого U+0027 (§7, п.2).
+_APOSTROPHE_CHARS = frozenset("ʼ’‘´`")
+_APOSTROPHE_TARGET = "'"
+
+# Гоміогліфи: латиниця → кирилиця, рівно ці 20 пар (12 великих і 8 малих) і
+# лише в цей бік (§10.1, «Числа»). Застосовуються лише всередині словесного
+# токена, де є хоча б один кириличний символ (одиноке латинське слово
+# гоміогліфом не стає).
+HOMOGLYPHS_VERSION = "homoglyphs-1"
+HOMOGLYPH_MAP: dict[str, str] = {
+    "A": "А", "a": "а",
+    "B": "В",
+    "C": "С", "c": "с",
+    "E": "Е", "e": "е",
+    "H": "Н",
+    "I": "І", "i": "і",
+    "K": "К",
+    "M": "М",
+    "O": "О", "o": "о",
+    "P": "Р", "p": "р",
+    "T": "Т",
+    "X": "Х", "x": "х",
+    "y": "у",
+}
+
+_CYRILLIC_RE = re.compile(r"[а-яёіїєґА-ЯЁІЇЄҐ]")  # ru-data
+
 # Слово: буквено-цифрові символи з можливими внутрішніми апострофом/дефісом
 # (для української це не розбиває "розум'я", "будь-який" тощо). Число:
 # послідовність цифр з десятковим/тисячним роздільником всередині.
@@ -32,27 +67,116 @@ WORD_TOKEN_RE = re.compile(
 
 def normalize_text(raw_text: str) -> NormalizedText:
     """
-    Мінімальна нормалізація: Unicode NFKC посимвольно та видалення
-    soft hyphen, з побудовою `origins` — кожен вихідний символ вказує на
-    свій вихідний символьний інтервал у `raw_text`.
+    Повний конвеєр нормалізації §7 (кроки 1–5, 7 будує окремо `tokenize`):
+    NFKC, апострофи, видалення soft hyphen, склейка переносу через дефіс,
+    гоміогліфи — з побудовою `origins`, де кожен символ аналізу вказує на
+    свій вихідний півінтервал `raw_text`. `raw_text` ніколи не змінюється.
+    """
+    if not raw_text:
+        return NormalizedText(text="", origins=())
 
-    Посимвольний NFKC не обробляє багатосимвольні графемні кластери (напр.
-    комбіновані діакритики), що коректно для звичайного українського/
-    російського тексту без таких кластерів; повна обробка — крок 4 (§7).
+    chars0, origins0 = _pass_nfkc_apostrophe_soft_hyphen(raw_text)
+    chars1, origins1 = _pass_join_hyphenation(chars0, origins0)
+    chars2 = _pass_homoglyphs(chars1)
+    return NormalizedText(text="".join(chars2), origins=tuple(origins1))
+
+
+def _pass_nfkc_apostrophe_soft_hyphen(
+    raw_text: str,
+) -> tuple[list[str], list[CharOrigin]]:
+    """
+    Кроки 1–3 §7: NFKC (посимвольно), апострофи, soft hyphen.
+
+    Видалений символ (soft hyphen, або порожній результат NFKC) не створює
+    символа аналізу, але карта `origins` лишається суцільною: його вихідний
+    півінтервал поглинається сусіднім випущеним символом — спершу
+    приєднується "вперед" до наступного випущеного символу (розширенням
+    `raw_start` назад), а якщо це хвіст рядка без наступного символу — до
+    попереднього випущеного символу (розширенням його `raw_end` вперед).
     """
     chars: list[str] = []
     origins: list[CharOrigin] = []
+    pending_start: int | None = None
     for i, ch in enumerate(raw_text):
         if ch == _SOFT_HYPHEN:
+            if pending_start is None:
+                pending_start = i
             continue
-        piece = unicodedata.normalize("NFKC", ch)
+        if ch in _APOSTROPHE_CHARS:
+            piece = _APOSTROPHE_TARGET
+        else:
+            piece = unicodedata.normalize("NFKC", ch)
         if not piece:
+            if pending_start is None:
+                pending_start = i
             continue
-        origin = CharOrigin(raw_start=i, raw_end=i + 1)
+        raw_start = pending_start if pending_start is not None else i
+        pending_start = None
+        origin = CharOrigin(raw_start=raw_start, raw_end=i + 1)
         for out_ch in piece:
             chars.append(out_ch)
             origins.append(origin)
-    return NormalizedText(text="".join(chars), origins=tuple(origins))
+    if pending_start is not None and origins:
+        last = origins[-1]
+        extended = CharOrigin(raw_start=last.raw_start, raw_end=len(raw_text))
+        idx = len(origins) - 1
+        while idx >= 0 and origins[idx] is last:
+            origins[idx] = extended
+            idx -= 1
+    return chars, origins
+
+
+def _pass_join_hyphenation(
+    chars0: list[str], origins0: list[CharOrigin]
+) -> tuple[list[str], list[CharOrigin]]:
+    """
+    Крок 4 §7: склейка `<буква>-<перевід рядка><буква>`. Між дефісом і
+    переводом рядка допускаються пробіли/табуляції, `\\r\\n` — один перевід
+    рядка. Дефіс і перевід рядка не випускають жодного символу в аналіз;
+    обидві половини слова зберігають власні вихідні інтервали.
+    """
+    chars1: list[str] = []
+    origins1: list[CharOrigin] = []
+    n = len(chars0)
+    i = 0
+    while i < n:
+        ch = chars0[i]
+        if ch == "-" and chars1 and chars1[-1].isalpha():
+            j = i + 1
+            while j < n and chars0[j] in (" ", "\t"):
+                j += 1
+            nl_len = 0
+            if j < n and chars0[j] == "\r" and j + 1 < n and chars0[j + 1] == "\n":
+                nl_len = 2
+            elif j < n and chars0[j] == "\n":
+                nl_len = 1
+            if nl_len and (j + nl_len) < n and chars0[j + nl_len].isalpha():
+                i = j + nl_len
+                continue
+        chars1.append(ch)
+        origins1.append(origins0[i])
+        i += 1
+    return chars1, origins1
+
+
+def _pass_homoglyphs(chars1: list[str]) -> list[str]:
+    """
+    Крок 5 §7: гоміогліфи латиниці в кирилицю всередині словесного токена,
+    де є хоча б один кириличний символ. Заміна символьна 1:1, позиції й
+    довжина не змінюються — `origins` лишається дійсним без перерахунку.
+    """
+    text1 = "".join(chars1)
+    chars2 = list(chars1)
+    for match in WORD_TOKEN_RE.finditer(text1):
+        start, end = match.start(), match.end()
+        word = text1[start:end]
+        if not _CYRILLIC_RE.search(word):
+            continue
+        for idx in range(start, end):
+            replacement = HOMOGLYPH_MAP.get(chars2[idx])
+            if replacement is not None:
+                chars2[idx] = replacement
+    return chars2
 
 
 def map_normalized_offsets(

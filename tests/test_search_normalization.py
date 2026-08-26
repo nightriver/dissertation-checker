@@ -43,13 +43,22 @@ def test_map_normalized_offsets_merges_adjacent_raw_intervals():
     assert offsets == ((0, 3),)
 
 
-def test_map_normalized_offsets_keeps_non_adjacent_intervals_separate():
-    # Один нормалізований символ на позицію 1 не суміжний із символом на
-    # позиції 3, якщо між ними випав символ (тут — soft hyphen).
+def test_map_normalized_offsets_absorbs_soft_hyphen_into_neighbour_span():
+    # Видалений soft hyphen не створює розриву в мапі: його вихідний символ
+    # поглинається сусіднім випущеним символом, тож мапа лишається суцільною
+    # і об'єднується в один інтервал по всьому вихідному тексту (§7).
     normalized = normalize_text("а­бв")
-    # "а" (0), "б" (2 у raw), "в" (3 у raw) — soft hyphen на позиції 1 зник.
     offsets = map_normalized_offsets(normalized, 0, 3)
-    assert offsets == ((0, 1), (2, 4))
+    assert offsets == ((0, 4),)
+
+
+def test_map_normalized_offsets_keeps_non_adjacent_intervals_separate():
+    # Дефіс і перевід рядка при склейці переносу (окремий прохід конвеєра,
+    # §7 п.4) не поглинаються сусідом — обидві половини слова свідомо
+    # лишаються окремими вихідними інтервалами.
+    normalized = normalize_text("загаль-\nне")
+    offsets = map_normalized_offsets(normalized, 0, len(normalized.text))
+    assert offsets == ((0, 6), (8, 10))
 
 
 def test_map_normalized_offsets_rejects_invalid_ranges():

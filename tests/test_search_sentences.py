@@ -41,11 +41,17 @@ def test_exclamation_and_ellipsis_are_terminators():
     assert fragments == ["Дійсно!", "А що далі…", "Кінець."]
 
 
-def test_unterminated_tail_is_dropped_not_returned_as_a_sentence():
+def test_unterminated_tail_is_returned_as_its_own_sentence():
+    """
+    Незавершений хвіст блоку (без термінальної пунктуації) — не хвіст
+    сторінки, тож `split_sentences` повертає його як звичайне друге
+    речення, а не відкидає (§10.1: межа блоку завершує речення).
+    """
     text = "Завершене речення. Незавершений залишок без крапки"
     bounds = split_sentences(text)
-    assert len(bounds) == 1
+    assert len(bounds) == 2
     assert text[bounds[0][0] : bounds[0][1]] == "Завершене речення."
+    assert text[bounds[1][0] : bounds[1][1]] == "Незавершений залишок без крапки"
 
 
 def test_lowercase_after_period_does_not_split():
