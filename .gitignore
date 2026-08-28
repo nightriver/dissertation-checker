@@ -22,3 +22,9 @@ PLAN_SEARCH_PROGRESS.md
 .venv312/
 .uv-cache/
 tmp/
+
+# Пакеты шагов — производные от PLAN_SEARCH.md, живут локально.
+# Шаблон steps/_TEMPLATE.md остаётся в репозитории.
+steps/step-*.md
+_claude_setup/
+PLAN_SEARCH_JOURNAL.md

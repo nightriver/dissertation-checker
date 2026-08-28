@@ -1,0 +1,108 @@
+{
+  "parser.anomalies": [
+    "Anachronism",
+    "find_anachronisms"
+  ],
+  "parser.bibliography": [
+    "BIBLIO_HEADERS",
+    "BibliographyNotFoundError",
+    "MAX_SOURCE_NUM",
+    "MIN_BIBLIO_ENTRIES",
+    "STOP_WORDS",
+    "ZoneSplitResult",
+    "parse_bibliography",
+    "re",
+    "split_zones",
+    "split_zones_manual",
+    "unicodedata"
+  ],
+  "parser.citations": [
+    "MAX_SOURCE_NUM",
+    "compare",
+    "expand_bracket",
+    "find_citations",
+    "re"
+  ],
+  "parser.dstu_validator": [
+    "DstuStatus",
+    "check_dstu",
+    "re",
+    "validate_bibliography"
+  ],
+  "parser.duplicates": [
+    "BibliographicKey",
+    "DEFAULT_THRESHOLD",
+    "DuplicateGroup",
+    "extract_author",
+    "extract_title",
+    "find_duplicates",
+    "make_bibliographic_key",
+    "normalize_title",
+    "re"
+  ],
+  "parser.extractor": [
+    "FileTooLargeError",
+    "MAX_FILE_SIZE",
+    "ScannedPDFError",
+    "UnsupportedFormatError",
+    "datetime",
+    "extract_dissertation_author",
+    "extract_dissertation_year",
+    "extract_lines",
+    "extract_lines_from_docx",
+    "extract_lines_from_pdf",
+    "re"
+  ],
+  "parser.highlighter": [
+    "fitz",
+    "highlight_citations_pdf"
+  ],
+  "parser.paragraph_analyzer": [
+    "CHAPTER_HEADERS",
+    "CONTENT_END_HEADERS",
+    "ContentBoundsNotFoundError",
+    "END_SECTION_HEADERS",
+    "MIN_BLOCK_CHARS",
+    "MIN_SUSPICIOUS_SENTENCES",
+    "POST_CONTENT_HEADERS",
+    "ParagraphGapResult",
+    "ParagraphItem",
+    "analyze_paragraph_gaps",
+    "extract_content_bounds",
+    "extract_paragraphs",
+    "find_content_bounds_in_texts",
+    "paragraph_has_citation",
+    "re"
+  ],
+  "parser.searchdoc": [
+    "CONTENT_SECTION_KINDS",
+    "NoTextLayerError",
+    "PARSER_VERSION",
+    "hashlib",
+    "parse_search_document",
+    "re"
+  ],
+  "parser.text_forensics": [
+    "ForensicsResult",
+    "HOMOGLYPHS",
+    "HomoglyphHit",
+    "normalize_mixed_homoglyphs",
+    "re",
+    "restore_word",
+    "scan_text_forensics"
+  ],
+  "parser.types": [
+    "LineItem",
+    "MAX_SOURCE_NUM",
+    "Severity",
+    "is_toc_entry",
+    "re"
+  ],
+  "parser.year_extractor": [
+    "extract_year",
+    "extract_year_with_confidence",
+    "extract_years",
+    "extract_years_with_confidence",
+    "re"
+  ]
+}

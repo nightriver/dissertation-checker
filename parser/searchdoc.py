@@ -22,8 +22,9 @@ parser/searchdoc.py
 6. §6.2 і §4.1 — зони зберігаються інтервалами всередині блоку і
    зводяться за `search.types.ZONE_PRIORITY`.
 
-Бібліографія і цитування лишаються валідними порожніми колекціями —
-їх наповнює крок 6 (`search/bibliography.py`).
+Бібліографію і цитування наприкінці додає крок 6
+(`search.bibliography.build_bibliography` і `build_citations`): вони —
+чисті функції від уже готового документа, тому живуть окремим модулем.
 
 Навмисно НЕ використовується `page.get_text("blocks")` (спрощене
 кортеж-API): воно непридатне для абзаців (див. docstring
@@ -37,11 +38,12 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from statistics import median
 
 from parser.bibliography import BibliographyNotFoundError, split_zones
 from parser.types import is_toc_entry
+from search.bibliography import build_bibliography, build_citations
 from search.normalization import normalize_text, tokenize
 from search.sentences import split_sentences_detailed
 from search.types import ZONE_PRIORITY as _ZONE_PRIORITY
@@ -371,7 +373,7 @@ def parse_search_document(
     )
     sentences = _build_sentence_donors(blocks, document_sha256, heading_block_ids)
 
-    return SearchDocument(
+    document = SearchDocument(
         document_sha256=document_sha256,
         parser_version=PARSER_VERSION,
         n_pages=n_pages,
@@ -386,6 +388,13 @@ def parse_search_document(
         citations=(),
         body_biblio_confidence=biblio_confidence,
         applied_overrides=tuple(overrides),
+    )
+
+    # Крок 6 (§12.5, §12.6): бібліографія і згадки джерел будуються як чисті
+    # функції від уже готового документа, тому підключаються тут, наприкінці.
+    entries = build_bibliography(document)
+    return replace(
+        document, bibliography=entries, citations=build_citations(document, entries)
     )
 
 

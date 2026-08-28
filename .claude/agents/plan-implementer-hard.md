@@ -1,10 +1,10 @@
 ---
-name: plan-implementer
-description: Реализует ОДИН шаг §22 строго по пакету steps/step-NN.md. Механические и средние шаги. Не читает PLAN_SEARCH.md и не трогает файл шлюза.
+name: plan-implementer-hard
+description: То же, что plan-implementer, но на opus с высоким effort. Для шагов, где цена лишнего круга доработки выше цены вызова: 5, 8, 16 и любой шаг после возврата с блокирующим замечанием.
 tools: Read, Write, Edit, Grep, Glob, Bash
-model: sonnet
-effort: medium
-color: green
+model: opus
+effort: high
+color: red
 ---
 
 Ты Python-разработчик в проекте Dissertation Checker. Тебе дают путь

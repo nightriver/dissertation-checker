@@ -1,18 +1,27 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
+    "defaultMode": "acceptEdits",
     "allow": [
       "Bash(.venv312\\Scripts\\python.exe -m pytest:*)",
       "Bash(.venv312/Scripts/python.exe -m pytest:*)",
       "Bash(python -m pytest:*)",
+      "Bash(.venv312\\Scripts\\python.exe tools\\measure_calques.py:*)",
+      "Bash(.venv312\\Scripts\\python.exe -c:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
+      "Bash(git show:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(findstr:*)",
+      "Bash(dir:*)",
+      "Bash(type:*)"
     ],
     "deny": [
       "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git checkout -- :*)",
       "Read(./.venv/**)",
       "Read(./.venv312/**)",
       "Read(./tmp/**)",
