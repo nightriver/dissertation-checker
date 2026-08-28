@@ -8,10 +8,10 @@ search/query_builder.py
 побудову `pdf_anchor` (спрощену — повна евристика §15 переваги рідкісних
 слів/прізвищ/чисел належить кроку 10) і збірку `SearchQuery`/`SearchResult`.
 Квоти, посекційна дедуплікація, драбина A/N/B/K → T → L і `SectionShortfall`
-— крок 11. Канали N, B, K, T, L, D тут не викликаються (§10.2 реалізовано
-у `search/markers.py`, решта каналів — крок 9), тому їхні лічильники в
-`CandidateMetrics` присутні з нулем: це видима діагностика "ще не
-реалізовано", а не мовчазне придушення (CLAUDE.md, правило №3).
+— крок 11. Виробничі детектори A/N/B/K/T/L уже живуть у `search/markers.py`,
+але тексти запитів нових каналів і provenance належать кроку 10. Тому цей
+модуль поки будує лише A-запити, а нульові лічильники інших каналів є
+видимою діагностикою незавершеної інтеграції.
 
 Сигнали каналу A обчислюються й потрапляють у `signal_hits` для КОЖНОГО
 речення незалежно від типу розділу (§6.1: "сигнали і кандидати UNKNOWN
@@ -29,7 +29,7 @@ import re
 
 from search import ALGO_VERSION
 from search.calques import DICT_VERSION
-from search.markers import find_channel_a_signals, score_channel_a
+from search.markers import STOPWORDS, find_channel_a_signals, normative_marker_ids, score_channel_a
 from search.normalization import map_normalized_offsets, normalize_text, tokenize
 from search.types import (
     CONTENT_SECTION_KINDS,
@@ -69,22 +69,7 @@ NORMATIVE_PENALTY = 2.0
 
 MAIN_SELECTION_THRESHOLD = 4.0
 
-# Мінімальний плейсхолдер стоп-слів для балу "змістовне слово" (§13). Повний
-# список і його версіонування — крок 9/10 разом з рештою каналів.
-_STOPWORDS = frozenset({
-    "і", "й", "та", "в", "у", "на", "з", "із", "зі", "до", "від", "як", "що",
-    "це", "або", "чи", "для", "по", "при", "про", "без", "над", "під", "за",
-    "теж", "також", "є", "був", "була", "було", "були", "він", "вона", "воно",
-    "вони", "я", "ти", "ми", "ви", "цей", "ця", "ці", "той", "те", "ті", "не",
-    "ні", "б", "би", "то", "адже", "однак", "але",
-})
-
-# Плейсхолдер нормативного маркера для правила "−2" (§13). Версіонований
-# список назв/скорочень актів (§10.7) — крок 9.
-_NORMATIVE_RE = re.compile(
-    r"\b(стаття|частина|пункт)\s+\d+|\bкодекс[а-щьюяіїєґ]*\b",
-    re.IGNORECASE | re.UNICODE,
-)
+_STOPWORDS = STOPWORDS
 
 _UK_ONLY_CHARS = set("іїєґІЇЄҐ")
 _RU_ONLY_CHARS = set("ыэъёЫЭЪЁ")
@@ -187,11 +172,11 @@ def build_search_result(document: SearchDocument) -> SearchResult:
     )
 
     warnings: list[str] = [
-        "Реалізовано лише канал A; N, B, K, T, L, D додаються на кроці 9 (§22).",
+        "Запити N, B, K, T і L будуються на кроці 10; виробничі маркери вже доступні.",
     ]
     if not document.bibliography:
         warnings.append(
-            "Бібліографію та цитування ще не розібрано (§22, крок 6) — порожні колекції."
+            "У документі не знайдено придатних бібліографічних записів або цитувань."
         )
 
     non_a_channels = tuple(c for c in Channel if c not in (Channel.A, Channel.D))
@@ -297,7 +282,7 @@ def _score_window(
         if _is_long_content_word(token):
             score += LONG_WORD_BONUS
     window_text = raw_text[word_tokens[start_idx].raw_start : word_tokens[end_idx - 1].raw_end]
-    score -= NORMATIVE_PENALTY * len(_NORMATIVE_RE.findall(window_text))
+    score -= NORMATIVE_PENALTY * len(normative_marker_ids(window_text))
     return score
 
 
