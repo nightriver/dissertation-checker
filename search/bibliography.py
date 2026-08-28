@@ -223,10 +223,11 @@ class _ZoneLine:
 @dataclass(frozen=True)
 class _Part:
     """
-    Один рядок запису: його координати в блоці й зміщення в `raw_text`
-    запису. Рядки, які PDF розніс переносом, склеюються одним пробілом —
-    так само, як це робить `parse_bibliography`, тому текст запису читається
-    суцільним, а координати лишаються вихідними.
+    Частина запису в одному блоці та її зміщення в `raw_text` запису.
+
+    `raw_text` зберігає вихідні переводи рядків, щоб його можна було точно
+    відновити з `SourceSpan`. Пробільні символи зводить до одного пробілу
+    лише `normalized_entry_text`, коли обчислює стабільний `entry_id`.
     """
 
     block_id: str
@@ -777,9 +778,9 @@ def _linked_donors(
     1. Речення, всередині якого стоїть посилання, — прямий доказ.
     2. Далі назад по тому самому абзаці: кожне попереднє речення теж
        спирається на це посилання, доки не трапиться закінчене речення з
-       власним посиланням. Воно ще зв'язується (між ним і посиланням немає
-       нічого), а все, що стоїть перед ним, — уже ні:
-       `SAME_PARAGRAPH_MAX_INTERVENING = 0`.
+       власним посиланням. Таке речення належить власному джерелу, тому не
+       зв'язується з поточним; за `SAME_PARAGRAPH_MAX_INTERVENING = 0` воно
+       також блокує всі попередні речення.
 
     Саме сусідство фізичних блоків доказом не є ніколи: донори беруться
     лише з того самого блоку.
@@ -794,11 +795,12 @@ def _linked_donors(
     for donor in reversed(donors):
         if donor.raw_end > bracket.raw_start:
             continue
-        linked.append(donor.donor_id)
         if _has_own_bracket(donor, brackets):
             intervening += 1
             if intervening > SAME_PARAGRAPH_MAX_INTERVENING:
                 break
+            continue
+        linked.append(donor.donor_id)
     return tuple(linked)
 
 

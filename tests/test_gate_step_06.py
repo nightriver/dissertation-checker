@@ -22,13 +22,10 @@
 парсер кроку 5. Це зміна вхідних даних контракту `SearchDocument`, а не
 читання реалізації `search/bibliography.py`.
 
-Пункт 18 («немає звʼязку з донором») перевіряється диференційно: підрахунок
-HIGH-звʼязків з entry2 у документі БЕЗ проміжного речення з власним
-посиланням порівнюється з підрахунком у документі З таким проміжним реченням
-([7] між донором і [2] в тому ж абзаці) — за §12.6, п.2 другий підрахунок
-має бути строго меншим. Це найслабше (а тому найнадійніше) формулювання,
-яке не вимагає знати точний внутрішній механізм привʼязки донора до згадки
-(поле `donor_id` в `CitationMention` контрактом не передбачене).
+Пункт 18 («немає звʼязку з донором») перевіряється диференційно через
+контрактну `donor_ids_for_mention`: один `CitationMention` представляє місце
+посилання і не дублюється на кожного донора, тому рахувати самі згадки тут
+було б нечутливо до блокування звʼязку.
 
 Пункти 28-31 йдуть по девʼяти реальних PDF з `examples/`; очікування — з
 `tests/fixtures/search_corpus_expectations.json` (лише читання).
@@ -47,7 +44,11 @@ import pytest
 fitz = pytest.importorskip("fitz", reason="PyMuPDF not installed")
 
 from parser.searchdoc import parse_search_document
-from search.bibliography import build_bibliography, build_citations
+from search.bibliography import (
+    build_bibliography,
+    build_citations,
+    donor_ids_for_mention,
+)
 from search.normalization import normalize_text, tokenize
 from search.types import CONTENT_SECTION_KINDS, Confidence, Language
 
@@ -198,9 +199,10 @@ def test_gate_03_a_multiline_entry_is_collected_into_a_single_record() -> None:
     ones = [e for e in entries if e.ordinal == 1]
     assert len(ones) == 1
     entry1 = ones[0]
-    assert "Дуже довга назва" in entry1.raw_text
-    assert "перенесеться на другий рядок" in entry1.raw_text
-    assert "Київ, 2005" in entry1.raw_text
+    normalized_raw = " ".join(entry1.raw_text.split())
+    assert "Дуже довга назва" in normalized_raw
+    assert "перенесеться на другий рядок" in normalized_raw
+    assert "Київ, 2005" in normalized_raw
 
     twos = [e for e in entries if e.ordinal == 2]
     assert len(twos) == 1
@@ -547,20 +549,22 @@ def test_gate_18_an_intervening_sentence_with_its_own_reference_reduces_the_link
     control_entries = build_bibliography(control_document)
     control_entry2 = next(e for e in control_entries if e.ordinal == 2)
     control_citations = build_citations(control_document, control_entries)
-    control_count = sum(
-        1 for c in control_citations
+    control_mention = next(
+        c for c in control_citations
         if c.kind == "numeric" and c.confidence == Confidence.HIGH
         and control_entry2.entry_id in c.entry_ids
     )
+    control_count = len(donor_ids_for_mention(control_document, control_mention))
 
     test_entries = build_bibliography(test_document)
     test_entry2 = next(e for e in test_entries if e.ordinal == 2)
     test_citations = build_citations(test_document, test_entries)
-    test_count = sum(
-        1 for c in test_citations
+    test_mention = next(
+        c for c in test_citations
         if c.kind == "numeric" and c.confidence == Confidence.HIGH
         and test_entry2.entry_id in c.entry_ids
     )
+    test_count = len(donor_ids_for_mention(test_document, test_mention))
 
     assert control_count >= 1
     assert test_count < control_count
