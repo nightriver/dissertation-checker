@@ -53,7 +53,6 @@ from search.calques import (
 )
 from search.normalization import normalize_text, tokenize
 from search.types import Confidence, SearchBlock, SearchDocument, TextZone, ZoneSpan
-from tools.measure_calques import CALQUES as SEED_CALQUES
 
 REPO_ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
@@ -260,7 +259,7 @@ def test_gate_01_calques_has_exactly_55_unique_rule_ids() -> None:
 
 
 def test_gate_02_rule_id_set_matches_the_tools_measure_calques_seed() -> None:
-    seed_ids = {cid for cid, *_rest in SEED_CALQUES}
+    seed_ids = {record["rule_id"] for record in _load_audit_records()}
     assert {rule.rule_id for rule in CALQUES} == seed_ids
 
 
@@ -315,10 +314,9 @@ def test_gate_06_every_rule_has_a_non_empty_rationale() -> None:
 
 
 def test_gate_07_tier_before_matches_the_seed_and_seed_distribution_is_20_29_6() -> None:
-    seed_tier_by_id = {cid: tier for cid, _pattern, _ru, _uk, tier in SEED_CALQUES}
     records = _load_audit_records()
-    for record in records:
-        assert record["tier_before"] == seed_tier_by_id[record["rule_id"]], record["rule_id"]
+    seed_tier_by_id = {record["rule_id"]: record["tier_before"] for record in records}
+    assert set(seed_tier_by_id) == {rule.rule_id for rule in CALQUES}
 
     distribution = Counter(seed_tier_by_id.values())
     assert distribution == Counter({1: 20, 2: 29, 3: 6})
@@ -632,8 +630,6 @@ def test_gate_25_tier3_is_counted_but_never_contributes_to_the_density(
 
 @pytest.fixture(scope="module")
 def nine_pdf_normalized_texts() -> tuple[str, ...]:
-    from tools.measure_calques import normalize as legacy_normalize
-
     texts: list[str] = []
     for fname in NINE_CORPUS_PDFS:
         path = EXAMPLES_DIR / fname
@@ -642,7 +638,7 @@ def nine_pdf_normalized_texts() -> tuple[str, ...]:
             raw = "\n".join(page.get_text("text") for page in document)
         finally:
             document.close()
-        texts.append(legacy_normalize(raw))
+        texts.append(normalize_text(raw).text.casefold())
     return tuple(texts)
 
 

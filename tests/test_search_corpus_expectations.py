@@ -120,7 +120,9 @@ from pathlib import Path
 
 import fitz
 
-from tools.measure_calques import CALQUES
+from search.calques import CALQUES, find_calques
+from search.normalization import normalize_text, tokenize
+from search.types import Confidence, SearchBlock, TextZone, ZoneSpan
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "search_corpus_expectations.json"
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
@@ -145,7 +147,7 @@ _SCANNED_ROOTS = ("search", "parser", "tools", "compare")
 _SCANNED_FILES = ("app.py", "ui_helpers.py")
 _SKIP_DIR_NAMES = {".venv", ".venv312", "__pycache__", "examples", "tmp", "tests"}
 
-_KNOWN_CALQUE_RULE_IDS = {rule_id for rule_id, *_ in CALQUES}
+_KNOWN_CALQUE_RULE_IDS = {rule.rule_id for rule in CALQUES}
 
 # Тест-only "розхитані" тригер-регулярки: та сама лексична основа правила
 # з CALQUES, але БЕЗ виключення (lookahead/lookbehind чи обмеження списку
@@ -672,11 +674,8 @@ class TestFragmentsAreRealSubstringsOfThePdf(unittest.TestCase):
 
     def test_calque_rule_actually_fires_on_positive_and_not_on_negative(self):
         # §22 крок 2 доопр.: rule_id має реально збігатись на positive і
-        # реально НЕ збігатись на negative — прогін того самого регексу
-        # tools/measure_calques.py по реальному вікну слів, а не "на очі".
-        from tools.measure_calques import normalize as calque_normalize
-
-        rule_by_id = {cid: pattern for cid, pattern, *_ in CALQUES}
+        # реально НЕ збігатись на negative — прогін спільного виконуваного
+        # словника search.calques по реальному вікну слів, а не "на очі".
         for doc in self.payload["documents"]:
             calques = doc["sections"]["calques"]
             if calques["status"] != "filled":
@@ -692,8 +691,24 @@ class TestFragmentsAreRealSubstringsOfThePdf(unittest.TestCase):
                         break
                 with self.subTest(doc=doc["file"], example=i):
                     self.assertIsNotNone(match_text)
-                    pattern = rule_by_id[example["rule_id"]]
-                    matched = bool(re.search(pattern, calque_normalize(match_text)))
+                    normalized_text = normalize_text(match_text)
+                    block = SearchBlock(
+                        block_id="corpus-calque-example",
+                        raw_text=match_text,
+                        normalized=normalized_text,
+                        tokens=tokenize(match_text, normalized_text),
+                        section_id="corpus",
+                        heading_path=(),
+                        physical_page=example["page"],
+                        block_index=0,
+                        zone_spans=(ZoneSpan(
+                            0, len(match_text), TextZone.AUTHOR_TEXT,
+                            Confidence.HIGH, "manual-corpus-example",
+                        ),),
+                    )
+                    matched = any(
+                        hit.rule_id == example["rule_id"] for hit in find_calques(block)
+                    )
                     if example["label"] == "positive":
                         self.assertTrue(matched, f"{doc['file']} calques[{i}]: правило не спрацювало на positive")
                     else:
@@ -703,7 +718,7 @@ class TestFragmentsAreRealSubstringsOfThePdf(unittest.TestCase):
                         # про що не свідчить (§22 крок 2 доопр., див.
                         # NEGATIVE_TRIGGER_PATTERNS).
                         trigger = NEGATIVE_TRIGGER_PATTERNS[example["rule_id"]]
-                        provoked = bool(re.search(trigger, calque_normalize(match_text)))
+                        provoked = bool(re.search(trigger, normalized_text.text.casefold()))
                         self.assertTrue(
                             provoked,
                             f"{doc['file']} calques[{i}]: негативний приклад не містить "
