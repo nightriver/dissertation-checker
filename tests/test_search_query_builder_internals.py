@@ -67,19 +67,20 @@ def _tokens_from_words(words: list[str]) -> tuple[list[SearchToken], str]:
 
 
 def test_score_window_counts_proper_name_number_long_word_and_normative_penalty():
-    words = ["Ми", "Керимов", "2020", "реформування", "стаття", "15"]
+    words = ["Ми", "І.", "Керимов", "2020", "реформування", "стаття", "15"]
     tokens, raw_text = _tokens_from_words(words)
     freq = {w.casefold(): 5 for w in words}  # частий, щоб не рахувати "рідкісну форму"
     score = _score_window(tokens, 0, len(tokens), raw_text, freq)
     # +4 (покриття сигналу, завжди додається базово);
-    # "Керимов" — власне ім'я (+3, не на початку речення) І змістовне слово
+    # "І. Керимов" — конструкція ініціал + прізвище; прізвище отримує +3
+    # і водночас є змістовним словом
     # ≥6 літер (+1, критерії не взаємовиключні — §13 не забороняє поєднання);
     # "2020" — число (+3);
     # "реформування" і "стаття" — по +1 як змістовні слова ≥6 літер;
-    # "15" — число (+3);
+    # "15" — номер статті, тому бонус числа не отримує;
     # "стаття 15" — нормативний маркер (−2).
-    assert score == 4.0 + (3.0 + 1.0) + 3.0 + 1.0 + 1.0 + 3.0 - 2.0
-    assert score == 14.0
+    assert score == 4.0 + (3.0 + 1.0) + 3.0 + 1.0 + 1.0 - 2.0
+    assert score == 11.0
 
 
 def test_score_window_gives_rare_form_bonus_only_for_low_frequency_words():
