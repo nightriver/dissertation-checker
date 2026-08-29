@@ -291,6 +291,8 @@ def test_gate_summary_keeps_calques_language_coverage_and_warnings() -> None:
     assert summary.bibliography.total == 1
     assert summary.bibliography.ru == 1
     assert summary.bibliography.ru_percentage_label == "100%"
+    assert len(summary.section_calques) == 1
+    assert summary.section_calques[0].tier1_hits == 1
     assert summary.warnings == ("увага",)
 
 

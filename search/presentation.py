@@ -15,18 +15,26 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
-from search.calques import density_band, rule_by_id
+from search.calques import (
+    collapse_components,
+    density_band,
+    find_calques,
+    rule_by_id,
+    section_is_locally_dense,
+)
 from search.engines import resolve_engine_link
 from search.language import bibliography_language_stats
 from search.normalization import map_normalized_offsets, normalize_text
 from search.state import QueryState, is_counted_as_checked
 from search.types import (
+    CONTENT_SECTION_KINDS,
     Channel,
     EngineSpec,
     SearchDocument,
     SearchQuery,
     SearchResult,
     ShortfallReason,
+    TextZone,
 )
 
 
@@ -174,6 +182,17 @@ class BibliographySummaryView:
 
 
 @dataclass(frozen=True)
+class SectionCalqueSummaryView:
+    section_id: str
+    heading: str
+    tier1_hits: int
+    tier2_hits: int
+    tier3_hits: int
+    density: float
+    locally_dense: bool
+
+
+@dataclass(frozen=True)
 class SearchSummaryView:
     n_pages: int
     expected_body_pages: int
@@ -182,11 +201,14 @@ class SearchSummaryView:
     query_count: int
     calques: CalqueSummaryView
     bibliography: BibliographySummaryView
+    section_calques: tuple[SectionCalqueSummaryView, ...]
     channel_usefulness: tuple[ChannelUsefulnessView, ...]
     engine_failures: tuple[EngineFailureView, ...]
     shortfall_section_count: int
     shortfall_reasons: tuple[ShortfallReasonView, ...]
     rejected_by_reason: tuple[tuple[str, int], ...]
+    generated_by_channel: tuple[tuple[Channel, int], ...]
+    retained_primary_by_channel: tuple[tuple[Channel, int], ...]
     attributed_by_channel: tuple[tuple[Channel, int], ...]
     warnings: tuple[str, ...]
 
@@ -454,6 +476,31 @@ def build_search_summary(
         reasons=language.reasons,
     )
 
+    section_calques: list[SectionCalqueSummaryView] = []
+    for section in result.document.sections:
+        if section.kind not in CONTENT_SECTION_KINDS:
+            continue
+        hits = tuple(
+            hit
+            for block in result.document.blocks
+            if block.section_id == section.section_id
+            for hit in collapse_components(find_calques(block))
+            if hit.zone == TextZone.AUTHOR_TEXT
+        )
+        by_tier = {tier: sum(hit.tier == tier for hit in hits) for tier in (1, 2, 3)}
+        section_density = 1000 * by_tier[1] / section.author_words if section.author_words else 0.0
+        section_calques.append(SectionCalqueSummaryView(
+            section_id=section.section_id,
+            heading=section.heading,
+            tier1_hits=by_tier[1],
+            tier2_hits=by_tier[2],
+            tier3_hits=by_tier[3],
+            density=section_density,
+            locally_dense=section_is_locally_dense(
+                section.author_words, by_tier[1], section_density
+            ),
+        ))
+
     return SearchSummaryView(
         n_pages=result.document.n_pages,
         expected_body_pages=result.document.expected_body_pages,
@@ -462,11 +509,14 @@ def build_search_summary(
         query_count=len(result.queries),
         calques=calque_view,
         bibliography=bibliography_view,
+        section_calques=tuple(section_calques),
         channel_usefulness=tuple(channel_views),
         engine_failures=engine_failures,
         shortfall_section_count=len(result.shortfalls),
         shortfall_reasons=shortfall_views,
         rejected_by_reason=result.candidate_metrics.rejected_by_reason,
+        generated_by_channel=result.candidate_metrics.generated_by_channel,
+        retained_primary_by_channel=result.candidate_metrics.retained_primary_by_channel,
         attributed_by_channel=result.candidate_metrics.attributed_by_channel,
         warnings=result.warnings,
     )

@@ -77,7 +77,7 @@ def test_changing_the_status_radio_updates_the_triage_state():
     assert not app.exception
     updated_state = app.session_state["search_query_states"][query_id]
     assert updated_state.status == "found"
-    assert updated_state.found_engine == "Google"
+    assert updated_state.found_engine == "google"
     assert app.get("radio")[0].value == "found"
 
 

@@ -8,21 +8,32 @@ presentation, state та parser/search-модулі. Специфікація �
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from datetime import date
 
 from parser.searchdoc import parse_search_document
 from search.presentation import QueryCardView, SearchSummaryView, build_query_card, build_search_summary
 from search.query_builder import build_search_result
 from search.state import (
+    ImportResult,
     QueryState,
+    UnmatchedRecord,
     add_failed_engine,
+    apply_project,
+    export_project,
     initial_state,
     mark_found,
     mark_no_result,
     mark_unchecked,
 )
-from search.types import CONTENT_SECTION_KINDS, EngineSpec, SearchResult, SectionShortfall
+from search.types import (
+    CONTENT_SECTION_KINDS,
+    EngineSpec,
+    SearchResult,
+    SectionOverride,
+    SectionShortfall,
+)
 
 
 DEFAULT_VISIBLE_PER_SECTION = 5
@@ -45,15 +56,100 @@ class SearchScreenView:
     sections: tuple[SectionCardsView, ...]
 
 
-def run_search_pipeline(pdf_bytes: bytes) -> SearchResult:
-    """Байти PDF → `SearchResult` (§22, крок 3): `searchdoc` → маркери → запити."""
-    document = parse_search_document(pdf_bytes)
+def run_search_pipeline(
+    pdf_bytes: bytes, overrides: tuple[SectionOverride, ...] = ()
+) -> SearchResult:
+    """Байти PDF та виправлення карти → повністю перерахований `SearchResult`."""
+    document = parse_search_document(pdf_bytes, overrides=overrides)
     return build_search_result(document)
 
 
 def build_initial_query_states(result: SearchResult) -> dict[str, QueryState]:
     """Початковий стан триажу — `unchecked` для кожного запиту."""
     return {query.query_id: initial_state(query.query_id) for query in result.queries}
+
+
+def _complete_states(result: SearchResult, states: dict[str, QueryState]) -> dict[str, QueryState]:
+    return {
+        query.query_id: states.get(query.query_id, initial_state(query.query_id))
+        for query in result.queries
+    }
+
+
+def _carry_unmatched(payload: dict, unmatched: tuple[UnmatchedRecord, ...]) -> dict:
+    carried = dict(payload)
+    carried["unmatched"] = [
+        {
+            "query_id": item.query_id,
+            "donor_id": item.donor_id,
+            "payload": item.payload,
+        }
+        for item in unmatched
+    ]
+    return carried
+
+
+def serialize_search_project(
+    result: SearchResult,
+    states: dict[str, QueryState],
+    *,
+    app_version: str,
+    file_name: str,
+    unmatched: tuple[UnmatchedRecord, ...] = (),
+) -> bytes:
+    """Серіалізувати переносний JSON-проєкт UTF-8 без втрати unmatched (§18)."""
+
+    payload = export_project(
+        document=result.document,
+        result=result,
+        states=states,
+        app_version=app_version,
+        file_name=file_name,
+    )
+    payload = _carry_unmatched(payload, unmatched)
+    return (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def rebuild_search_pipeline(
+    pdf_bytes: bytes,
+    overrides: tuple[SectionOverride, ...],
+    previous_result: SearchResult,
+    previous_states: dict[str, QueryState],
+    *,
+    app_version: str,
+    file_name: str,
+    unmatched: tuple[UnmatchedRecord, ...] = (),
+) -> tuple[SearchResult, dict[str, QueryState], ImportResult]:
+    """Перерахувати карту та перенести статуси за стабільними ID (§18.2)."""
+
+    payload = export_project(
+        document=previous_result.document,
+        result=previous_result,
+        states=previous_states,
+        app_version=app_version,
+        file_name=file_name,
+    )
+    payload = _carry_unmatched(payload, unmatched)
+    result = run_search_pipeline(pdf_bytes, overrides)
+    imported = apply_project(payload, document=result.document, queries=result.queries)
+    return result, _complete_states(result, imported.states), imported
+
+
+def import_search_project(
+    pdf_bytes: bytes,
+    payload: dict,
+    current_result: SearchResult,
+) -> tuple[SearchResult, dict[str, QueryState], ImportResult]:
+    """Атомарно: допуск JSON → overrides → перерахунок → зіставлення (§18.3)."""
+
+    preliminary = apply_project(
+        payload,
+        document=current_result.document,
+        queries=current_result.queries,
+    )
+    result = run_search_pipeline(pdf_bytes, preliminary.section_overrides)
+    imported = apply_project(payload, document=result.document, queries=result.queries)
+    return result, _complete_states(result, imported.states), imported
 
 
 def build_search_screen(
@@ -133,6 +229,8 @@ def apply_status_action(
         if not failed_engine:
             raise ValueError("Дія 'failed_engine' вимагає код рушія.")
         updated = add_failed_engine(current, failed_engine)
+    elif action == "comment":
+        updated = replace(current, comment=comment or "")
     else:
         raise ValueError(f"Невідома дія статусу: {action!r}")
 

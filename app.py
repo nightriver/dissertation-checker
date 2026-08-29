@@ -54,8 +54,18 @@ from compare.prepare import prepare_document_for_comparison
 from compare.presentation import format_physical_pages, render_comparison_table
 from parser.searchdoc import NoTextLayerError
 from search.engines import ENGINES
-from search.presentation import STATUS_LABELS, build_query_card
-from search.ui_logic import apply_status_action, build_initial_query_states, run_search_pipeline
+from search.presentation import STATUS_LABELS
+from search.state import ImportRejected, parse_project
+from search.types import SectionKind, SectionOverride, SectionOverrideAction
+from search.ui_logic import (
+    apply_status_action,
+    build_initial_query_states,
+    build_search_screen,
+    import_search_project,
+    rebuild_search_pipeline,
+    run_search_pipeline,
+    serialize_search_project,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -839,14 +849,164 @@ def render_two_file_compare_page() -> None:
 # Порядок опцій радіо-кнопки; підписи — з `search.presentation.STATUS_LABELS`,
 # щоб не тримати другу копію словника (§17).
 _SEARCH_STATUS_OPTIONS = tuple(STATUS_LABELS.keys())
+SEARCH_APP_VERSION = "search-ui-1"
+
+_SEARCH_SECTION_KIND_LABELS = {
+    SectionKind.TITLE: "титульна частина",
+    SectionKind.TOC: "зміст",
+    SectionKind.ABSTRACT: "анотація",
+    SectionKind.INTRO: "вступ",
+    SectionKind.CHAPTER: "розділ",
+    SectionKind.CONCLUSIONS: "висновки",
+    SectionKind.BIBLIO: "бібліографія",
+    SectionKind.APPENDIX: "додаток",
+    SectionKind.UNKNOWN: "не визначено",
+}
+
+
+def _render_search_card(card, state, states) -> None:
+    """Тонка Streamlit-оболонка над готовою карткою PLAN_SEARCH.md §17."""
+    st.divider()
+    with st.container():
+        subtype = f" · {card.subtype_label}" if card.subtype_label else ""
+        attributed = " ".join(card.attributed_channel_labels)
+        st.markdown(f"**{card.channel_label}{subtype}** · причини: {attributed}")
+        st.caption(card.page_label)
+        if card.calque_indicators:
+            st.caption("Ознаки перекладу: " + "; ".join(item.label for item in card.calque_indicators))
+        st.markdown(f"**Донор:** «{card.donor_html}»", unsafe_allow_html=True)
+        if card.ru_reference_reason:
+            st.caption(f"Причина RU-опори: {card.ru_reference_reason}")
+        st.code(card.query_text)
+
+        link_columns = st.columns(min(3, len(card.engine_links))) if card.engine_links else ()
+        for index, link in enumerate(card.engine_links):
+            with link_columns[index % len(link_columns)]:
+                st.link_button(
+                    link.action_label,
+                    link.target_url,
+                    key=f"search_engine_{card.query_id}_{link.engine_code}",
+                    width="stretch",
+                )
+            details = tuple(item for item in (link.warning, link.block_reason_label) if item)
+            if details:
+                st.caption(f"{link.label}: " + " · ".join(details))
+        if card.engine_links:
+            engine_labels = {link.engine_code: link.label for link in card.engine_links}
+            failed_engine = st.selectbox(
+                "Технічна помилка рушія",
+                tuple(engine_labels),
+                format_func=lambda code: engine_labels[code],
+                key=f"search_failed_engine_{card.query_id}",
+            )
+            if st.button("Позначити рушій недоступним", key=f"search_add_failed_{card.query_id}"):
+                st.session_state.search_query_states = apply_status_action(
+                    states,
+                    card.query_id,
+                    "failed_engine",
+                    failed_engine=failed_engine,
+                )
+                st.rerun()
+
+        st.caption("Фрагмент для Ctrl+F:")
+        st.code(card.anchor_text)
+        if card.block_text is not None and st.checkbox(
+            "Показати повний абзац",
+            key=f"search_full_block_{card.query_id}",
+        ):
+            st.markdown(card.block_html or "", unsafe_allow_html=True)
+
+        if card.needs_review and card.needs_review_message:
+            previous = f" Попередній статус: {card.previous_status_label}." if card.previous_status_label else ""
+            st.warning(card.needs_review_message + previous)
+
+        selected = st.radio(
+            "Статус",
+            _SEARCH_STATUS_OPTIONS,
+            index=_SEARCH_STATUS_OPTIONS.index(state.status),
+            format_func=lambda code: STATUS_LABELS[code],
+            key=f"search_status_{card.query_id}",
+            horizontal=True,
+        )
+        if selected != state.status:
+            if selected == "found":
+                first_engine = card.engine_links[0].engine_code if card.engine_links else "google"
+                st.session_state.search_query_states = apply_status_action(
+                    states,
+                    card.query_id,
+                    "found",
+                    found_engine=first_engine,
+                )
+            else:
+                st.session_state.search_query_states = apply_status_action(
+                    states, card.query_id, selected
+                )
+            st.rerun()
+
+        if state.status == "found":
+            engine_codes = tuple(link.engine_code for link in card.engine_links) or ("google",)
+            engine_labels = {link.engine_code: link.label for link in card.engine_links}
+            current_engine = state.found_engine if state.found_engine in engine_codes else engine_codes[0]
+            found_engine = st.selectbox(
+                "Знайдено у",
+                engine_codes,
+                index=engine_codes.index(current_engine),
+                format_func=lambda code: engine_labels.get(code, code),
+                key=f"search_found_engine_{card.query_id}",
+            )
+            source_url = st.text_input(
+                "URL джерела",
+                value=state.source_url or "",
+                key=f"search_source_url_{card.query_id}",
+            )
+            comment = st.text_area(
+                "Коментар",
+                value=state.comment,
+                key=f"search_comment_{card.query_id}",
+            )
+            if st.button("Зберегти знайдений результат", key=f"search_save_found_{card.query_id}"):
+                try:
+                    st.session_state.search_query_states = apply_status_action(
+                        states,
+                        card.query_id,
+                        "found",
+                        found_engine=found_engine,
+                        source_url=source_url or None,
+                        comment=comment,
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.rerun()
+        elif state.status == "no_result":
+            comment = st.text_area(
+                "Коментар",
+                value=state.comment,
+                key=f"search_comment_{card.query_id}",
+            )
+            if st.button("Зберегти коментар", key=f"search_save_no_result_{card.query_id}"):
+                st.session_state.search_query_states = apply_status_action(
+                    states, card.query_id, "no_result", comment=comment
+                )
+                st.rerun()
+        else:
+            comment = st.text_area(
+                "Коментар",
+                value=state.comment,
+                key=f"search_comment_{card.query_id}",
+            )
+            if st.button("Зберегти коментар", key=f"search_save_unchecked_{card.query_id}"):
+                st.session_state.search_query_states = apply_status_action(
+                    states, card.query_id, "comment", comment=comment
+                )
+                st.rerun()
+
+        if card.failed_engines:
+            st.caption("Технічні помилки: " + ", ".join(card.failed_engines))
 
 
 def render_manual_search_page() -> None:
-    """
-    Окремий екран ручного пошуку джерел (PLAN_SEARCH.md).
-    Крок 3 (§22): тонкий наскрізний зріз — лише канал A, без карти
-    розділів з виправленнями, лічильників K і аккордеонів (крок 14/15).
-    """
+    """Повний екран ручного пошуку джерел за PLAN_SEARCH.md §§17–19."""
     if st.button("← Повернутися до перевірки джерел", key="search_back"):
         if "mode" in st.query_params:
             del st.query_params["mode"]
@@ -887,55 +1047,256 @@ def render_manual_search_page() -> None:
             return
         st.session_state.search_result = result
         st.session_state.search_query_states = build_initial_query_states(result)
+        st.session_state.search_section_overrides = ()
+        st.session_state.search_unmatched = ()
 
     result = st.session_state.search_result
     states = st.session_state.search_query_states
+    today = datetime.date.today()
+    screen = build_search_screen(result, states, ENGINES, today)
+    summary = screen.summary
 
     st.info(
-        f"Аркушів: {result.document.n_pages} · знайдено запитів: {len(result.queries)}. "
-        "Реалізовано лише канал A (§22, крок 3); N, B, K, T, L — крок 9."
+        f"Аркушів: {summary.n_pages} · охоплення текстом: {summary.coverage_label} · "
+        f"запитів: {summary.query_count}."
     )
-    for warning in result.warnings:
+    for warning in summary.warnings:
         st.caption(f"⚠ {warning}")
 
-    if not result.queries:
-        st.warning("Жодного запиту не згенеровано для цього PDF на поточному кроці розробки.")
-        return
+    st.markdown("### Карта розділів")
+    section_rows = [
+        {
+            "Заголовок": section.heading or "—",
+            "Тип": _SEARCH_SECTION_KIND_LABELS[section.kind],
+            "Аркуші PDF": format_number_ranges(section.physical_pages) or "—",
+            "Слів автора": section.author_words,
+            "Охоплення": f"{section.coverage_ratio:.0%}",
+            "Надійність": section.confidence.value,
+        }
+        for section in result.document.sections
+    ]
+    st.dataframe(pd.DataFrame(section_rows), width="stretch", hide_index=True)
 
-    today = datetime.date.today()
-    for query in result.queries:
-        state = states[query.query_id]
-        card = build_query_card(query, state, ENGINES, today)
-        with st.container(border=True):
-            st.markdown(f"**{card.channel_label}** {card.query_text}")
-            st.caption(f"{card.page_label} · донор: {card.donor_text}")
-            st.code(card.query_text)
-            for link in card.engine_links:
-                if link.url:
-                    st.link_button(link.label, link.url)
-                else:
-                    st.link_button(f"{link.label} · відкрити сайт", link.home_url)
-            st.caption("Фрагмент для Ctrl+F:")
-            st.code(card.anchor_text)
-            selected = st.radio(
-                "Статус",
-                _SEARCH_STATUS_OPTIONS,
-                index=_SEARCH_STATUS_OPTIONS.index(state.status),
-                format_func=lambda code: STATUS_LABELS[code],
-                key=f"search_status_{query.query_id}",
-                horizontal=True,
+    with st.expander("Виправити карту розділів"):
+        current_overrides = tuple(st.session_state.get("search_section_overrides", ()))
+        if current_overrides and st.button(
+            "Скинути всі виправлення",
+            key="search_reset_overrides",
+        ):
+            rebuilt, rebuilt_states, imported = rebuild_search_pipeline(
+                data,
+                (),
+                result,
+                states,
+                app_version=SEARCH_APP_VERSION,
+                file_name=uploaded.name,
+                unmatched=tuple(st.session_state.get("search_unmatched", ())),
             )
-            if selected != state.status:
-                if selected == "found":
-                    found_engine = card.engine_links[0].label if card.engine_links else "Google"
-                    st.session_state.search_query_states = apply_status_action(
-                        states, query.query_id, "found", found_engine=found_engine
+            st.session_state.search_result = rebuilt
+            st.session_state.search_query_states = rebuilt_states
+            st.session_state.search_section_overrides = ()
+            st.session_state.search_unmatched = imported.unmatched
+            st.rerun()
+        eligible_sections = tuple(
+            section
+            for section in result.document.sections
+            if 0 <= section.block_start < len(result.document.blocks)
+        )
+        if eligible_sections:
+            selected_section_id = st.selectbox(
+                "Розділ для виправлення",
+                tuple(section.section_id for section in eligible_sections),
+                format_func=lambda section_id: next(
+                    section.heading or section.section_id
+                    for section in eligible_sections
+                    if section.section_id == section_id
+                ),
+                key="search_override_section",
+            )
+            correction_options = ("auto", "exclude") + tuple(kind.value for kind in SectionKind)
+            correction = st.selectbox(
+                "Нове значення",
+                correction_options,
+                format_func=lambda value: (
+                    "автоматично" if value == "auto"
+                    else "це не заголовок" if value == "exclude"
+                    else _SEARCH_SECTION_KIND_LABELS[SectionKind(value)]
+                ),
+                key="search_override_kind",
+            )
+            if st.button("Застосувати виправлення", key="search_apply_override"):
+                selected_section = next(
+                    section for section in eligible_sections if section.section_id == selected_section_id
+                )
+                heading_block_id = result.document.blocks[selected_section.block_start].block_id
+                new_overrides = tuple(
+                    override
+                    for override in current_overrides
+                    if override.heading_block_id != heading_block_id
+                )
+                if correction == "exclude":
+                    new_overrides += (SectionOverride(
+                        SectionOverrideAction.EXCLUDE_HEADING, heading_block_id, None
+                    ),)
+                elif correction != "auto":
+                    new_overrides += (SectionOverride(
+                        SectionOverrideAction.SET_KIND, heading_block_id, SectionKind(correction)
+                    ),)
+                try:
+                    rebuilt, rebuilt_states, imported = rebuild_search_pipeline(
+                        data,
+                        new_overrides,
+                        result,
+                        states,
+                        app_version=SEARCH_APP_VERSION,
+                        file_name=uploaded.name,
+                        unmatched=tuple(st.session_state.get("search_unmatched", ())),
                     )
+                except ValueError as exc:
+                    st.error(str(exc))
                 else:
-                    st.session_state.search_query_states = apply_status_action(
-                        states, query.query_id, selected
-                    )
-                st.rerun()
+                    st.session_state.search_result = rebuilt
+                    st.session_state.search_query_states = rebuilt_states
+                    st.session_state.search_section_overrides = new_overrides
+                    st.session_state.search_unmatched = imported.unmatched
+                    st.rerun()
+
+    st.markdown("### Ознаки перекладу (K)")
+    k1, k2, k3, density = st.columns(4)
+    k1.metric("Tier 1", summary.calques.tier1_hits)
+    k2.metric("Tier 2", summary.calques.tier2_hits)
+    k3.metric("Tier 3", summary.calques.tier3_hits)
+    density.metric("Tier 1 / 1000 слів", f"{summary.calques.tier1_density:.2f}")
+    excluded = ", ".join(
+        f"{zone}: {count}" for zone, count in summary.calques.excluded_zone_hits
+    )
+    st.caption(f"Виключені зони: {excluded}")
+    if summary.calques.notice:
+        st.warning(summary.calques.notice)
+
+    search_lines = [
+        {"line": block.raw_text, "page": block.physical_page}
+        for block in result.document.blocks
+    ]
+    dissertation_year = extract_dissertation_year(search_lines)
+    bibliography = summary.bibliography
+    st.markdown("### Рік і мови бібліографії")
+    st.caption(
+        f"Рік роботи: {dissertation_year or '—'} · записів: {bibliography.total} · "
+        f"RU: {bibliography.ru} · UK: {bibliography.uk} · MIXED: {bibliography.mixed} · "
+        f"UNKNOWN: {bibliography.unknown} · RU%: {bibliography.ru_percentage_label} · "
+        f"охоплення списку: {bibliography.coverage_label}"
+    )
+
+    st.markdown("### K за розділами")
+    st.dataframe(pd.DataFrame([
+        {
+            "Розділ": item.heading,
+            "Tier 1": item.tier1_hits,
+            "Tier 2": item.tier2_hits,
+            "Tier 3": item.tier3_hits,
+            "Щільність": f"{item.density:.2f}",
+            "Висока концентрація": "так" if item.locally_dense else "ні",
+        }
+        for item in summary.section_calques
+    ]), width="stretch", hide_index=True)
+
+    st.markdown("### Запити за розділами")
+    if not result.queries:
+        st.warning("Жодного придатного запиту не згенеровано. Перевірте недобір нижче.")
+    reason_labels = {item.reason: item.label for item in summary.shortfall_reasons}
+    for section in screen.sections:
+        total_cards = len(section.visible_cards) + section.hidden_count
+        with st.expander(f"{section.heading} · {total_cards} запитів", expanded=True):
+            if section.shortfall is not None:
+                st.warning(
+                    f"Недобір: {section.shortfall.actual}/{section.shortfall.target}. "
+                    f"Причина: {reason_labels[section.shortfall.primary_reason]}."
+                )
+            for card in section.visible_cards:
+                _render_search_card(card, states[card.query_id], states)
+            if section.hidden_count and st.checkbox(
+                f"Ще {section.hidden_count} зачіпок",
+                key=f"search_more_{section.section_id}",
+            ):
+                for card in section.hidden_cards:
+                    _render_search_card(card, states[card.query_id], states)
+
+    st.markdown("### Стан проєкту")
+    generated = dict(summary.generated_by_channel)
+    retained = dict(summary.retained_primary_by_channel)
+    attributed = dict(summary.attributed_by_channel)
+    usefulness = {item.channel: item for item in summary.channel_usefulness}
+    st.dataframe(pd.DataFrame([
+        {
+            "Канал": channel.value,
+            "Згенеровано": generated[channel],
+            "Відібрано primary": retained[channel],
+            "Атрибуцій": attributed[channel],
+            "Знайдено": usefulness[channel].found,
+            "Перевірено": usefulness[channel].checked,
+            "Результативність": usefulness[channel].hit_rate_label,
+        }
+        for channel in usefulness
+    ]), width="stretch", hide_index=True)
+    st.caption("Технічні помилки: " + " · ".join(
+        f"{item.label}: {item.count}" for item in summary.engine_failures
+    ))
+    st.caption(
+        f"Розділів із недобором: {summary.shortfall_section_count} · "
+        "відсіви: " + (
+            ", ".join(f"{reason}: {count}" for reason, count in summary.rejected_by_reason)
+            or "немає"
+        )
+    )
+    st.caption("Причини недобору: " + " · ".join(
+        f"{item.label}: {item.primary_count}"
+        for item in summary.shortfall_reasons
+    ))
+
+    unmatched = tuple(st.session_state.get("search_unmatched", ()))
+    project_bytes = serialize_search_project(
+        result,
+        states,
+        app_version=SEARCH_APP_VERSION,
+        file_name=uploaded.name,
+        unmatched=unmatched,
+    )
+    st.download_button(
+        "Завантажити JSON-проєкт",
+        data=project_bytes,
+        file_name=f"{uploaded.name}.search-project.json",
+        mime="application/json",
+        key="search_export_project",
+    )
+    project_upload = st.file_uploader(
+        "Імпортувати JSON-проєкт",
+        type=["json"],
+        key="search_project_upload",
+    )
+    if project_upload is not None and st.button("Імпортувати проєкт", key="search_import_project"):
+        try:
+            payload = parse_project(project_upload.getvalue())
+            imported_result, imported_states, imported = import_search_project(
+                data, payload, result
+            )
+        except ImportRejected as exc:
+            st.error(f"Проєкт не імпортовано: {exc.reason.value}.")
+        except (KeyError, TypeError, ValueError) as exc:
+            st.error(f"Проєкт не імпортовано: {exc}.")
+        else:
+            st.session_state.search_result = imported_result
+            st.session_state.search_query_states = imported_states
+            st.session_state.search_section_overrides = imported.section_overrides
+            st.session_state.search_unmatched = imported.unmatched
+            st.session_state.search_import_result = imported
+            st.rerun()
+    if "search_import_result" in st.session_state:
+        imported = st.session_state.search_import_result
+        st.success(
+            f"Відновлено: {imported.restored_count}; потребують повторної перевірки: "
+            f"{imported.needs_review_count}; не зіставлено: {len(imported.unmatched)}."
+        )
 
 
 if is_compare_mode(st.query_params):
