@@ -271,7 +271,7 @@ def test_gate_full_builder_emits_new_channels_and_existing_evidence_ids() -> Non
     donor = _donor(block)
     document = _document(block, donor)
     result = build_search_result(document)
-    channels = {query.primary_channel for query in result.queries}
+    channels = {channel for query in result.queries for channel in query.attributed_channels}
     assert channels >= {Channel.A, Channel.N, Channel.B, Channel.K}
     evidence_ids = {hit.evidence_id for hit in result.signal_hits}
     assert all(set(query.evidence_ids) <= evidence_ids for query in result.queries)

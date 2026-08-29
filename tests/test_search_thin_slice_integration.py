@@ -70,14 +70,16 @@ def test_parses_single_chapter_section_with_one_terminated_sentence(pdf_bytes):
     assert document.citations == ()
 
 
-def test_produces_exactly_one_query_via_channel_a_at_the_main_threshold(pdf_bytes):
+def test_produces_one_primary_a_query_with_merged_t_attribution(pdf_bytes):
     document = parse_search_document(pdf_bytes)
     result = build_search_result(document)
 
     assert len(result.queries) == 1
     query = result.queries[0]
     assert query.primary_channel == Channel.A
-    assert query.attributed_channels == (Channel.A,)
+    # Кроки 9–11: той самий фрагмент також дає T-кандидата; §14.1
+    # дедуплікує їх, але зберігає обидві атрибуції на переможці A.
+    assert query.attributed_channels == (Channel.A, Channel.T)
     # §10.2: +2 за маркер основи "пропон", +2 за фразу "на нашу думку" = 4.
     assert query.score == 4.0
     assert query.selection_stage == 1
@@ -97,12 +99,15 @@ def test_produces_exactly_one_query_via_channel_a_at_the_main_threshold(pdf_byte
     assert query.pdf_anchor in query.donor_text
     assert 1 <= query.pdf_anchor.count(" ") + 1  # непорожній
 
-    # Два маркери каналу A мають лишити слід у діагностиці (CLAUDE.md, №3).
-    assert len(result.signal_hits) == 2
-    assert {hit.rule_id for hit in result.signal_hits} == {
+    # Два маркери A мають лишити точний слід; T-сигнали кроку 9 також
+    # видимі й не повинні ламати перевірку каналу A.
+    a_hits = tuple(hit for hit in result.signal_hits if hit.channel == Channel.A)
+    assert len(a_hits) == 2
+    assert {hit.rule_id for hit in a_hits} == {
         "A.stem.пропон",
         "A.phrase.0",
     }
+    assert any(hit.channel == Channel.T for hit in result.signal_hits)
 
 
 def test_rejected_and_zero_channel_counters_stay_visible_in_diagnostics(pdf_bytes):
@@ -111,10 +116,11 @@ def test_rejected_and_zero_channel_counters_stay_visible_in_diagnostics(pdf_byte
     result = build_search_result(document)
 
     channels_generated = dict(result.candidate_metrics.generated_by_channel)
-    # A згенеровано (єдине речення з обома маркерами), інші канали ще не
-    # реалізовані (крок 9) — їхні нульові лічильники все одно присутні.
+    # Крок 9 додає T для рідкісних форм. Решта нульових лічильників усе одно
+    # мають бути присутні, а A/T об'єднуються вже під час дедуплікації.
     assert channels_generated[Channel.A] == 1
-    for channel in (Channel.N, Channel.B, Channel.K, Channel.T, Channel.L):
+    assert channels_generated[Channel.T] == 1
+    for channel in (Channel.N, Channel.B, Channel.K, Channel.L):
         assert channels_generated[channel] == 0
 
     assert result.candidate_metrics.rejected_by_reason == ()
@@ -172,8 +178,10 @@ def test_sentence_shorter_than_the_window_minimum_is_rejected_as_no_valid_window
 
     assert result.queries == ()
     assert dict(result.candidate_metrics.rejected_by_reason)["no_valid_windows"] == 1
-    # Сигнали каналу A все одно лишаються видимими в діагностиці (CLAUDE.md, №3).
-    assert len(result.signal_hits) == 2
+    # Сигнали A все одно лишаються видимими; T може додати власні сигнали.
+    a_hits = tuple(hit for hit in result.signal_hits if hit.channel == Channel.A)
+    assert len(a_hits) == 2
+    assert any(hit.channel == Channel.T for hit in result.signal_hits)
 
 
 def test_sentence_outside_a_content_section_produces_signal_hits_but_no_queries():
@@ -196,12 +204,15 @@ def test_sentence_outside_a_content_section_produces_signal_hits_but_no_queries(
 
     result = build_search_result(document)
     assert result.queries == ()
-    # Обидва маркери каналу A все одно потрапляють у сигнали діагностики.
-    assert len(result.signal_hits) == 2
-    assert {hit.rule_id for hit in result.signal_hits} == {
+    # Обидва маркери A потрапляють у діагностику разом із незалежними
+    # T-сигналами рідкісних форм.
+    a_hits = tuple(hit for hit in result.signal_hits if hit.channel == Channel.A)
+    assert len(a_hits) == 2
+    assert {hit.rule_id for hit in a_hits} == {
         "A.stem.пропон",
         "A.phrase.0",
     }
+    assert any(hit.channel == Channel.T for hit in result.signal_hits)
     # Кандидат згенеровано (є сигнали), але не перетворено на SearchQuery
     # через тип розділу — це видно як причина відсіву, а не мовчазне зникнення.
     assert dict(result.candidate_metrics.generated_by_channel)[Channel.A] == 1

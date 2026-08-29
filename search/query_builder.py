@@ -1,17 +1,13 @@
 """
 search/query_builder.py
-Побудова текстів запитів, вікна, квоти, драбина пріоритету та
-дедуплікація кандидатів. Специфікація — PLAN_SEARCH.md, §13 та §14.
+Побудова доказово відтворюваних запитів A/N/B/K/T/L, вікна, квоти,
+драбина пріоритету, дедуплікація та чесний недобір. Специфікація —
+PLAN_SEARCH.md, §§10–15.
 
-Крок 3 (§22) реалізує наскрізний тонкий зріз лише для каналу A: пошук
-вікна 6–10 слів (§13, кроки 1–7) з балами й обрізанням до 220 символів,
-побудову `pdf_anchor` (спрощену — повна евристика §15 переваги рідкісних
-слів/прізвищ/чисел належить кроку 10) і збірку `SearchQuery`/`SearchResult`.
-Квоти, посекційна дедуплікація, драбина A/N/B/K → T → L і `SectionShortfall`
-— крок 11. Виробничі детектори A/N/B/K/T/L уже живуть у `search/markers.py`,
-але тексти запитів нових каналів і provenance належать кроку 10. Тому цей
-модуль поки будує лише A-запити, а нульові лічильники інших каналів є
-видимою діагностикою незавершеної інтеграції.
+Кожний змістовний `QueryPart` має простежуване походження, а готовий текст
+повторно складається з частин. Кандидати відбираються незалежно по секціях:
+числові пороги A/N/B/K, потім T і активовані L; компоненти дублів зберігають
+об'єднані атрибуції, а нестача до десяти описується `SectionShortfall`.
 
 Сигнали каналу A обчислюються й потрапляють у `signal_hits` для КОЖНОГО
 речення незалежно від типу розділу (§6.1: "сигнали і кандидати UNKNOWN
@@ -63,6 +59,8 @@ from search.types import (
     SearchResult,
     SearchToken,
     SectionKind,
+    SectionShortfall,
+    ShortfallReason,
     SentenceDonor,
     SignalHit,
     SourceSpan,
@@ -84,6 +82,16 @@ LONG_WORD_MIN_LEN = 6
 NORMATIVE_PENALTY = 2.0
 
 MAIN_SELECTION_THRESHOLD = 4.0
+TARGET_QUERIES_PER_SECTION = 10
+MAX_QUERIES_PER_SECTION = 12
+TOP_VISIBLE_PER_SECTION = 5
+DEDUP_JACCARD_THRESHOLD = 0.65
+DEDUP_COMMON_RUN_WORDS = 5
+MAX_PER_BLOCK = 2
+MAX_PER_PAGE = 3
+RELAXED_MAX_PER_BLOCK = 3
+RELAXED_MAX_PER_PAGE = 4
+NORMATIVE_HEAVY_RATIO = 0.60
 
 _STOPWORDS = STOPWORDS
 
@@ -701,10 +709,7 @@ def _build_step3_result(document: SearchDocument) -> SearchResult:
 
 
 def build_search_result(document: SearchDocument) -> SearchResult:
-    """Канонічні A/N/B/K-кандидати; драбина T/L і квоти приходять у кроці 11."""
-
-    if not _has_non_a_primary_signals(document):
-        return _build_step3_result(document)
+    """Побудувати, дедуплікувати й відібрати канонічні A/N/B/K/T/L-запити."""
 
     blocks = {block.block_id: block for block in document.blocks}
     sections = {section.section_id: section for section in document.sections}
@@ -755,30 +760,28 @@ def build_search_result(document: SearchDocument) -> SearchResult:
             channel for channel in (Channel.A, Channel.N, Channel.B, Channel.K)
             if grouped[channel]
         )
-        if evaluation.final_score < MAIN_SELECTION_THRESHOLD:
+        if evaluation.final_score < 2.0:
             for channel in primary_channels:
-                _increment(rejected, f"score_below_threshold_4:{channel.value}")
-            continue
+                _increment(rejected, f"score_below_threshold_2:{channel.value}")
+        else:
+            for channel in (Channel.A, Channel.N, Channel.B):
+                items = tuple(grouped[channel])
+                if not items:
+                    continue
+                query = build_source_channel_query(
+                    donor=donor,
+                    block=block,
+                    channel=channel,
+                    signals=items,
+                    score=evaluation.final_score,
+                    freq=freq,
+                )
+                if isinstance(query, SearchQuery):
+                    queries.append(query)
+                else:
+                    _increment(rejected, str(query or "no_valid_windows"))
 
-        for channel in (Channel.A, Channel.N, Channel.B):
-            items = tuple(grouped[channel])
-            if not items:
-                continue
-            query = build_source_channel_query(
-                donor=donor,
-                block=block,
-                channel=channel,
-                signals=items,
-                score=evaluation.final_score,
-                freq=freq,
-            )
-            if isinstance(query, SearchQuery):
-                queries.append(query)
-                retained[channel] += 1
-            else:
-                _increment(rejected, str(query or "no_valid_windows"))
-
-        if grouped[Channel.K]:
+        if grouped[Channel.K] and evaluation.final_score >= 2.0:
             evidence_ids = tuple(
                 f"sig-{donor.donor_id}-K-{index}" for index in range(len(grouped[Channel.K]))
             )
@@ -787,9 +790,31 @@ def build_search_result(document: SearchDocument) -> SearchResult:
             )
             for query in k_queries:
                 queries.append(replace(query, evidence_ids=evidence_ids))
-                retained[Channel.K] += 1
             if not k_queries:
                 _increment(rejected, "k_no_buildable_subtype")
+
+        if grouped[Channel.T]:
+            query = build_source_channel_query(
+                donor=donor,
+                block=block,
+                channel=Channel.T,
+                signals=tuple(grouped[Channel.T]),
+                score=0.0,
+                freq=freq,
+            )
+            if isinstance(query, SearchQuery):
+                queries.append(query)
+        if evaluation.channel_l_candidate:
+            query = build_source_channel_query(
+                donor=donor,
+                block=block,
+                channel=Channel.L,
+                signals=(),
+                score=0.0,
+                freq=freq,
+            )
+            if isinstance(query, SearchQuery):
+                queries.append(query)
 
     queries.sort(key=lambda query: (
         query.physical_page,
@@ -799,28 +824,35 @@ def build_search_result(document: SearchDocument) -> SearchResult:
         query.subtype or "",
         query.query_id,
     ))
+    selected, shortfalls, dedup_metrics, selection_rejected = select_query_pool(
+        document, tuple(queries)
+    )
+    for reason, count in selection_rejected:
+        rejected[reason] = rejected.get(reason, 0) + count
+    for query in selected:
+        retained[query.primary_channel] += 1
+    attributed = {channel: 0 for channel in Channel if channel != Channel.D}
+    for query in selected:
+        for channel in query.attributed_channels:
+            if channel != Channel.D:
+                attributed[channel] += 1
     channel_order = tuple(channel for channel in Channel if channel != Channel.D)
     return SearchResult(
         document=document,
         algo_version=ALGO_VERSION,
         dictionary_version=DICT_VERSION,
-        queries=tuple(queries),
-        shortfalls=(),
+        queries=selected,
+        shortfalls=shortfalls,
         signal_hits=tuple(signal_hits),
         calque_metrics=compute_metrics(document),
         candidate_metrics=CandidateMetrics(
             generated_by_channel=tuple((channel, generated[channel]) for channel in channel_order),
             retained_primary_by_channel=tuple((channel, retained[channel]) for channel in channel_order),
-            attributed_by_channel=tuple((channel, retained[channel]) for channel in channel_order),
+            attributed_by_channel=tuple((channel, attributed[channel]) for channel in channel_order),
             rejected_by_reason=tuple(sorted(rejected.items())),
         ),
-        dedup_metrics=DedupMetrics(
-            input_count=len(queries),
-            component_count=len(queries),
-            removed_count=0,
-            merged_channel_attributions=0,
-        ),
-        warnings=("Добір T/L, квоти й дедуплікація застосовуються на кроці 11.",),
+        dedup_metrics=dedup_metrics,
+        warnings=(),
     )
 
 
@@ -836,6 +868,333 @@ def _has_non_a_primary_signals(document: SearchDocument) -> bool:
 
 def _increment(counts: dict[str, int], reason: str) -> None:
     counts[reason] = counts.get(reason, 0) + 1
+
+
+def _increment_by(counts: dict[str, int], reason: str, count: int) -> None:
+    counts[reason] = counts.get(reason, 0) + count
+
+
+def select_query_pool(
+    document: SearchDocument,
+    pool: tuple[SearchQuery, ...],
+) -> tuple[tuple[SearchQuery, ...], tuple[SectionShortfall, ...], DedupMetrics, tuple[tuple[str, int], ...]]:
+    """Посекційна драбина §14: дедуплікація, слоти, T/L і чесний недобір."""
+
+    blocks = {block.block_id: block for block in document.blocks}
+    selected_all: list[SearchQuery] = []
+    shortfalls: list[SectionShortfall] = []
+    rejected: dict[str, int] = {}
+    component_count = 0
+    removed_count = 0
+    merged_attributions = 0
+
+    for section in document.sections:
+        if section.kind not in CONTENT_SECTION_KINDS:
+            continue
+        section_rejected: dict[str, int] = {}
+        section_pool = tuple(query for query in pool if query.section_id == section.section_id)
+        base_pool = tuple(query for query in section_pool if query.primary_channel != Channel.L)
+        base_winners, base_components, base_removed, base_merged = _deduplicate_queries(base_pool, blocks)
+        component_count += base_components
+        removed_count += base_removed
+        merged_attributions += base_merged
+
+        selected: list[SearchQuery] = []
+        block_counts: dict[str, int] = {}
+        page_counts: dict[int, int] = {}
+        slot_pattern = (Channel.A, Channel.K, Channel.B, Channel.A, Channel.K,
+                        Channel.B, Channel.A, Channel.K, Channel.B, Channel.A)
+        for stage in (1, 2, 3):
+            stage_pool = [
+                query for query in base_winners
+                if query.selection_stage == stage
+                and query.primary_channel in (Channel.A, Channel.N, Channel.B, Channel.K)
+                and query not in selected
+            ]
+            while stage_pool and len(selected) < TARGET_QUERIES_PER_SECTION:
+                wanted = slot_pattern[len(selected)]
+                matching = [query for query in stage_pool if query.primary_channel == wanted]
+                candidates = matching or stage_pool
+                candidate = min(candidates, key=lambda query: _selection_key(query, blocks))
+                stage_pool.remove(candidate)
+                if _within_limits(candidate, block_counts, page_counts, MAX_PER_BLOCK, MAX_PER_PAGE):
+                    _accept(candidate, selected, block_counts, page_counts)
+                else:
+                    _increment(section_rejected, "diversity_limit")
+
+        t_pool = sorted(
+            (query for query in base_winners if query.primary_channel == Channel.T),
+            key=lambda query: _selection_key(query, blocks),
+        )
+        _take_with_limits(
+            t_pool, selected, block_counts, page_counts,
+            TARGET_QUERIES_PER_SECTION, MAX_PER_BLOCK, MAX_PER_PAGE, section_rejected,
+        )
+
+        covered_subsections = {
+            _subsection_key(blocks[query.block_id]) for query in selected
+        }
+        active_l = tuple(
+            query for query in section_pool
+            if query.primary_channel == Channel.L
+            and _subsection_key(blocks[query.block_id]) not in covered_subsections
+        )
+        inactive_l = sum(
+            query.primary_channel == Channel.L for query in section_pool
+        ) - len(active_l)
+        if inactive_l:
+            _increment_by(section_rejected, "l_subsection_already_covered", inactive_l)
+        l_without_base_edges = tuple(
+            query for query in active_l
+            if not any(_queries_are_duplicates(query, base, blocks) for base in base_winners)
+        )
+        rejected_l_edges = len(active_l) - len(l_without_base_edges)
+        if rejected_l_edges:
+            _increment_by(section_rejected, "l_duplicate_of_base", rejected_l_edges)
+        l_winners, l_components, l_removed, l_merged = _deduplicate_queries(l_without_base_edges, blocks)
+        component_count += l_components
+        removed_count += l_removed + rejected_l_edges
+        merged_attributions += l_merged
+        l_pool = sorted(l_winners, key=lambda query: _selection_key(query, blocks))
+        _take_with_limits(
+            l_pool, selected, block_counts, page_counts,
+            TARGET_QUERIES_PER_SECTION, MAX_PER_BLOCK, MAX_PER_PAGE, section_rejected,
+        )
+
+        if len(selected) < TARGET_QUERIES_PER_SECTION:
+            remaining_tl = [
+                query for query in (*t_pool, *l_pool) if query not in selected
+            ]
+            _take_with_limits(
+                remaining_tl, selected, block_counts, page_counts,
+                TARGET_QUERIES_PER_SECTION,
+                RELAXED_MAX_PER_BLOCK, RELAXED_MAX_PER_PAGE, section_rejected,
+            )
+
+        if section.kind == SectionKind.INTRO and len(selected) >= TARGET_QUERIES_PER_SECTION:
+            extras = sorted(
+                (
+                    query for query in base_winners
+                    if query.primary_channel == Channel.N and query not in selected
+                    and query.selection_stage in (1, 2, 3)
+                ),
+                key=lambda query: _selection_key(query, blocks),
+            )
+            for query in extras:
+                if len(selected) >= MAX_QUERIES_PER_SECTION:
+                    break
+                if _within_limits(query, block_counts, page_counts, MAX_PER_BLOCK, MAX_PER_PAGE):
+                    _accept(query, selected, block_counts, page_counts)
+
+        post_dedup = len(base_winners) + len(l_winners)
+        if not selected and post_dedup:
+            fallback = min((*base_winners, *l_winners), key=lambda query: _selection_key(query, blocks))
+            _accept(fallback, selected, block_counts, page_counts)
+        selected_all.extend(selected)
+
+        if len(selected) < TARGET_QUERIES_PER_SECTION:
+            section_donors = tuple(
+                donor for donor in document.sentences if donor.section_id == section.section_id
+            )
+            eligible_donors = {query.donor_id for query in section_pool}
+            eligible_pre = len(base_pool) + len(active_l)
+            normative_count = sum(
+                len(normative_marker_ids(donor.raw_text)) >= 2
+                and not any(
+                    query.donor_id == donor.donor_id
+                    and query.primary_channel in (Channel.A, Channel.N, Channel.B, Channel.K)
+                    for query in section_pool
+                )
+                for donor in section_donors
+            )
+            normative_ratio = normative_count / len(section_donors) if section_donors else 0.0
+            primary = _shortfall_primary_reason(
+                document,
+                section,
+                generated_window_count=len(section_pool),
+                eligible_pre_dedup_count=eligible_pre,
+                post_dedup_count=post_dedup,
+                actual=len(selected),
+            )
+            contributing: list[ShortfallReason] = []
+            if section.coverage_ratio < 0.9:
+                contributing.append(ShortfallReason.PARTIAL_COVERAGE)
+            if normative_ratio >= NORMATIVE_HEAVY_RATIO:
+                contributing.append(ShortfallReason.NORMATIVE_HEAVY)
+            shortfalls.append(SectionShortfall(
+                section_id=section.section_id,
+                target=TARGET_QUERIES_PER_SECTION,
+                actual=len(selected),
+                author_words=section.author_words,
+                raw_sentence_count=len(section_donors),
+                eligible_donor_count=len(eligible_donors),
+                generated_window_count=len(section_pool),
+                eligible_pre_dedup_count=eligible_pre,
+                post_dedup_count=post_dedup,
+                coverage_ratio=section.coverage_ratio,
+                normative_sentence_ratio=normative_ratio,
+                primary_reason=primary,
+                contributing_reasons=tuple(contributing),
+                rejected_by_reason=tuple(sorted(section_rejected.items())),
+            ))
+
+        for reason, count in section_rejected.items():
+            _increment_by(rejected, reason, count)
+
+    return (
+        tuple(selected_all),
+        tuple(shortfalls),
+        DedupMetrics(
+            input_count=len(pool),
+            component_count=component_count,
+            removed_count=removed_count,
+            merged_channel_attributions=merged_attributions,
+        ),
+        tuple(sorted(rejected.items())),
+    )
+
+
+def _deduplicate_queries(
+    queries: tuple[SearchQuery, ...], blocks: dict[str, SearchBlock]
+) -> tuple[tuple[SearchQuery, ...], int, int, int]:
+    if not queries:
+        return (), 0, 0, 0
+    parent = list(range(len(queries)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[max(root_left, root_right)] = min(root_left, root_right)
+
+    for left in range(len(queries)):
+        for right in range(left + 1, len(queries)):
+            if _queries_are_duplicates(queries[left], queries[right], blocks):
+                union(left, right)
+    components: dict[int, list[SearchQuery]] = {}
+    for index, query in enumerate(queries):
+        components.setdefault(find(index), []).append(query)
+    winners: list[SearchQuery] = []
+    merged = 0
+    for component in components.values():
+        winner = min(component, key=lambda query: _winner_key(query, blocks))
+        channels = tuple(
+            channel for channel in (Channel.A, Channel.N, Channel.B, Channel.K, Channel.T, Channel.L)
+            if any(channel in query.attributed_channels for query in component)
+        )
+        merged += max(len(channels) - len(winner.attributed_channels), 0)
+        winners.append(replace(
+            winner,
+            attributed_channels=channels,
+            reasons=tuple(sorted({reason for query in component for reason in query.reasons})),
+            evidence_ids=tuple(sorted({evidence for query in component for evidence in query.evidence_ids})),
+        ))
+    winners.sort(key=lambda query: _winner_key(query, blocks))
+    return tuple(winners), len(components), len(queries) - len(components), merged
+
+
+def _queries_are_duplicates(
+    left: SearchQuery, right: SearchQuery, blocks: dict[str, SearchBlock]
+) -> bool:
+    if left.section_id != right.section_id or left.query_language != right.query_language:
+        return False
+    if left.donor_id == right.donor_id and {left.primary_channel, right.primary_channel} == {Channel.A, Channel.B}:
+        return True
+    left_tokens = _significant_tokens(left.query_text)
+    right_tokens = _significant_tokens(right.query_text)
+    left_set, right_set = set(left_tokens), set(right_tokens)
+    union = left_set | right_set
+    jaccard = len(left_set & right_set) / len(union) if union else 0.0
+    return jaccard >= DEDUP_JACCARD_THRESHOLD or _has_common_run(
+        left_tokens, right_tokens, DEDUP_COMMON_RUN_WORDS
+    )
+
+
+def _significant_tokens(text: str) -> tuple[str, ...]:
+    normalized = normalize_text(text)
+    return tuple(
+        token.normalized.casefold()
+        for token in tokenize(text, normalized)
+        if token.is_word and token.normalized.casefold() not in STOPWORDS
+        and any(character.isalpha() for character in token.normalized)
+    )
+
+
+def _has_common_run(left: tuple[str, ...], right: tuple[str, ...], size: int) -> bool:
+    if len(left) < size or len(right) < size:
+        return False
+    runs = {left[index:index + size] for index in range(len(left) - size + 1)}
+    return any(right[index:index + size] in runs for index in range(len(right) - size + 1))
+
+
+def _winner_key(query: SearchQuery, blocks: dict[str, SearchBlock]):
+    channel_order = (Channel.A, Channel.N, Channel.B, Channel.K, Channel.T, Channel.L)
+    return (
+        query.selection_stage,
+        -query.rank_score,
+        -query.score,
+        channel_order.index(query.primary_channel),
+        query.physical_page,
+        blocks[query.block_id].block_index,
+        query.sentence_ordinal,
+        query.query_id,
+    )
+
+
+def _selection_key(query: SearchQuery, blocks: dict[str, SearchBlock]):
+    return (
+        -query.rank_score,
+        -query.score,
+        query.physical_page,
+        blocks[query.block_id].block_index,
+        query.sentence_ordinal,
+        query.query_id,
+    )
+
+
+def _within_limits(query, block_counts, page_counts, block_limit, page_limit) -> bool:
+    return block_counts.get(query.block_id, 0) < block_limit and page_counts.get(query.physical_page, 0) < page_limit
+
+
+def _accept(query, selected, block_counts, page_counts) -> None:
+    selected.append(query)
+    block_counts[query.block_id] = block_counts.get(query.block_id, 0) + 1
+    page_counts[query.physical_page] = page_counts.get(query.physical_page, 0) + 1
+
+
+def _take_with_limits(pool, selected, block_counts, page_counts, target, block_limit, page_limit, rejected) -> None:
+    for query in pool:
+        if len(selected) >= target:
+            break
+        if query in selected:
+            continue
+        if _within_limits(query, block_counts, page_counts, block_limit, page_limit):
+            _accept(query, selected, block_counts, page_counts)
+        else:
+            _increment(rejected, "diversity_limit")
+
+
+def _subsection_key(block: SearchBlock) -> tuple[str, ...]:
+    return block.heading_path or (block.section_id,)
+
+
+def _shortfall_primary_reason(document, section, *, generated_window_count, eligible_pre_dedup_count, post_dedup_count, actual):
+    if document.body_biblio_confidence == Confidence.LOW:
+        return ShortfallReason.SECTION_UNRESOLVED
+    if section.author_words == 0:
+        return ShortfallReason.NO_EXTRACTABLE_BODY
+    if generated_window_count == 0:
+        return ShortfallReason.NO_VALID_WINDOWS
+    if eligible_pre_dedup_count < TARGET_QUERIES_PER_SECTION:
+        return ShortfallReason.INSUFFICIENT_QUALITY
+    if post_dedup_count < TARGET_QUERIES_PER_SECTION:
+        return ShortfallReason.DEDUPLICATION_REDUCED
+    return ShortfallReason.DIVERSITY_LIMITS
 
 
 def _word_frequencies(document: SearchDocument) -> dict[str, int]:
