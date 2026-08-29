@@ -55,10 +55,15 @@ PAIR_SCOPED_KEYS: tuple[str, ...] = (
 )
 _PAIR_KEY = "current_compare_pair_key"
 
-# Ключі стану режиму ?mode=search, прив'язані до конкретного PDF (§22, крок 3).
+# Ключі стану режиму ?mode=search, прив'язані до конкретного PDF
+# (PLAN_SEARCH.md, §§17–18). JSON-імпорт і виправлення розділів також не
+# можуть переживати заміну завантаженого файла.
 SEARCH_SCOPED_KEYS: tuple[str, ...] = (
     "search_result",
     "search_query_states",
+    "search_import_result",
+    "search_section_overrides",
+    "search_unmatched",
 )
 _SEARCH_KEY = "current_search_file_key"
 
