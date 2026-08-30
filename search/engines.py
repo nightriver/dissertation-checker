@@ -11,9 +11,9 @@ search/engines.py
 Крок 12 (§22) заповнює повну таблицю з семи рушіїв. У шести з них
 (усі, крім Google) `query_url_template=None`, `verified_on=None`,
 `active_prefill=False` — це свідоме рішення, а не недоробка: §16 вимагає
-ручної перевірки кожного URL перед випуском, а вона ще не відбулась.
-Заповнення цих трьох полів для решти рушіїв — окрема робота користувача
-на прийманні (крок 16).
+ручної перевірки кожного prefill-URL перед випуском. На прийманні кроку 16
+їхні головні сторінки перевірено, але стабільні prefill-шаблони не підтверджено,
+тому fallback лишається свідомим випускним рішенням.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ GOOGLE = EngineSpec(
     query_url_template="https://www.google.com/search?q={query}",
     max_query_chars=_MAX_QUERY_CHARS,
     warning=None,
-    verified_on=date(2026, 8, 25),
+    verified_on=date(2026, 8, 30),
     active_prefill=True,
 )
 

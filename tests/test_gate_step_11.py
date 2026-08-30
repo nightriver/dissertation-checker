@@ -9,7 +9,10 @@ from search.query_builder import (
     MAX_QUERIES_PER_SECTION,
     TARGET_QUERIES_PER_SECTION,
     TOP_VISIBLE_PER_SECTION,
+    _duplicate_candidate_pairs,
+    _duplicate_features,
     _deduplicate_queries,
+    _queries_are_duplicates,
     select_query_pool,
 )
 from search.normalization import normalize_text, tokenize
@@ -183,6 +186,29 @@ def test_gate_union_find_merges_transitive_duplicates() -> None:
     winners, components, removed, _ = _deduplicate_queries((first, middle, last), blocks)
     assert len(winners) == components == 1
     assert removed == 2
+
+
+def test_gate_prefix_filter_keeps_every_true_duplicate_edge() -> None:
+    blocks = {f"b{i}": _block(i) for i in range(8)}
+    queries = (
+        _query(0, Channel.A, "альфа бета гамма дельта епсилон один", donor="same"),
+        _query(1, Channel.B, "цілком інші слова другого запиту", donor="same"),
+        _query(2, Channel.N, "альфа бета гамма дельта епсилон два"),
+        _query(3, Channel.K, "бета гамма дельта епсилон дзета три"),
+        _query(4, Channel.T, "окремий бурштиновий контекст без перетину"),
+        _query(5, Channel.L, "окремий смарагдовий контекст без перетину"),
+        _query(6, Channel.A, "альфа бета гамма", language=Language.RU),
+        replace(_query(7, Channel.B, "альфа бета гамма"), section_id="s2"),
+    )
+    features = tuple(_duplicate_features(query.query_text) for query in queries)
+    candidates = set(_duplicate_candidate_pairs(queries, features))
+    true_edges = {
+        (left, right)
+        for left in range(len(queries))
+        for right in range(left + 1, len(queries))
+        if _queries_are_duplicates(queries[left], queries[right], blocks)
+    }
+    assert true_edges <= candidates
 
 
 def test_gate_winner_prefers_stage_then_rank_then_channel() -> None:

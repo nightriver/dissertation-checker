@@ -21,12 +21,21 @@ PLAN_SEARCH.md, §§10–15.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass, replace
 
 from search import ALGO_VERSION
 from search.bibliography import donor_ids_for_mention
-from search.calques import DICT_VERSION, compute_metrics, find_calques, rule_by_id
+from search.calques import (
+    DICT_VERSION,
+    CalqueHit,
+    compute_metrics,
+    find_calques,
+    find_calques_with_rejections,
+    rule_by_id,
+)
 from search.language import detect_language, reliable_ru_content_words
 from search.markers import (
     STOPWORDS,
@@ -203,14 +212,17 @@ def build_source_channel_query(
     normalized = normalize_text(donor.raw_text)
     word_tokens = [token for token in tokenize(donor.raw_text, normalized) if token.is_word]
     signal_spans = [(signal.raw_start, signal.raw_end) for signal in signals]
-    if channel == Channel.L:
+    contextual_n = channel == Channel.N and any(
+        signal.rule_id == "N.novelty_heading" for signal in signals
+    )
+    if channel == Channel.L or contextual_n:
         best = _select_best_unanchored_window(word_tokens, donor.raw_text, freq)
     else:
         best = _select_best_window(word_tokens, signal_spans, donor.raw_text, freq)
     if best is None:
         return None
     start_idx, end_idx, _ = best
-    protected = signal_spans or [
+    protected = (() if contextual_n else signal_spans) or [
         (word_tokens[start_idx].raw_start, word_tokens[end_idx - 1].raw_end)
     ]
     trimmed = _trim_window_to_limit(word_tokens, start_idx, end_idx, protected, donor.raw_text)
@@ -246,13 +258,14 @@ def build_k_queries(
     *,
     score: float,
     freq: dict[str, int],
+    calque_hits: tuple[CalqueHit, ...] | None = None,
 ) -> tuple[SearchQuery, ...]:
     """Не більше одного K1, двох K2 та одного K3 для одного речення (§12.6)."""
 
     donor_start = donor.source.parts[0].raw_start
     donor_end = donor.source.parts[-1].raw_end
     hits = tuple(
-        hit for hit in find_calques(block)
+        hit for hit in (calque_hits if calque_hits is not None else find_calques(block))
         if hit.zone == TextZone.AUTHOR_TEXT and hit.raw_start < donor_end and hit.raw_end > donor_start
     )
     hits = tuple(sorted(hits, key=lambda hit: (hit.tier, hit.raw_start, hit.rule_id)))
@@ -711,8 +724,21 @@ def _build_step3_result(document: SearchDocument) -> SearchResult:
 def build_search_result(document: SearchDocument) -> SearchResult:
     """Побудувати, дедуплікувати й відібрати канонічні A/N/B/K/T/L-запити."""
 
+    result, _ = build_search_result_with_candidates(document)
+    return result
+
+
+def build_search_result_with_candidates(
+    document: SearchDocument,
+) -> tuple[SearchResult, tuple[SearchQuery, ...]]:
+    """Повернути результат і той самий pre-selection pool для ручної якості."""
+
     blocks = {block.block_id: block for block in document.blocks}
     sections = {section.section_id: section for section in document.sections}
+    calque_analysis = {
+        block.block_id: find_calques_with_rejections(block)
+        for block in document.blocks
+    }
     rare_forms = rare_word_forms(document)
     freq = _word_frequencies(document)
     queries: list[SearchQuery] = []
@@ -724,7 +750,14 @@ def build_search_result(document: SearchDocument) -> SearchResult:
     for donor in document.sentences:
         block = blocks[donor.block_id]
         section = sections.get(donor.section_id)
-        evaluation = evaluate_candidate(donor, block, section, rare_forms)
+        block_calques = calque_analysis[block.block_id]
+        evaluation = evaluate_candidate(
+            donor,
+            block,
+            section,
+            rare_forms,
+            calque_analysis=block_calques,
+        )
         grouped: dict[Channel, list[CandidateSignal]] = {
             channel: [] for channel in Channel if channel != Channel.D
         }
@@ -786,7 +819,12 @@ def build_search_result(document: SearchDocument) -> SearchResult:
                 f"sig-{donor.donor_id}-K-{index}" for index in range(len(grouped[Channel.K]))
             )
             k_queries = build_k_queries(
-                document, donor, block, score=evaluation.final_score, freq=freq
+                document,
+                donor,
+                block,
+                score=evaluation.final_score,
+                freq=freq,
+                calque_hits=block_calques[0],
             )
             for query in k_queries:
                 queries.append(replace(query, evidence_ids=evidence_ids))
@@ -837,7 +875,7 @@ def build_search_result(document: SearchDocument) -> SearchResult:
             if channel != Channel.D:
                 attributed[channel] += 1
     channel_order = tuple(channel for channel in Channel if channel != Channel.D)
-    return SearchResult(
+    result = SearchResult(
         document=document,
         algo_version=ALGO_VERSION,
         dictionary_version=DICT_VERSION,
@@ -854,6 +892,7 @@ def build_search_result(document: SearchDocument) -> SearchResult:
         dedup_metrics=dedup_metrics,
         warnings=(),
     )
+    return result, tuple(queries)
 
 
 def _has_non_a_primary_signals(document: SearchDocument) -> bool:
@@ -1072,10 +1111,13 @@ def _deduplicate_queries(
         if root_left != root_right:
             parent[max(root_left, root_right)] = min(root_left, root_right)
 
-    for left in range(len(queries)):
-        for right in range(left + 1, len(queries)):
-            if _queries_are_duplicates(queries[left], queries[right], blocks):
-                union(left, right)
+    features = tuple(_duplicate_features(query.query_text) for query in queries)
+    candidate_pairs = _duplicate_candidate_pairs(queries, features)
+    for left, right in candidate_pairs:
+        if _queries_are_duplicates_from_features(
+            queries[left], queries[right], features[left], features[right]
+        ):
+            union(left, right)
     components: dict[int, list[SearchQuery]] = {}
     for index, query in enumerate(queries):
         components.setdefault(find(index), []).append(query)
@@ -1098,21 +1140,98 @@ def _deduplicate_queries(
     return tuple(winners), len(components), len(queries) - len(components), merged
 
 
+def _duplicate_candidate_pairs(
+    queries: tuple[SearchQuery, ...],
+    features: tuple[
+        tuple[tuple[str, ...], frozenset[str], frozenset[tuple[str, ...]]], ...
+    ],
+) -> tuple[tuple[int, int], ...]:
+    """Точний prefix-фільтр кандидатів для Jaccard, 5-грам і пари A/B."""
+
+    candidate_pairs: set[tuple[int, int]] = set()
+    groups: dict[tuple[str, Language], list[int]] = {}
+    donor_postings: dict[tuple[str, Language, str], list[int]] = {}
+    for index, query in enumerate(queries):
+        group = (query.section_id, query.query_language)
+        groups.setdefault(group, []).append(index)
+        if query.primary_channel in (Channel.A, Channel.B):
+            donor_key = (*group, query.donor_id)
+            posting = donor_postings.setdefault(donor_key, [])
+            candidate_pairs.update((left, index) for left in posting)
+            posting.append(index)
+
+    for indices in groups.values():
+        frequencies = Counter(
+            token
+            for index in indices
+            for token in features[index][1]
+        )
+        prefix_postings: dict[str, list[int]] = {}
+        run_postings: dict[tuple[str, ...], list[int]] = {}
+        for index in indices:
+            token_set = features[index][1]
+            ordered_tokens = sorted(
+                token_set,
+                key=lambda token: (frequencies[token], token),
+            )
+            prefix_size = (
+                len(ordered_tokens)
+                - math.ceil(DEDUP_JACCARD_THRESHOLD * len(ordered_tokens))
+                + 1
+            ) if ordered_tokens else 0
+            for token in ordered_tokens[:prefix_size]:
+                posting = prefix_postings.setdefault(token, [])
+                for left in posting:
+                    left_size = len(features[left][1])
+                    right_size = len(token_set)
+                    if min(left_size, right_size) / max(left_size, right_size) >= DEDUP_JACCARD_THRESHOLD:
+                        candidate_pairs.add((left, index))
+                posting.append(index)
+            for run in features[index][2]:
+                posting = run_postings.setdefault(run, [])
+                candidate_pairs.update((left, index) for left in posting)
+                posting.append(index)
+
+    return tuple(sorted(candidate_pairs))
+
+
 def _queries_are_duplicates(
     left: SearchQuery, right: SearchQuery, blocks: dict[str, SearchBlock]
+) -> bool:
+    return _queries_are_duplicates_from_features(
+        left,
+        right,
+        _duplicate_features(left.query_text),
+        _duplicate_features(right.query_text),
+    )
+
+
+def _duplicate_features(
+    text: str,
+) -> tuple[tuple[str, ...], frozenset[str], frozenset[tuple[str, ...]]]:
+    tokens = _significant_tokens(text)
+    runs = frozenset(
+        tokens[index:index + DEDUP_COMMON_RUN_WORDS]
+        for index in range(len(tokens) - DEDUP_COMMON_RUN_WORDS + 1)
+    )
+    return tokens, frozenset(tokens), runs
+
+
+def _queries_are_duplicates_from_features(
+    left: SearchQuery,
+    right: SearchQuery,
+    left_features: tuple[tuple[str, ...], frozenset[str], frozenset[tuple[str, ...]]],
+    right_features: tuple[tuple[str, ...], frozenset[str], frozenset[tuple[str, ...]]],
 ) -> bool:
     if left.section_id != right.section_id or left.query_language != right.query_language:
         return False
     if left.donor_id == right.donor_id and {left.primary_channel, right.primary_channel} == {Channel.A, Channel.B}:
         return True
-    left_tokens = _significant_tokens(left.query_text)
-    right_tokens = _significant_tokens(right.query_text)
-    left_set, right_set = set(left_tokens), set(right_tokens)
+    _, left_set, left_runs = left_features
+    _, right_set, right_runs = right_features
     union = left_set | right_set
     jaccard = len(left_set & right_set) / len(union) if union else 0.0
-    return jaccard >= DEDUP_JACCARD_THRESHOLD or _has_common_run(
-        left_tokens, right_tokens, DEDUP_COMMON_RUN_WORDS
-    )
+    return jaccard >= DEDUP_JACCARD_THRESHOLD or bool(left_runs & right_runs)
 
 
 def _significant_tokens(text: str) -> tuple[str, ...]:

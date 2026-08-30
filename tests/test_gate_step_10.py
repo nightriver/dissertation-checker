@@ -163,6 +163,34 @@ def test_gate_a_n_t_are_quoted_b_and_l_are_not() -> None:
         assert query.query_text.strip("«»") in donor.raw_text
 
 
+def test_gate_contextual_n_heading_builds_from_long_substantive_sentence() -> None:
+    text = (
+        "Наукова новизна одержаних результатів полягає у створенні моделі, "
+        "яка пояснює механізм судового контролю та гарантує ефективний захист "
+        "прав учасників адміністративного провадження в Україні."
+    )
+    block = _block(text)
+    donor = _donor(block)
+    query = build_source_channel_query(
+        donor=donor,
+        block=block,
+        channel=Channel.N,
+        signals=(CandidateSignal(
+            Channel.N,
+            "N.novelty_heading",
+            0,
+            len(text),
+            4.0,
+            "novelty_heading_inline",
+        ),),
+        score=4,
+        freq=_word_frequencies(_document(block, donor)),
+    )
+    assert query not in (None, "query_too_long")
+    assert validate_query_parts(query.parts, query.query_text)
+    assert 6 <= len(query.query_text.strip("«»").split()) <= 10
+
+
 def test_gate_query_too_long_is_explicit() -> None:
     huge = "пропон" + "у" * (MAX_QUERY_CHARS + 20)
     text = f"Автори {huge} важливе питання правового регулювання."

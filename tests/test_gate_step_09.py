@@ -168,15 +168,48 @@ def test_gate_k_cap_is_restarted_for_each_candidate_range(monkeypatch) -> None:
 def test_gate_n_heading_and_each_text_marker_score_once() -> None:
     heading = find_channel_n_signals("Нейтральне речення.", ("НАУКОВА НОВИЗНА ОДЕРЖАНИХ РЕЗУЛЬТАТІВ",))
     assert len(heading) == 1 and heading[0].score == 4
-    for text in ("Уперше доведено тезу.", "Метод удосконалено.", "Це набуло подальшого розвитку."):
+    for text in (
+        "Уперше доведено тезу.",
+        "Вперше обґрунтовано нову модель.",
+        "Метод удосконалено.",
+        "Це набуло подальшого розвитку.",
+    ):
         signals = find_channel_n_signals(text)
         assert len(signals) == 1 and signals[0].score == 4
     assert len(find_channel_n_signals("Уперше метод удосконалено.")) == 1
 
 
+def test_gate_n_exact_heading_inside_pdf_sentence_scores_whole_donor() -> None:
+    text = (
+        "Наукова новизна одержаних результатів полягає в обґрунтуванні "
+        "нової моделі правового регулювання суспільних відносин."
+    )
+    signal = find_channel_n_signals(text)[0]
+    assert signal.rule_id == "N.novelty_heading"
+    assert (signal.raw_start, signal.raw_end) == (0, len(text))
+    assert signal.reason == "novelty_heading_inline"
+    assert find_channel_n_signals(
+        "Наукова новизна отриманих результатів сформульована окремо."
+    ) == ()
+
+
+def test_gate_n_first_time_guards_reject_confirmed_historical_contexts() -> None:
+    for text in (
+        "Визначення уперше робиться в Укладенні 1903 року.",
+        "Покарання уперше з’явилося у кодексі 2001 року.",
+        "Працівник поліції уперше звернувся до заявника.",
+    ):
+        assert find_channel_n_signals(text) == ()
+
+
 def test_gate_b_strong_values_work_without_an_empirical_stem() -> None:
     for text in ("Частка становить 42%.", "Вартість становить 500 грн.", "Відстань становить 12 км."):
         assert sum(item.score for item in find_channel_b_signals(text)) >= 2
+
+
+def test_gate_b_rejects_numeric_chart_axis_with_two_content_words() -> None:
+    text = "2 % 1,8 1,8 1,8 квітень 1,6 липень 1,4 1,2 1 0,8 0,6 0,4 0,3 0,2 0,1"
+    assert find_channel_b_signals(text) == ()
 
 
 def test_gate_b_plain_number_has_exact_four_word_boundary() -> None:

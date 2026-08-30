@@ -68,7 +68,7 @@ from search.types import (
 
 # Змінюється, якщо той самий PDF може дати інші блоки, розділи, зони,
 # речення чи вихідні координати (PLAN_SEARCH.md, §4.1).
-PARSER_VERSION = "searchdoc-parser-2026-08-26"
+PARSER_VERSION = "searchdoc-parser-2026-08-30-baseline-order"
 
 
 class NoTextLayerError(Exception):
@@ -715,7 +715,15 @@ def _merge_baseline_pieces(lines: list[_Line]) -> list[_Line]:
             and previous.column == line.column
             and _same_baseline(previous, line)
         ):
-            previous.text = f"{previous.text} {line.text}"
+            # Навіть у sort-режимі PyMuPDF може віддати короткий лівий гліф
+            # (найчастіше маркер списку) після основного span через малу
+            # різницю y0. Частини однієї базової лінії йдуть за геометрією,
+            # інакше ``‒ вперше`` стає ``вперше … ‒``, а якір Ctrl+F зникає.
+            if line.x0 < previous.x0:
+                previous.text = f"{line.text} {previous.text}"
+            else:
+                previous.text = f"{previous.text} {line.text}"
+            previous.x0 = min(previous.x0, line.x0)
             previous.x1 = max(previous.x1, line.x1)
             previous.y0 = min(previous.y0, line.y0)
             previous.y1 = max(previous.y1, line.y1)

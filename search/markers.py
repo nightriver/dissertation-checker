@@ -14,7 +14,13 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
-from search.calques import find_calques_with_rejections, resolve_zone, tier2_is_scorable
+from search.calques import (
+    CalqueHit,
+    CalqueRejection,
+    find_calques_with_rejections,
+    resolve_zone,
+    tier2_is_scorable,
+)
 from search.normalization import WORD_TOKEN_RE, normalize_text, tokenize
 from search.types import (
     CONTENT_SECTION_KINDS,
@@ -27,7 +33,7 @@ from search.types import (
     TextZone,
 )
 
-MARKERS_VERSION = "search-markers-2026-08-29"
+MARKERS_VERSION = "search-markers-2026-08-30-quality-calibration"
 STOPWORDS_VERSION = "search-stopwords-2026-08-29"
 NORMATIVE_MARKERS_VERSION = "normative-markers-2026-08-29"
 
@@ -142,13 +148,21 @@ _A_PHRASE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     for i, phrase in enumerate(_A_PHRASES)
 )
 _NOVELTY_HEADING = "наукова новизна одержаних результатів"
+_NOVELTY_INLINE_RE = re.compile(
+    r"\bнаукова\s+новизна\s+одержаних\s+результатів",
+    re.IGNORECASE | re.UNICODE,
+)
 _N_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\bуперше\b", re.IGNORECASE | re.UNICODE), "N.first_time"),
+    (re.compile(r"\b(?:у|в)перше\b", re.IGNORECASE | re.UNICODE), "N.first_time"),
     (re.compile(r"\bудосконалено\b", re.IGNORECASE | re.UNICODE), "N.improved"),
     (
         re.compile(r"\bнабуло\s+подальшого\s+розвитку\b", re.IGNORECASE | re.UNICODE),
         "N.further_developed",
     ),
+)
+_N_FIRST_TIME_FALSE_CONTEXT_RE = re.compile(
+    r"\b(?:у|в)перше\s+(?:робиться|з['’ʼ]?явил\w*|звернув\w*)",
+    re.IGNORECASE | re.UNICODE,
 )
 
 _EMPIRICAL_STEMS: tuple[str, ...] = (
@@ -224,9 +238,23 @@ def find_channel_n_signals(raw_text: str, headings: Iterable[str] = ()) -> tuple
     if any(_normalized_heading(heading) == _NOVELTY_HEADING for heading in headings):
         return (CandidateSignal(Channel.N, "N.novelty_heading", 0, len(raw_text), CHANNEL_N_SCORE, "novelty_heading"),)
     normalized = normalize_text(raw_text)
+    if _NOVELTY_INLINE_RE.search(normalized.text):
+        return (CandidateSignal(
+            Channel.N,
+            "N.novelty_heading",
+            0,
+            len(raw_text),
+            CHANNEL_N_SCORE,
+            "novelty_heading_inline",
+        ),)
     for pattern, rule_id in _N_PATTERNS:
         match = pattern.search(normalized.text)
         if match:
+            if (
+                rule_id == "N.first_time"
+                and _N_FIRST_TIME_FALSE_CONTEXT_RE.match(normalized.text, match.start())
+            ):
+                continue
             raw_start, raw_end = _raw_bounds(normalized.origins, match.start(), match.end())
             return (CandidateSignal(Channel.N, rule_id, raw_start, raw_end, CHANNEL_N_SCORE, rule_id),)
     return ()
@@ -237,12 +265,18 @@ def find_channel_b_signals(raw_text: str) -> tuple[CandidateSignal, ...]:
 
     normalized = normalize_text(raw_text)
     tokens = tuple(token for token in tokenize(raw_text, normalized) if token.is_word)
+    # Один підпис осі поруч із десятками чисел не утворює пошукового
+    # фрагмента. Два слова — найменша межа, підтверджена ручною вибіркою:
+    # вона зберігає коротке «Частка становить 42%», але відсікає графік.
+    alphabetic_count = sum(token.raw.isalpha() for token in tokens)
+    numbers = tuple(_NUMBER_RE.finditer(normalized.text))
+    if alphabetic_count < 2 or (alphabetic_count < 3 and len(numbers) > 2):
+        return ()
     empirical_indices = tuple(
         index
         for index, token in enumerate(tokens)
         if any(token.normalized.casefold().startswith(stem) for stem in _EMPIRICAL_STEMS)
     )
-    numbers = tuple(_NUMBER_RE.finditer(normalized.text))
     strong = _first_match(normalized.text, (_PERCENT_RE, _CURRENCY_RE, _MEASUREMENT_RE))
     primary = strong
     if primary is None and empirical_indices:
@@ -276,10 +310,12 @@ def find_channel_k_signals(
     *,
     raw_start: int | None = None,
     raw_end: int | None = None,
+    all_hits: tuple[CalqueHit, ...] | None = None,
 ) -> tuple[CandidateSignal, ...]:
     """Усі видимі K-збіги блока; бал мають лише дозволені AUTHOR_TEXT-рівні."""
 
-    all_hits, _ = find_calques_with_rejections(block)
+    if all_hits is None:
+        all_hits, _ = find_calques_with_rejections(block)
     tier2_allowed = tier2_is_scorable(all_hits)
     hits = tuple(
         hit
@@ -315,13 +351,17 @@ def find_channel_k_signals(
     return tuple(result)
 
 
-def channel_k_rejections(block: SearchBlock) -> tuple[MarkerRejection, ...]:
+def channel_k_rejections(
+    block: SearchBlock,
+    rejected_hits: tuple[CalqueRejection, ...] | None = None,
+) -> tuple[MarkerRejection, ...]:
     """Контекстні відмови виконуваного словника у спільному форматі маркерів."""
 
-    _, rejected = find_calques_with_rejections(block)
+    if rejected_hits is None:
+        _, rejected_hits = find_calques_with_rejections(block)
     return tuple(
         MarkerRejection(f"{REASON_CALQUE_CONTEXT}:{item.reason}", item.rule_id, item.raw_start, item.raw_end)
-        for item in rejected
+        for item in rejected_hits
     )
 
 
@@ -383,6 +423,7 @@ def evaluate_candidate(
     block: SearchBlock,
     section: SectionInfo | None,
     rare_forms: Iterable[RareWordForm] = (),
+    calque_analysis: tuple[tuple[CalqueHit, ...], tuple[CalqueRejection, ...]] | None = None,
 ) -> CandidateEvaluation:
     """Детерміновано зібрати сигнали, відмови, множники та підсумковий бал."""
 
@@ -391,7 +432,16 @@ def evaluate_candidate(
     signals.extend(find_channel_n_signals(donor.raw_text, headings))
     signals.extend(find_channel_b_signals(donor.raw_text))
     donor_start, donor_end = _donor_block_bounds(donor, block.block_id)
-    for signal in find_channel_k_signals(block, raw_start=donor_start, raw_end=donor_end):
+    calque_hits, calque_rejections = (
+        calque_analysis if calque_analysis is not None
+        else find_calques_with_rejections(block)
+    )
+    for signal in find_channel_k_signals(
+        block,
+        raw_start=donor_start,
+        raw_end=donor_end,
+        all_hits=calque_hits,
+    ):
         signals.append(CandidateSignal(
             signal.channel,
             signal.rule_id,
@@ -405,7 +455,7 @@ def evaluate_candidate(
     signals.sort(key=lambda item: (item.raw_start, item.raw_end, _channel_order(item.channel), item.rule_id))
 
     rejections = [
-        item for item in channel_k_rejections(block)
+        item for item in channel_k_rejections(block, calque_rejections)
         if item.raw_start < donor_end and item.raw_end > donor_start
     ]
     author_text = _donor_is_author_text(donor, block)
