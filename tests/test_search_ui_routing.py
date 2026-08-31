@@ -6,12 +6,18 @@ from streamlit.testing.v1 import AppTest
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 
 
-def test_default_page_offers_both_mode_links():
+def _main_navigation(app):
+    return next(item.value for item in app.markdown if 'class="app-main-nav"' in item.value)
+
+
+def test_default_page_offers_all_three_sections():
     app = AppTest.from_file(APP_PATH).run(timeout=30)
     assert not app.exception
-    labels = [button.label for button in app.button]
-    assert "Порівняти дві роботи →" in labels
-    assert "Пошук джерел вручну →" in labels
+    navigation = _main_navigation(app)
+    assert navigation.count('class="app-main-nav__item') == 3
+    assert 'href="?"' in navigation
+    assert 'href="?mode=search"' in navigation
+    assert 'href="?mode=compare"' in navigation
 
 
 def test_search_query_opens_only_search_screen():
@@ -23,18 +29,12 @@ def test_search_query_opens_only_search_screen():
         "Дисертація (PDF із текстовим шаром)"
     ]
     labels = [button.label for button in app.button]
-    assert "← Повернутися до перевірки джерел" in labels
     assert "Порівняти" not in labels
-
-
-def test_search_back_button_removes_only_mode_query_parameter():
-    app = AppTest.from_file(APP_PATH)
-    app.query_params["mode"] = "search"
-    app.query_params["keep"] = "value"
-    app.run(timeout=30)
-    app.button[0].click().run(timeout=30)
-    assert "mode" not in app.query_params
-    assert app.query_params["keep"] in ("value", ["value"])
+    navigation = _main_navigation(app)
+    assert (
+        'app-main-nav__item app-main-nav__item--active" href="?mode=search" '
+        'target="_self" aria-current="page">Пошук джерел вручну'
+    ) in navigation
 
 
 def test_search_mode_does_not_leak_compare_widgets():

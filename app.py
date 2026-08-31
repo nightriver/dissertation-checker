@@ -75,8 +75,140 @@ from search.ui_logic import (
 st.set_page_config(
     page_title="Перевірка джерел дисертації",
     page_icon="📚",
-    layout="centered",
+    layout="wide",
 )
+
+st.markdown(
+    """
+    <style>
+    :root {
+        --nav-bg: oklch(0.965 0.008 256);
+        --nav-border: oklch(0.875 0.018 256);
+        --nav-ink: oklch(0.315 0.035 256);
+        --nav-muted: oklch(0.49 0.025 256);
+        --nav-hover: oklch(0.915 0.035 256);
+        --nav-active: oklch(0.43 0.13 256);
+        --nav-active-hover: oklch(0.38 0.12 256);
+        --nav-focus: oklch(0.767 0.106 255.9);
+    }
+
+    @media (min-width: 1024px) {
+        [data-testid="stMainBlockContainer"] {
+            width: 80vw !important;
+            max-width: 80vw !important;
+            margin-right: auto;
+            margin-left: auto;
+            padding-top: 2rem;
+            padding-right: 0;
+            padding-left: 0;
+        }
+    }
+
+    .app-main-nav {
+        display: flex;
+        gap: 0.25rem;
+        width: 100%;
+        margin: 0 0 2rem;
+        padding: 0.25rem;
+        overflow-x: auto;
+        border: 1px solid var(--nav-border);
+        border-radius: 12px;
+        background: var(--nav-bg);
+        scrollbar-width: thin;
+    }
+
+    .app-main-nav__item {
+        display: inline-flex;
+        flex: 1 1 0;
+        align-items: center;
+        justify-content: center;
+        min-width: max-content;
+        min-height: 2.75rem;
+        padding: 0.625rem 1rem;
+        border-radius: 8px;
+        color: var(--nav-muted) !important;
+        font-size: 0.9375rem;
+        font-weight: 650;
+        line-height: 1.2;
+        text-align: center;
+        text-decoration: none !important;
+        transition:
+            background-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+            color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .app-main-nav__item:hover {
+        background: var(--nav-hover);
+        color: var(--nav-ink) !important;
+    }
+
+    .app-main-nav__item:focus-visible {
+        outline: 3px solid var(--nav-focus);
+        outline-offset: 2px;
+    }
+
+    .app-main-nav__item--active,
+    .app-main-nav__item--active:hover {
+        background: var(--nav-active);
+        color: oklch(1 0 0) !important;
+        box-shadow: 0 2px 6px oklch(0.24 0.055 256 / 0.2);
+    }
+
+    .app-main-nav__item--active:hover {
+        background: var(--nav-active-hover);
+    }
+
+    @media (max-width: 1023px) {
+        [data-testid="stMainBlockContainer"] {
+            width: 100% !important;
+            max-width: 100% !important;
+            padding-top: 1rem;
+            padding-right: 1rem;
+            padding-left: 1rem;
+        }
+
+        .app-main-nav {
+            margin-bottom: 1.5rem;
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .app-main-nav__item {
+            transition: none;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+APP_SECTIONS = (
+    ("bibliography", "Перевірка джерел", "?"),
+    ("search", "Пошук джерел вручну", "?mode=search"),
+    ("compare", "Порівняння двох робіт", "?mode=compare"),
+)
+
+
+def render_main_navigation(active_section: str) -> None:
+    """Єдине верхнє меню; новий розділ додається одним записом APP_SECTIONS."""
+    items = []
+    for section_id, label, href in APP_SECTIONS:
+        is_active = section_id == active_section
+        css_class = "app-main-nav__item"
+        if is_active:
+            css_class += " app-main-nav__item--active"
+        aria_current = ' aria-current="page"' if is_active else ""
+        items.append(
+            f'<a class="{css_class}" href="{href}" target="_self"{aria_current}>{label}</a>'
+        )
+    st.markdown(
+        '<nav class="app-main-nav" aria-label="Головна навігація">'
+        + "".join(items)
+        + "</nav>",
+        unsafe_allow_html=True,
+    )
 
 SEVERITY_LABEL = {
     Severity.PROOF: "🔴 Неможливо",
@@ -661,11 +793,6 @@ def render_tab_highlighter(
 
 def render_two_file_compare_page() -> None:
     """Окремий екран; основний сценарій нижче лишається недоторканим."""
-    if st.button("← Повернутися до перевірки джерел", key="compare_back"):
-        if "mode" in st.query_params:
-            del st.query_params["mode"]
-        st.rerun()
-
     st.title("Порівняння двох робіт")
     st.caption(
         "Завантажте перевірювану дисертацію та ймовірне джерело. "
@@ -1028,11 +1155,6 @@ def _render_search_card(card, state, states) -> None:
 
 def render_manual_search_page() -> None:
     """Повний екран ручного пошуку джерел за PLAN_SEARCH.md §§17–19."""
-    if st.button("← Повернутися до перевірки джерел", key="search_back"):
-        if "mode" in st.query_params:
-            del st.query_params["mode"]
-        st.rerun()
-
     st.title("Пошук джерел вручну")
     st.caption(
         "Готує запити для ручного пошуку в зовнішніх системах. Не визначає "
@@ -1320,27 +1442,23 @@ def render_manual_search_page() -> None:
         )
 
 
+active_section = "bibliography"
 if is_compare_mode(st.query_params):
+    active_section = "compare"
+elif is_search_mode(st.query_params):
+    active_section = "search"
+
+render_main_navigation(active_section)
+
+if active_section == "compare":
     render_two_file_compare_page()
     st.stop()
 
-if is_search_mode(st.query_params):
+if active_section == "search":
     render_manual_search_page()
     st.stop()
 
-header_main, header_compare, header_search = st.columns([3, 1, 1])
-with header_main:
-    st.title("📚 Перевірка джерел дисертації")
-with header_compare:
-    st.markdown(" ")
-    if st.button("Порівняти дві роботи →", key="open_compare", use_container_width=True):
-        st.query_params["mode"] = "compare"
-        st.rerun()
-with header_search:
-    st.markdown(" ")
-    if st.button("Пошук джерел вручну →", key="open_search", use_container_width=True):
-        st.query_params["mode"] = "search"
-        st.rerun()
+st.title("📚 Перевірка джерел дисертації")
 st.caption(
     "Автоматичне виявлення невикористаних бібліографічних джерел у тексті дисертації."
 )
