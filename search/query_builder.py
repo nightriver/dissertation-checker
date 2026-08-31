@@ -43,6 +43,7 @@ from search.calques import (
 from search.language import detect_language, reliable_ru_content_words
 from search.markers import (
     STOPWORDS,
+    _normative_marker_ids_from_normalized,
     CandidateSignal,
     channel_a_signals,
     evaluate_candidate,
@@ -162,6 +163,8 @@ class _DonorQueryContext:
     long_content_word_flags: tuple[bool, ...]
     number_bonuses: tuple[float, ...]
     token_bonus_prefix: tuple[float, ...]
+    anchor_unstable_prefix: tuple[int, ...]
+    anchor_score_prefix: tuple[int, ...]
     surname_evidence: tuple[SurnameEvidence, ...]
     number_parts: tuple[QueryPart, ...]
     normative_penalty_cache: dict[tuple[int, int], float]
@@ -562,6 +565,8 @@ def _build_query_context(
         for meaningful in meaningful_number_flags
     )
     token_bonus_prefix = [0.0]
+    anchor_unstable_prefix = [0]
+    anchor_score_prefix = [0]
     for index, (token, meaningful, rare, long_word, number_bonus) in enumerate(
         zip(
             word_tokens,
@@ -578,6 +583,15 @@ def _build_query_context(
             + (LONG_WORD_BONUS if long_word else 0.0)
         )
         token_bonus_prefix.append(token_bonus_prefix[-1] + bonus)
+        anchor_unstable_prefix.append(
+            anchor_unstable_prefix[-1] + int(_anchor_token_is_unstable(token, raw_text))
+        )
+        anchor_score_prefix.append(
+            anchor_score_prefix[-1]
+            + (3 if index in proper_name_indexes else 0)
+            + (3 if rare else 0)
+            + (2 if _is_number_token(token) else 0)
+        )
     return _DonorQueryContext(
         normalized_text=normalized_text,
         word_tokens=word_tokens,
@@ -588,6 +602,8 @@ def _build_query_context(
         long_content_word_flags=long_content_word_flags,
         number_bonuses=number_bonuses,
         token_bonus_prefix=tuple(token_bonus_prefix),
+        anchor_unstable_prefix=tuple(anchor_unstable_prefix),
+        anchor_score_prefix=tuple(anchor_score_prefix),
         surname_evidence=surname_evidence,
         number_parts=(),
         normative_penalty_cache={},
@@ -640,6 +656,8 @@ def _number_parts(
 
 
 def _linked_ru_entries(document: SearchDocument, donor: SentenceDonor, block: SearchBlock):
+    """Сумісний повільний шлях для прямих викликів без готового індексу."""
+
     by_id = {entry.entry_id: entry for entry in document.bibliography if entry.language == Language.RU}
     linked: list[tuple[object, Confidence, int]] = []
     seen: set[str] = set()
@@ -963,7 +981,6 @@ def build_search_result_with_candidates(
     for donor in document.sentences:
         block = blocks[donor.block_id]
         section = sections.get(donor.section_id)
-        query_context = _build_donor_query_context(donor, block, freq)
         block_calques = calque_analysis[block.block_id]
         evaluation = evaluate_candidate(
             donor,
@@ -1003,6 +1020,21 @@ def build_search_result_with_candidates(
             _increment(rejected, "section_not_content_kind")
             continue
 
+        primary_context_needed = (
+            evaluation.final_score >= 2.0
+            and any(grouped[channel] for channel in (Channel.A, Channel.N, Channel.B, Channel.K))
+        )
+        context_needed = (
+            primary_context_needed
+            or bool(grouped[Channel.T])
+            or evaluation.channel_l_candidate
+        )
+        query_context = (
+            _build_donor_query_context(donor, block, freq)
+            if context_needed
+            else None
+        )
+
         primary_channels = tuple(
             channel for channel in (Channel.A, Channel.N, Channel.B, Channel.K)
             if grouped[channel]
@@ -1015,6 +1047,7 @@ def build_search_result_with_candidates(
                 items = tuple(grouped[channel])
                 if not items:
                     continue
+                assert query_context is not None
                 query = build_source_channel_query(
                     donor=donor,
                     block=block,
@@ -1030,6 +1063,7 @@ def build_search_result_with_candidates(
                     _increment(rejected, str(query or "no_valid_windows"))
 
         if grouped[Channel.K] and evaluation.final_score >= 2.0:
+            assert query_context is not None
             evidence_ids = tuple(
                 f"sig-{donor.donor_id}-K-{index}" for index in range(len(grouped[Channel.K]))
             )
@@ -1049,6 +1083,7 @@ def build_search_result_with_candidates(
                 _increment(rejected, "k_no_buildable_subtype")
 
         if grouped[Channel.T]:
+            assert query_context is not None
             query = build_source_channel_query(
                 donor=donor,
                 block=block,
@@ -1061,6 +1096,7 @@ def build_search_result_with_candidates(
             if isinstance(query, SearchQuery):
                 queries.append(query)
         if evaluation.channel_l_candidate:
+            assert query_context is not None
             query = build_source_channel_query(
                 donor=donor,
                 block=block,
@@ -1609,11 +1645,15 @@ def _score_window(
     score = SIGNAL_COVERAGE_BONUS + (
         context.token_bonus_prefix[end_idx] - context.token_bonus_prefix[start_idx]
     )
-    window_text = raw_text[word_tokens[start_idx].raw_start : word_tokens[end_idx - 1].raw_end]
     cache_key = (start_idx, end_idx)
     penalty = context.normative_penalty_cache.get(cache_key)
     if penalty is None:
-        penalty = NORMATIVE_PENALTY * len(normative_marker_ids(window_text))
+        normalized_window = context.normalized_text.text[
+            word_tokens[start_idx].normalized_start : word_tokens[end_idx - 1].normalized_end
+        ]
+        penalty = NORMATIVE_PENALTY * len(
+            _normative_marker_ids_from_normalized(normalized_window)
+        )
         context.normative_penalty_cache[cache_key] = penalty
     score -= penalty
     return score
@@ -1737,22 +1777,15 @@ def _build_pdf_anchor(
         word_tokens,
         freq or {},
     )
-    proper_indexes = context.proper_name_indexes
     candidates: list[tuple[int, int, int, int]] = []
     for start in range(n):
         for size in range(ANCHOR_MIN_WORDS, ANCHOR_MAX_WORDS + 1):
             end = start + size
             if end > n:
                 break
-            window = word_tokens[start:end]
-            if any(_anchor_token_is_unstable(token, raw_text) for token in window):
+            if context.anchor_unstable_prefix[end] - context.anchor_unstable_prefix[start]:
                 continue
-            score = sum(
-                (3 if index in proper_indexes else 0)
-                + (3 if context.rare_form_flags[index] else 0)
-                + (2 if _is_number_token(token) else 0)
-                for index, token in enumerate(word_tokens[start:end], start=start)
-            )
+            score = context.anchor_score_prefix[end] - context.anchor_score_prefix[start]
             candidates.append((-score, -size, start, end))
     if not candidates:
         return raw_text, SourceSpan((

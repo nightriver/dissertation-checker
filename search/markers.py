@@ -401,8 +401,17 @@ def find_channel_t_signals(raw_text: str, rare_forms: Iterable[RareWordForm]) ->
 def normative_marker_ids(raw_text: str) -> tuple[str, ...]:
     """Різні нормативні маркери у стабільному порядку версіонованого списку."""
 
-    normalized = normalize_for_matching(raw_text)
-    return tuple(rule_id for rule_id, pattern in _NORMATIVE_PATTERNS if pattern.search(normalized))
+    return _normative_marker_ids_from_normalized(normalize_for_matching(raw_text))
+
+
+def _normative_marker_ids_from_normalized(normalized_text: str) -> tuple[str, ...]:
+    """Шукає нормативні маркери в уже нормалізованому тексті."""
+
+    return tuple(
+        rule_id
+        for rule_id, pattern in _NORMATIVE_PATTERNS
+        if pattern.search(normalized_text)
+    )
 
 
 def is_normative_heavy(raw_text: str, semantic_signals: Iterable[CandidateSignal] = ()) -> bool:

@@ -15,7 +15,10 @@ import pytest
 
 from search.normalization import normalize_text, tokenize
 from search.query_builder import (
+    ANCHOR_MAX_WORDS,
+    ANCHOR_MIN_WORDS,
     MAX_QUERY_CHARS,
+    _anchor_token_is_unstable,
     _build_pdf_anchor,
     _build_query_context,
     _guess_query_language,
@@ -171,6 +174,23 @@ def test_context_builds_proper_name_indexes_once(monkeypatch: pytest.MonkeyPatch
     assert calls == 1
 
 
+def test_score_window_context_uses_normalized_slice_without_renormalizing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    words = ["Положення", "стаття", "15", "визначає", "порядок", "наукової", "роботи"]
+    tokens, raw_text = _tokens_from_words(words)
+    context = _build_query_context(raw_text, normalize_text(raw_text), tokens, {})
+
+    import search.markers as markers
+
+    def unexpected_normalization(_raw_text: str) -> str:
+        raise AssertionError("_score_window не повинен повторно нормалізувати вікно")
+
+    monkeypatch.setattr(markers, "normalize_for_matching", unexpected_normalization)
+
+    assert _score_window(tokens, 0, len(tokens), raw_text, {}, context=context) == 8.0
+
+
 def test_select_best_window_returns_none_for_short_sentence():
     words = ["Пропонуємо", "на", "нашу", "думку"]  # лише 4 слова, менше мінімуму 6
     tokens, raw_text = _tokens_from_words(words)
@@ -244,6 +264,79 @@ def test_build_pdf_anchor_takes_up_to_fifteen_leading_words():
     assert is_fallback is False
     assert text == raw_text[tokens[0].raw_start : tokens[14].raw_end]
     assert text.count(" ") == 14
+
+
+def _reference_pdf_anchor(
+    tokens: list[SearchToken], raw_text: str, context
+) -> tuple[str, SourceSpan, bool]:
+    """Еталонна дооптимізаційна реалізація вибору anchor-вікна."""
+
+    if len(tokens) < ANCHOR_MIN_WORDS:
+        return raw_text, SourceSpan((RawSpan("blk-0", 1, 0, len(raw_text)),)), True
+    candidates: list[tuple[int, int, int, int]] = []
+    for start in range(len(tokens)):
+        for size in range(ANCHOR_MIN_WORDS, ANCHOR_MAX_WORDS + 1):
+            end = start + size
+            if end > len(tokens):
+                break
+            if any(_anchor_token_is_unstable(token, raw_text) for token in tokens[start:end]):
+                continue
+            score = sum(
+                (3 if index in context.proper_name_indexes else 0)
+                + (3 if context.rare_form_flags[index] else 0)
+                + (2 if token.raw[:1].isdigit() else 0)
+                for index, token in enumerate(tokens[start:end], start=start)
+            )
+            candidates.append((-score, -size, start, end))
+    if not candidates:
+        return raw_text, SourceSpan((RawSpan("blk-0", 1, 0, len(raw_text)),)), True
+    _, _, start, end = min(candidates)
+    return (
+        raw_text[tokens[start].raw_start : tokens[end - 1].raw_end],
+        SourceSpan((RawSpan("blk-0", 1, tokens[start].raw_start, tokens[end - 1].raw_end),)),
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    [
+        "І. Керимов пояснює 2020 року важливе рішення для наукового аналізу сучасного законодавства України сьогодні",
+        "Автор Aвтор нау-\nкове питання 2020 року пояснює важливе рішення для сучасного законодавства України сьогодні",
+    ],
+)
+def test_build_pdf_anchor_matches_preoptimization_reference(raw_text: str):
+    normalized = normalize_text(raw_text)
+    tokens = [token for token in tokenize(raw_text, normalized) if token.is_word]
+    freq = {token.normalized.casefold(): 5 for token in tokens}
+    context = _build_query_context(raw_text, normalized, tokens, freq)
+
+    assert _build_pdf_anchor(
+        tokens, raw_text, "blk-0", 1, 0, freq=freq, query_context=context
+    ) == _reference_pdf_anchor(tokens, raw_text, context)
+
+
+def test_anchor_context_checks_each_token_once(monkeypatch: pytest.MonkeyPatch):
+    raw_text = "один два три чотири п'ять шість сім вісім дев'ять десять одинадцять"
+    normalized = normalize_text(raw_text)
+    tokens = [token for token in tokenize(raw_text, normalized) if token.is_word]
+    import search.query_builder as query_builder
+
+    calls = 0
+    original = query_builder._anchor_token_is_unstable
+
+    def counted(token: SearchToken, text: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(token, text)
+
+    monkeypatch.setattr(query_builder, "_anchor_token_is_unstable", counted)
+    context = query_builder._build_query_context(raw_text, normalized, tokens, {})
+    query_builder._build_pdf_anchor(
+        tokens, raw_text, "blk-0", 1, 0, query_context=context
+    )
+
+    assert calls == len(tokens)
 
 
 def test_guess_query_language_variants():
@@ -384,3 +477,37 @@ def test_unknown_and_non_content_sections_get_distinct_rejection_reasons():
     # UNKNOWN і "не змістовний тип розділу" — саме дві окремі причини
     # (не звалені в одну), як прямо вимагала ревізія кроку 3.
     assert set(rejected) == {"section_unknown", "section_not_content_kind"}
+
+
+def test_query_context_is_built_only_for_content_donors_that_can_make_queries(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Контекст не потрібен діагностичним і порожнім донорам, але потрібен L."""
+
+    import search.query_builder as query_builder
+
+    calls = 0
+    original = query_builder._build_donor_query_context
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(query_builder, "_build_donor_query_context", counted)
+    no_query = "текст текст текст текст"
+    long_l_candidate = " ".join(["текст"] * 20)
+    document = _build_document_with_sections(
+        [
+            (SectionKind.UNKNOWN, _TWO_SIGNAL_SENTENCE),
+            (SectionKind.ABSTRACT, _TWO_SIGNAL_SENTENCE),
+            (SectionKind.CHAPTER, no_query),
+            (SectionKind.CHAPTER, _TWO_SIGNAL_SENTENCE),
+            (SectionKind.CHAPTER, long_l_candidate),
+        ]
+    )
+
+    result = query_builder.build_search_result(document)
+
+    assert calls == 2
+    assert {query.primary_channel for query in result.queries} >= {Channel.A, Channel.L}

@@ -160,6 +160,26 @@ def test_citation_index_matches_compatibility_wrapper_and_handles_missing_block(
     assert donor_ids_for_mention(document, missing) == ()
 
 
+def test_compatibility_wrapper_builds_only_the_mentioned_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _document("Положення підтверджується джерелом [2].")
+    entries = build_bibliography(document)
+    citations = build_citations(document, entries)
+    document = replace(document, bibliography=entries, citations=citations)
+
+    import search.bibliography as bibliography
+
+    def unexpected_full_index(_document):
+        raise AssertionError("Сумісна обгортка не повинна будувати повний індекс")
+
+    monkeypatch.setattr(bibliography, "_build_citation_index", unexpected_full_index)
+
+    assert donor_ids_for_mention(document, citations[0]) == tuple(
+        donor.donor_id for donor in document.sentences
+    )
+
+
 def test_precomputed_ru_links_keep_entry_deduplication_and_order() -> None:
     document = _document(
         "Положення підтверджується джерелом [1] і повторно джерелом [1]."

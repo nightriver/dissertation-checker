@@ -707,6 +707,20 @@ def _donors_by_block(document: SearchDocument) -> dict[str, tuple[_Donor, ...]]:
     }
 
 
+def _donors_for_block(document: SearchDocument, block_id: str) -> tuple[_Donor, ...]:
+    """Повертає впорядкованих донорів одного блоку для сумісного fallback."""
+
+    return tuple(sorted(
+        (
+            _Donor(donor.donor_id, part.raw_start, part.raw_end)
+            for donor in document.sentences
+            if donor.block_id == block_id
+            for part in donor.source.parts
+        ),
+        key=lambda donor: (donor.raw_start, donor.raw_end),
+    ))
+
+
 def _block_brackets(block: SearchBlock) -> tuple[_Bracket, ...]:
     """
     Номерні посилання блоку: `BRACKET_RE` працює на нормалізованому тексті,
@@ -857,12 +871,17 @@ def donor_ids_for_mention(
     тексті, а не пара «донор + місце», інакше `citation_id` перестав би
     бути унікальним. Крок 10 бере зв'язок звідси.
     """
-    index = _build_citation_index(document)
+    if not mention.source.parts:
+        return ()
+    block_id = mention.source.parts[0].block_id
+    block = next((item for item in document.blocks if item.block_id == block_id), None)
+    if block is None:
+        return ()
     return _donor_ids_from_index(
         mention,
-        index.block_by_id,
-        index.donors_by_block,
-        index.brackets_by_block,
+        {block_id: block},
+        {block_id: _donors_for_block(document, block_id)},
+        {block_id: _block_brackets(block)},
     )
 
 
