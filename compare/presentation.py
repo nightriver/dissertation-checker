@@ -172,9 +172,15 @@ def render_comparison_table(
             labels.append("типова формула")
         label_html = f"<small>{html.escape(' · '.join(labels))}</small>" if labels else ""
         kind_html = kind + (f"<br>{label_html}" if label_html else "")
+        # Прибрані дедуплікацією повтори лишаються видимими: п'ять копій
+        # одного абзацу — це сигнал експертові, а не сміття.
+        repeats = (
+            f" · ще {segment.suppressed_repeats} таких самих місць"
+            if segment.suppressed_repeats else ""
+        )
         indicators = html.escape(
             f"{segment.matched} слів · {segment.coverage_a:.0%}/{segment.coverage_b:.0%} · "
-            f"схожість {segment.similarity:.0%}"
+            f"схожість {segment.similarity:.0%}{repeats}"
         )
         rows.append(
             f"<tr><td>{number}</td><td>{left}</td><td>{right}</td><td>{place}</td>"

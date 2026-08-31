@@ -49,7 +49,7 @@ from ui_helpers import (
     validate_search_upload,
     reset_search_scoped_state,
 )
-from compare.matcher import compare_documents
+from compare.matcher import compare_documents, count_off_alignment
 from compare.prepare import prepare_document_for_comparison
 from compare.presentation import format_physical_pages, render_comparison_table
 from parser.searchdoc import NoTextLayerError
@@ -815,6 +815,21 @@ def render_two_file_compare_page() -> None:
 
     st.markdown("#### Текстові збіги")
     st.markdown("**🟡 збігається · 🩵 відрізняється** · покриття рахується за точними збігами")
+    # Діагностика, а не фільтр: перестановка фрагментів при запозиченні
+    # законна, тому такі знахідки лишаються в таблиці, просто перелічені.
+    off_alignment = count_off_alignment(accepted)
+    if off_alignment:
+        st.caption(
+            f"Знахідок осторонь основного відповідання документів: "
+            f"{off_alignment} із {len(accepted)}. Це не помилка — фрагмент міг "
+            f"бути переставлений; але перевірте такі рядки уважніше."
+        )
+    suppressed = sum(segment.suppressed_repeats for segment in result.segments)
+    if suppressed:
+        st.caption(
+            f"Прибрано повторів тих самих місць: {suppressed}. "
+            f"Кожен лишився числом у колонці «Показники» свого рядка."
+        )
     filter_column, sort_column = st.columns(2)
     with filter_column:
         type_filter = st.selectbox("Тип", ["усі", "дослівний", "змінений"], key="compare_type_filter")

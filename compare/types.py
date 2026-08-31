@@ -52,6 +52,9 @@ class TextSegment:
     status: Literal["accepted", "accepted_normative", "normative_only"]
     a_spans: tuple[DiffSpan, ...]
     b_spans: tuple[DiffSpan, ...]
+    # Скільки таких самих місць прибрала дедуплікація. Нуль — знахідка
+    # єдина. Повтори не зникають мовчки: число видно в колонці показників.
+    suppressed_repeats: int = 0
 
 
 @dataclass(frozen=True)

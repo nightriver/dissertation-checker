@@ -275,61 +275,130 @@ def _merge_operations(operations: Sequence[str], offset: int) -> tuple[DiffSpan,
     return tuple(spans)
 
 
+def _group_opcodes_by_gap(opcodes: Sequence[tuple]) -> list[list[tuple]]:
+    """
+    Ріже опкоди кандидата на групи по довгому розриву між збігами.
+
+    Група завжди починається і закінчується блоком ``equal``, а розрив
+    усередині не перевищує ``MAX_MATCH_GAP`` з жодного боку. Випадковий
+    контекст на краях кандидата відпадає сам: усе до першого і після
+    останнього ``equal`` не потрапляє в жодну групу.
+    """
+    equal_indexes = [
+        index for index, opcode in enumerate(opcodes)
+        if opcode[0] == "equal" and opcode[2] > opcode[1]
+    ]
+    if not equal_indexes:
+        return []
+    # Межі груп у координатах списку опкодів: (перший equal, останній equal).
+    bounds: list[list[int]] = [[equal_indexes[0], equal_indexes[0]]]
+    for index in equal_indexes[1:]:
+        previous = opcodes[bounds[-1][1]]
+        gap_a = opcodes[index][1] - previous[2]
+        gap_b = opcodes[index][3] - previous[4]
+        if max(gap_a, gap_b) <= params.MAX_MATCH_GAP:
+            bounds[-1][1] = index
+        else:
+            bounds.append([index, index])
+    return [list(opcodes[first:last + 1]) for first, last in bounds]
+
+
+def align_candidate_segments(
+    candidate: Candidate,
+    tokens_a: Sequence[CompareToken],
+    tokens_b: Sequence[CompareToken],
+) -> list[TextSegment]:
+    """
+    Вирівнює одну область і повертає ВСІ її сегменти.
+
+    Область може містити кілька окремих збігів, розділених чужим текстом.
+    Раніше вони склеювались в один сегмент, і в правій комірці таблиці
+    опинявся текст, якого немає в лівій. Тепер кожен збіг — свій сегмент.
+    """
+    words_a = [token.normalized for token in tokens_a[candidate.a_start:candidate.a_end]]
+    words_b = [token.normalized for token in tokens_b[candidate.b_start:candidate.b_end]]
+    opcodes = SequenceMatcher(None, words_a, words_b, autojunk=False).get_opcodes()
+    return [
+        segment
+        for group in _group_opcodes_by_gap(opcodes)
+        if (segment := _align_group(group, words_a, words_b, tokens_a, tokens_b, candidate)) is not None
+    ]
+
+
 def align_candidate(
     candidate: Candidate,
     tokens_a: Sequence[CompareToken],
     tokens_b: Sequence[CompareToken],
 ) -> TextSegment | None:
-    """Вирівнює одну коротку область; fuzzy не впливає на прийняття."""
-    words_a = [token.normalized for token in tokens_a[candidate.a_start:candidate.a_end]]
-    words_b = [token.normalized for token in tokens_b[candidate.b_start:candidate.b_end]]
-    matcher = SequenceMatcher(None, words_a, words_b, autojunk=False)
-    opcodes = matcher.get_opcodes()
-    equal = [opcode for opcode in opcodes if opcode[0] == "equal" and opcode[2] > opcode[1]]
-    if not equal:
-        return None
+    """Найповніший сегмент області; повний список дає align_candidate_segments."""
+    segments = align_candidate_segments(candidate, tokens_a, tokens_b)
+    return max(segments, key=lambda item: item.matched) if segments else None
 
-    # Знімаємо випадковий контекст з країв, залишаючи зміни всередині збігу.
-    a_left, b_left = equal[0][1], equal[0][3]
-    a_right, b_right = equal[-1][2], equal[-1][4]
-    words_a = words_a[a_left:a_right]
-    words_b = words_b[b_left:b_right]
+
+def _align_group(
+    opcodes: Sequence[tuple],
+    words_a: Sequence[str],
+    words_b: Sequence[str],
+    tokens_a: Sequence[CompareToken],
+    tokens_b: Sequence[CompareToken],
+    candidate: Candidate,
+) -> TextSegment | None:
+    """
+    Збирає сегмент з готової групи опкодів; fuzzy не впливає на прийняття.
+
+    Опкоди навмисно не перераховуються заново для вікна групи: інша межа
+    вікна дала б інший контекст, і всередині знову міг би зʼявитися розрив
+    довший за ``MAX_MATCH_GAP``.
+    """
+    a_left, b_left = opcodes[0][1], opcodes[0][3]
+    a_right, b_right = opcodes[-1][2], opcodes[-1][4]
+    len_a, len_b = a_right - a_left, b_right - b_left
     a_start = candidate.a_start + a_left
     b_start = candidate.b_start + b_left
-    matcher = SequenceMatcher(None, words_a, words_b, autojunk=False)
 
-    a_operations = ["replace"] * len(words_a)
-    b_operations = ["replace"] * len(words_b)
+    a_operations = ["replace"] * len_a
+    b_operations = ["replace"] * len_b
     matched = fuzzy_matched = longest = 0
     changed = False
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+    for tag, i1, i2, j1, j2 in opcodes:
+        ai1, ai2 = i1 - a_left, i2 - a_left
+        bj1, bj2 = j1 - b_left, j2 - b_left
         if tag == "equal":
             size = i2 - i1
             matched += size
             longest = max(longest, size)
-            a_operations[i1:i2] = ["equal"] * size
-            b_operations[j1:j2] = ["equal"] * size
+            a_operations[ai1:ai2] = ["equal"] * size
+            b_operations[bj1:bj2] = ["equal"] * size
         elif tag == "replace":
             changed = True
             pairs = _fuzzy_pairs(words_a[i1:i2], words_b[j1:j2])
             for a_index, b_index in pairs:
-                a_operations[i1 + a_index] = "fuzzy"
-                b_operations[j1 + b_index] = "fuzzy"
+                a_operations[ai1 + a_index] = "fuzzy"
+                b_operations[bj1 + b_index] = "fuzzy"
             fuzzy_matched += len(pairs)
         elif tag == "delete":
             changed = True
-            a_operations[i1:i2] = ["delete"] * (i2 - i1)
+            a_operations[ai1:ai2] = ["delete"] * (i2 - i1)
         elif tag == "insert":
             changed = True
-            b_operations[j1:j2] = ["insert"] * (j2 - j1)
+            b_operations[bj1:bj2] = ["insert"] * (j2 - j1)
 
-    len_a, len_b = len(words_a), len(words_b)
     similarity = 2 * matched / (len_a + len_b) if len_a + len_b else 0.0
-    passes_low = (
-        matched >= params.MIN_MATCHED_LOW and similarity >= params.MIN_SIMILARITY
-    ) or longest >= params.MIN_VERBATIM_LOW
+    coverage_a = matched / len_a if len_a else 0.0
+    coverage_b = matched / len_b if len_b else 0.0
+    # Поріг схожості спільний для обох гілок: п'ятнадцять дослівних слів
+    # приймають сегмент лише тоді, коли сегмент навколо них не розтягнутий.
+    dense_enough = (
+        similarity >= params.MIN_SIMILARITY
+        and min(coverage_a, coverage_b) >= params.MIN_SEGMENT_COVERAGE
+    )
+    passes_low = dense_enough and (
+        matched >= params.MIN_MATCHED_LOW or longest >= params.MIN_VERBATIM_LOW
+    )
     if not passes_low:
         return None
+    window_a = list(words_a[a_left:a_right])
+    window_b = list(words_b[b_left:b_right])
     raw_a = " ".join(token.raw for token in tokens_a[a_start:a_start + len_a])
     raw_b = " ".join(token.raw for token in tokens_b[b_start:b_start + len_b])
     boilerplate_phrases = (
@@ -337,15 +406,15 @@ def align_candidate(
         "на здобуття наукового ступеня",
         "міністерство освіти і науки україни",
     )
-    normalized_raw = " ".join(words_a + words_b)
+    normalized_raw = " ".join(window_a + window_b)
     boilerplate = any(phrase in normalized_raw for phrase in boilerplate_phrases)
     normative = (
-        is_possibly_normative(words_a, raw_a)
-        or is_possibly_normative(words_b, raw_b)
+        is_possibly_normative(window_a, raw_a)
+        or is_possibly_normative(window_b, raw_b)
     )
-    passes_high = (
-        matched >= params.MIN_MATCHED_HIGH and similarity >= params.MIN_SIMILARITY
-    ) or longest >= params.MIN_VERBATIM_HIGH
+    passes_high = dense_enough and (
+        matched >= params.MIN_MATCHED_HIGH or longest >= params.MIN_VERBATIM_HIGH
+    )
     status = "accepted_normative" if normative and passes_high else (
         "normative_only" if normative else "accepted"
     )
@@ -358,8 +427,8 @@ def align_candidate(
         fuzzy_matched=fuzzy_matched,
         len_a=len_a,
         len_b=len_b,
-        coverage_a=matched / len_a if len_a else 0.0,
-        coverage_b=matched / len_b if len_b else 0.0,
+        coverage_a=coverage_a,
+        coverage_b=coverage_b,
         similarity=similarity,
         longest_verbatim=longest,
         kind="modified" if changed else "verbatim",
@@ -376,23 +445,47 @@ def _overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> int:
 
 
 def deduplicate_segments(segments: Iterable[TextSegment]) -> list[TextSegment]:
-    """Лишає найповнішу з вкладених/майже однакових знахідок."""
+    """
+    Лишає найповнішу з вкладених, однакових і повторюваних знахідок.
+
+    Перекриття перевіряється по кожному боку ОКРЕМО: один абзац ліворуч і
+    п'ять його майже однакових копій праворуч давали п'ять рядків з тією
+    самою правою коміркою. Тепер це один рядок, а число прибраних повторів
+    лишається на ньому в ``suppressed_repeats`` — нічого не глушиться мовчки.
+    """
     kept: list[TextSegment] = []
     ordered = sorted(segments, key=lambda item: (item.matched, item.len_a + item.len_b), reverse=True)
     for segment in ordered:
-        duplicate = False
+        duplicate: TextSegment | None = None
         for other in kept:
             overlap_a = _overlap(segment.a_start, segment.a_end, other.a_start, other.a_end)
             overlap_b = _overlap(segment.b_start, segment.b_end, other.b_start, other.b_end)
             if (
-                overlap_a >= 0.8 * min(segment.len_a, other.len_a)
-                and overlap_b >= 0.8 * min(segment.len_b, other.len_b)
+                overlap_a >= params.DUPLICATE_OVERLAP * segment.len_a
+                or overlap_b >= params.DUPLICATE_OVERLAP * segment.len_b
             ):
-                duplicate = True
+                duplicate = other
                 break
-        if not duplicate:
+        if duplicate is None:
             kept.append(segment)
+        else:
+            duplicate.suppressed_repeats += 1
     return sorted(kept, key=lambda item: (item.a_start, item.b_start))
+
+
+def count_off_alignment(segments: Sequence[TextSegment]) -> int:
+    """
+    Скільки знахідок стоїть осторонь основного відповідання документів.
+
+    Діагностика, а не фільтр: перестановка фрагментів при запозиченні —
+    законна, глушити її не можна. Але коли таких рядків більшість, як було
+    на парі однакових файлів, це видно згори, а не після окремого розбору.
+    """
+    if not segments:
+        return 0
+    drifts = sorted(segment.b_start - segment.a_start for segment in segments)
+    median = drifts[len(drifts) // 2]
+    return sum(abs(drift - median) > params.OFF_ALIGNMENT_DRIFT for drift in drifts)
 
 
 def _union_length(intervals: Iterable[tuple[int, int]]) -> int:
@@ -430,7 +523,7 @@ def compare_tokens(
     segments = deduplicate_segments(
         segment
         for candidate in candidates
-        if (segment := align_candidate(candidate, tokens_a, tokens_b)) is not None
+        for segment in align_candidate_segments(candidate, tokens_a, tokens_b)
     )
     covered_a = coverage_from_segments(segments, "a")
     covered_b = coverage_from_segments(segments, "b")
