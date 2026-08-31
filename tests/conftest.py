@@ -5,11 +5,34 @@
 кожен тест бачить рівно ту структуру, яку перевіряє.
 """
 import io
+from pathlib import Path
 
 import pytest
 
 docx = pytest.importorskip("docx", reason="python-docx not installed")
 fitz = pytest.importorskip("fitz", reason="PyMuPDF not installed")
+
+CORPUS_FILES = (
+    "Работа май-docx-2.pdf",
+    "Гончарова-Парфьонова_дисертація.pdf",
+    "DISSERTAZIYA.doc.pdf",
+    "diss-doc.pdf",
+    "diskor-корецька.pdf",
+    "diser.pdf",
+    "dis2005_bayar_kandidat.PDF",
+    "dis.doc-КОЦЮБА.pdf",
+    "Dis-doc-марченко.pdf",
+)
+
+
+@pytest.fixture(scope="session")
+def canonical_corpus():
+    """Єдиний дорогий parser/query-прохід для корпусних шлюзів."""
+    from tools.audit_search_quality import collect_corpus
+
+    root = Path(__file__).resolve().parents[1]
+    paths = tuple(root / "examples" / name for name in CORPUS_FILES)
+    return collect_corpus(paths)
 
 
 @pytest.fixture

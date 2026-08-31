@@ -12,9 +12,42 @@ from search.normalization import (
     WORD_TOKEN_RE,
     map_normalized_offsets,
     map_normalized_span,
+    normalize_for_matching,
     normalize_text,
     tokenize,
 )
+from search.types import CharOrigin
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    [
+        "",
+        "ASCII text 123",
+        "ʼ ’ ‘ ´ `",
+        "­слово",
+        "сло­во",
+        "слово­",
+        "загаль-\nне",
+        "загаль-\r\nне",
+        "загаль- \t\r\n не",
+        "слово\nперенос",
+        "розкладене e\u0301 слово",
+        "Ｆｕｌｌｗｉｄｔｈ ﬁ",
+        "Post",
+        "рішення pравове",
+    ],
+)
+def test_normalize_for_matching_matches_full_normalization(raw_text: str):
+    assert normalize_for_matching(raw_text) == normalize_text(raw_text).text
+
+
+def test_char_origin_keeps_value_semantics_without_instance_dict():
+    left = CharOrigin(2, 5)
+    right = CharOrigin(2, 5)
+    assert left == right
+    assert hash(left) == hash(right)
+    assert not hasattr(left, "__dict__")
 
 
 def test_normalize_text_removes_soft_hyphen_without_producing_a_char():

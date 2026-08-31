@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 import fitz
+import pytest
 
+import search.query_builder as query_builder
 from parser.searchdoc import parse_search_document
 from search.bibliography import (
     REJECTION_REASONS,
@@ -13,11 +16,14 @@ from search.bibliography import (
     build_bibliography_with_diagnostics,
     build_citations,
     build_citations_with_diagnostics,
+    _build_citation_index,
+    _linked_ru_entries_by_donor,
     citation_id_for,
     donor_ids_for_mention,
     entry_id_for,
     normalized_entry_text,
 )
+from search.types import Language, RawSpan, SourceSpan
 
 
 _PAGE_RECT = fitz.Rect(72, 72, 523, 770)
@@ -133,3 +139,54 @@ def test_citation_diagnostics_always_keep_the_complete_reason_schema() -> None:
     _, diagnostics = build_citations_with_diagnostics(document, entries)
 
     assert tuple(diagnostics.as_dict()) == REJECTION_REASONS
+
+
+def test_citation_index_matches_compatibility_wrapper_and_handles_missing_block() -> None:
+    document = _document("Положення підтверджується джерелом [2].")
+    entries = build_bibliography(document)
+    citations = build_citations(document, entries)
+    document = replace(document, bibliography=entries, citations=citations)
+    index = _build_citation_index(document)
+
+    for mention in citations:
+        assert index.donor_ids_by_citation_id[mention.citation_id] == donor_ids_for_mention(
+            document, mention
+        )
+
+    missing = replace(
+        citations[0],
+        source=SourceSpan((RawSpan("missing-block", 1, 0, 3),)),
+    )
+    assert donor_ids_for_mention(document, missing) == ()
+
+
+def test_precomputed_ru_links_keep_entry_deduplication_and_order() -> None:
+    document = _document(
+        "Положення підтверджується джерелом [1] і повторно джерелом [1]."
+    )
+    entries = tuple(replace(entry, language=Language.RU) for entry in build_bibliography(document))
+    citations = build_citations(document, entries)
+    document = replace(document, bibliography=entries, citations=citations)
+    index = _build_citation_index(document)
+    precomputed = _linked_ru_entries_by_donor(document, index)
+    donor = document.sentences[0]
+    block = next(block for block in document.blocks if block.block_id == donor.block_id)
+
+    assert precomputed[donor.donor_id] == query_builder._linked_ru_entries(document, donor, block)
+    assert [item[0].entry_id for item in precomputed[donor.donor_id]] == [entries[0].entry_id]
+
+
+def test_build_search_result_builds_one_citation_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    document = _document("Положення підтверджується джерелом [1].")
+    calls = 0
+    original = query_builder._build_citation_index
+
+    def counted(document):
+        nonlocal calls
+        calls += 1
+        return original(document)
+
+    monkeypatch.setattr(query_builder, "_build_citation_index", counted)
+    query_builder.build_search_result(document)
+
+    assert calls == 1

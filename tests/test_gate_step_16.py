@@ -20,7 +20,6 @@ from tools.audit_search_quality import (
     QUERY_SAMPLE_PER_CHANNEL,
     TIER1_SAMPLE_SIZE,
     _tier1_candidates,
-    collect_corpus,
     render_payload,
     select_query_sample,
     select_tier1_sample,
@@ -49,8 +48,8 @@ def review() -> dict:
 
 
 @pytest.fixture(scope="module")
-def reproduced() -> dict:
-    corpus = collect_corpus(tuple(EXAMPLES / name for name in CORPUS_FILES))
+def reproduced(canonical_corpus) -> dict:
+    corpus = canonical_corpus
     tier1 = select_tier1_sample(corpus)
     queries = select_query_sample(corpus)
     return {
@@ -80,6 +79,7 @@ def test_gate_review_has_versions_documents_and_exact_sample_sizes(review: dict)
     assert len(review["query_sample"]) == len(QUALITY_CHANNELS) * QUERY_SAMPLE_PER_CHANNEL == 50
 
 
+@pytest.mark.corpus
 def test_gate_document_hashes_and_samples_reproduce_byte_for_byte(
     review: dict, reproduced: dict
 ) -> None:
@@ -89,6 +89,7 @@ def test_gate_document_hashes_and_samples_reproduce_byte_for_byte(
     assert _without_manual_fields(review["query_sample"]) == payload["query_sample"]
 
 
+@pytest.mark.corpus
 def test_gate_tier1_covers_corpus_files_rules_and_respects_cap(
     review: dict, reproduced: dict
 ) -> None:

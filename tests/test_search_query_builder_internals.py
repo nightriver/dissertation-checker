@@ -11,15 +11,20 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+
 from search.normalization import normalize_text, tokenize
 from search.query_builder import (
     MAX_QUERY_CHARS,
     _build_pdf_anchor,
+    _build_query_context,
     _guess_query_language,
     _score_window,
     _select_best_window,
     _trim_window_to_limit,
     build_search_result,
+    compose_query_parts,
+    validate_query_parts,
 )
 from search.sentences import split_sentences
 from search.types import (
@@ -36,7 +41,45 @@ from search.types import (
     SourceSpan,
     TextZone,
     ZoneSpan,
+    QueryPart,
+    QueryPartOrigin,
 )
+
+
+@pytest.mark.parametrize(
+    ("origin_id", "text"),
+    [
+        ("quote_open", "«"),
+        ("open", "«"),
+        ("quote_close", "»"),
+        ("close", "»"),
+        ("quote_close_space", "» "),
+        ("space", " "),
+        ("space_1", " "),
+        ("space_2", " "),
+        ("definition_literal", "определение"),
+    ],
+)
+def test_validate_query_parts_accepts_known_system_literals(origin_id: str, text: str):
+    parts = (QueryPart(text, QueryPartOrigin.SYSTEM_LITERAL, origin_id, None),)
+    assert validate_query_parts(parts, compose_query_parts(parts))
+
+
+@pytest.mark.parametrize(
+    ("origin_id", "text"),
+    [
+        ("quote_open", "вигадане"),
+        ("unknown_literal", "«"),
+        ("space_x", " "),
+        ("space_1", "\t"),
+        ("definition_literal", "визначення"),
+    ],
+)
+def test_validate_query_parts_rejects_unknown_or_mismatched_system_literals(
+    origin_id: str, text: str
+):
+    parts = (QueryPart(text, QueryPartOrigin.SYSTEM_LITERAL, origin_id, None),)
+    assert not validate_query_parts(parts, compose_query_parts(parts))
 
 
 def _word_token(raw: str, raw_start: int) -> SearchToken:
@@ -91,6 +134,41 @@ def test_score_window_gives_rare_form_bonus_only_for_low_frequency_words():
     # "унікальність" рідкісна (+2) і водночас довга (+1); "частий" двічі —
     # довгий (+1 кожен), але не рідкісний.
     assert score == 4.0 + 2.0 + 1.0 + 1.0 + 1.0
+
+
+def test_context_window_scores_match_compatibility_wrapper():
+    words = ["І.", "Керимов", "пояснює", "важливе", "рішення", "2020", "року"]
+    tokens, raw_text = _tokens_from_words(words)
+    freq = {word.casefold(): 5 for word in words}
+    context = _build_query_context(raw_text, normalize_text(raw_text), tokens, freq)
+
+    for start, end in ((0, 6), (1, 7)):
+        assert _score_window(tokens, start, end, raw_text, freq) == _score_window(
+            tokens, start, end, raw_text, freq, context=context
+        )
+
+
+def test_context_builds_proper_name_indexes_once(monkeypatch: pytest.MonkeyPatch):
+    words = ["Ми", "І.", "Керимов", "пояснює", "важливе", "рішення"]
+    tokens, raw_text = _tokens_from_words(words)
+    calls = 0
+    original = __import__("search.query_builder", fromlist=["_proper_name_indexes"])._proper_name_indexes
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    import search.query_builder as query_builder
+
+    monkeypatch.setattr(query_builder, "_proper_name_indexes", counted)
+    context = query_builder._build_query_context(
+        raw_text, normalize_text(raw_text), tokens, {}
+    )
+    _score_window(tokens, 0, 6, raw_text, {}, context=context)
+    _score_window(tokens, 0, 6, raw_text, {}, context=context)
+
+    assert calls == 1
 
 
 def test_select_best_window_returns_none_for_short_sentence():

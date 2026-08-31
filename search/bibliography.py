@@ -642,6 +642,16 @@ class _Bracket:
     content: str
 
 
+@dataclass(frozen=True)
+class _CitationIndex:
+    """Єдиний індекс блоків, донорів, дужок і зв'язків згадок."""
+
+    block_by_id: dict[str, SearchBlock]
+    donors_by_block: dict[str, tuple[_Donor, ...]]
+    brackets_by_block: dict[str, tuple[_Bracket, ...]]
+    donor_ids_by_citation_id: dict[str, tuple[str, ...]]
+
+
 def build_citations(
     document: SearchDocument, entries: tuple[BibliographyEntry, ...]
 ) -> tuple[CitationMention, ...]:
@@ -665,15 +675,15 @@ def build_citations_with_diagnostics(
         return (), _freeze_counters(counters)
 
     by_ordinal = {entry.ordinal: entry for entry in entries if entry.ordinal is not None}
-    donors = _donors_by_block(document)
+    citation_index = _build_citation_index(document)
     surname_index = _unique_surname_index(entries, counters)
 
     mentions: list[CitationMention] = []
     for block in document.blocks:
-        block_donors = donors.get(block.block_id, ())
+        block_donors = citation_index.donors_by_block.get(block.block_id, ())
         if not block_donors:
             continue
-        brackets = _block_brackets(block)
+        brackets = citation_index.brackets_by_block.get(block.block_id, ())
         mentions.extend(
             _numeric_mentions(document, block, block_donors, brackets, by_ordinal, counters)
         )
@@ -721,6 +731,32 @@ def _block_brackets(block: SearchBlock) -> tuple[_Bracket, ...]:
             )
         )
     return tuple(brackets)
+
+
+def _build_citation_index(document: SearchDocument) -> _CitationIndex:
+    """Будує всі похідні структури зв'язку рівно одним проходом документа."""
+
+    block_by_id = {block.block_id: block for block in document.blocks}
+    donors_by_block = _donors_by_block(document)
+    brackets_by_block = {
+        block.block_id: _block_brackets(block)
+        for block in document.blocks
+    }
+    donor_ids_by_citation_id = {
+        mention.citation_id: _donor_ids_from_index(
+            mention,
+            block_by_id,
+            donors_by_block,
+            brackets_by_block,
+        )
+        for mention in document.citations
+    }
+    return _CitationIndex(
+        block_by_id=block_by_id,
+        donors_by_block=donors_by_block,
+        brackets_by_block=brackets_by_block,
+        donor_ids_by_citation_id=donor_ids_by_citation_id,
+    )
 
 
 def _numeric_mentions(
@@ -821,14 +857,30 @@ def donor_ids_for_mention(
     тексті, а не пара «донор + місце», інакше `citation_id` перестав би
     бути унікальним. Крок 10 бере зв'язок звідси.
     """
+    index = _build_citation_index(document)
+    return _donor_ids_from_index(
+        mention,
+        index.block_by_id,
+        index.donors_by_block,
+        index.brackets_by_block,
+    )
+
+
+def _donor_ids_from_index(
+    mention: CitationMention,
+    block_by_id: dict[str, SearchBlock],
+    donors_by_block: dict[str, tuple[_Donor, ...]],
+    brackets_by_block: dict[str, tuple[_Bracket, ...]],
+) -> tuple[str, ...]:
+    """Повертає зв'язки згадки з уже побудованого індексу."""
+
     if not mention.source.parts:
         return ()
     block_id = mention.source.parts[0].block_id
-    block = next((b for b in document.blocks if b.block_id == block_id), None)
-    if block is None:
+    if block_id not in block_by_id:
         return ()
-    donors = _donors_by_block(document).get(block_id, ())
-    brackets = _block_brackets(block)
+    donors = donors_by_block.get(block_id, ())
+    brackets = brackets_by_block.get(block_id, ())
     raw_start = mention.source.parts[0].raw_start
     raw_end = mention.source.parts[-1].raw_end
     if mention.kind == KIND_SURNAME:
@@ -843,6 +895,54 @@ def donor_ids_for_mention(
     if target is None:
         return ()
     return _linked_donors(donors, brackets, target)
+
+
+def _linked_ru_entries_by_donor(
+    document: SearchDocument, citation_index: _CitationIndex
+) -> dict[str, tuple[tuple[object, Confidence, int], ...]]:
+    """Будує зв'язки з російськомовними записами для всіх донорів один раз."""
+
+    by_id = {
+        entry.entry_id: entry
+        for entry in document.bibliography
+        if entry.language == Language.RU
+    }
+    donor_mid_by_id = {
+        donor.donor_id: (donor.source.parts[0].raw_start + donor.source.parts[-1].raw_end) // 2
+        for donor in document.sentences
+        if donor.source.parts
+    }
+    linked_by_donor: dict[str, list[tuple[object, Confidence, int]]] = {}
+    seen_by_donor: dict[str, set[str]] = {}
+    for mention in document.citations:
+        mention_start = mention.source.parts[0].raw_start if mention.source.parts else None
+        for donor_id in citation_index.donor_ids_by_citation_id.get(mention.citation_id, ()):
+            donor_mid = donor_mid_by_id.get(donor_id)
+            if donor_mid is None:
+                continue
+            linked = linked_by_donor.setdefault(donor_id, [])
+            seen = seen_by_donor.setdefault(donor_id, set())
+            distance = abs((mention_start if mention_start is not None else donor_mid) - donor_mid)
+            for entry_id in mention.entry_ids:
+                entry = by_id.get(entry_id)
+                if entry is not None and entry_id not in seen:
+                    seen.add(entry_id)
+                    linked.append((entry, mention.confidence, distance))
+
+    confidence_order = {Confidence.HIGH: 0, Confidence.MEDIUM: 1, Confidence.LOW: 2}
+    return {
+        donor_id: tuple(sorted(
+            entries,
+            key=lambda item: (
+                confidence_order[item[1]],
+                0 if item[0].title_confidence == Confidence.HIGH
+                else 1 if item[0].title_confidence == Confidence.MEDIUM else 2,
+                item[2],
+                item[0].entry_id,
+            ),
+        ))
+        for donor_id, entries in linked_by_donor.items()
+    }
 
 
 def _surname_mentions(

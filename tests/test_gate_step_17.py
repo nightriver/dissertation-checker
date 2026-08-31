@@ -23,7 +23,7 @@ from tools.audit_search_golden import (
     CORPUS_FILES,
     GOLDEN_SCHEMA_VERSION,
     build_golden_payload,
-    collect_golden,
+    collect_golden_from_corpus,
     render_json,
 )
 from tools.measure_calques import measure_document, measure_pdf_bytes
@@ -199,8 +199,8 @@ def quality_review() -> dict:
 
 
 @pytest.fixture(scope="module")
-def corpus():
-    return collect_golden(_paths())
+def corpus(canonical_corpus):
+    return collect_golden_from_corpus(_paths(), canonical_corpus)
 
 
 def test_gate_golden_schema_and_manual_review(golden: dict) -> None:
@@ -237,6 +237,7 @@ def test_gate_versions_and_shas_match_step_16(quality_review: dict, golden: dict
         assert item["sha256"] == expected[item["file"]] == actual
 
 
+@pytest.mark.corpus
 def test_gate_candidate_reproduces_golden(corpus, golden: dict) -> None:
     candidate = build_golden_payload(corpus)
     _assert_equal(
@@ -249,6 +250,7 @@ def test_gate_candidate_reproduces_golden(corpus, golden: dict) -> None:
         assert set(item) == MACHINE_DOCUMENT_KEYS
 
 
+@pytest.mark.corpus
 def test_gate_render_is_deterministic_and_finite(corpus) -> None:
     payload = build_golden_payload(corpus)
     assert render_json(payload) == render_json(payload)
@@ -273,6 +275,7 @@ def test_gate_fixture_is_small_and_contains_no_full_text(golden: dict) -> None:
     assert not (FORBIDDEN_KEYS & set(_all_keys(golden)))
 
 
+@pytest.mark.corpus
 def test_gate_corpus_has_text_queries_and_section_quotas(corpus, golden: dict) -> None:
     high_medium = 0
     for item, golden_item in zip(corpus, golden["documents"]):
@@ -296,6 +299,7 @@ def test_gate_corpus_has_text_queries_and_section_quotas(corpus, golden: dict) -
     assert high_medium >= 8
 
 
+@pytest.mark.corpus
 def test_gate_runtime_queries_have_provenance_and_stable_order(corpus, golden: dict) -> None:
     for item, golden_item in zip(corpus, golden["documents"]):
         result = item.result
@@ -327,6 +331,7 @@ def test_gate_runtime_queries_have_provenance_and_stable_order(corpus, golden: d
         assert build_search_result(item.document) == result
 
 
+@pytest.mark.corpus
 def test_gate_shortfalls_and_runtime_section_counts_match(corpus, golden: dict) -> None:
     for item, golden_item in zip(corpus, golden["documents"]):
         runtime_shortfalls = {shortfall.section_id: shortfall for shortfall in item.result.shortfalls}
@@ -354,6 +359,7 @@ def test_gate_shortfalls_and_runtime_section_counts_match(corpus, golden: dict) 
                 ]
 
 
+@pytest.mark.corpus
 def test_gate_measurement_parity_and_calque_fields(corpus, golden: dict) -> None:
     for item, golden_item in zip(corpus, golden["documents"]):
         measurement = item.measurement
@@ -401,6 +407,7 @@ def test_gate_measure_document_matches_bytes_adapter() -> None:
     )
 
 
+@pytest.mark.corpus
 def test_gate_all_counters_keep_channels_reasons_and_dedup(corpus, golden: dict) -> None:
     for item, golden_item in zip(corpus, golden["documents"]):
         result = item.result

@@ -75,6 +75,39 @@ def normalize_text(raw_text: str) -> NormalizedText:
     if not raw_text:
         return NormalizedText(text="", origins=())
 
+    if not _can_use_fast_primary_path(raw_text):
+        return _normalize_text_slow(raw_text)
+    chars0 = list(raw_text)
+    origins0 = [CharOrigin(i, i + 1) for i in range(len(raw_text))]
+    chars1, origins1 = _pass_join_hyphenation(chars0, origins0)
+    chars2 = _pass_homoglyphs(chars1)
+    return NormalizedText(text="".join(chars2), origins=tuple(origins1))
+
+
+def normalize_for_matching(raw_text: str) -> str:
+    """Нормалізація лише тексту без побудови карти походження (§7)."""
+
+    if not raw_text:
+        return ""
+    if _can_use_fast_primary_path(raw_text):
+        chars0 = list(raw_text)
+    else:
+        chars0 = _pass_nfkc_apostrophe_soft_hyphen_text(raw_text)
+    chars1 = _pass_join_hyphenation_text(chars0)
+    return "".join(_pass_homoglyphs(chars1))
+
+
+def _can_use_fast_primary_path(raw_text: str) -> bool:
+    return (
+        unicodedata.is_normalized("NFKC", raw_text)
+        and _SOFT_HYPHEN not in raw_text
+        and not any(char in _APOSTROPHE_CHARS for char in raw_text)
+    )
+
+
+def _normalize_text_slow(raw_text: str) -> NormalizedText:
+    """Повний посимвольний шлях нормалізації для перевірки fast path."""
+
     chars0, origins0 = _pass_nfkc_apostrophe_soft_hyphen(raw_text)
     chars1, origins1 = _pass_join_hyphenation(chars0, origins0)
     chars2 = _pass_homoglyphs(chars1)
@@ -126,6 +159,20 @@ def _pass_nfkc_apostrophe_soft_hyphen(
     return chars, origins
 
 
+def _pass_nfkc_apostrophe_soft_hyphen_text(raw_text: str) -> list[str]:
+    """Текстовий відповідник первинного повного проходу нормалізації."""
+
+    chars: list[str] = []
+    for ch in raw_text:
+        if ch == _SOFT_HYPHEN:
+            continue
+        if ch in _APOSTROPHE_CHARS:
+            chars.append(_APOSTROPHE_TARGET)
+        else:
+            chars.extend(unicodedata.normalize("NFKC", ch))
+    return chars
+
+
 def _pass_join_hyphenation(
     chars0: list[str], origins0: list[CharOrigin]
 ) -> tuple[list[str], list[CharOrigin]]:
@@ -157,6 +204,31 @@ def _pass_join_hyphenation(
         origins1.append(origins0[i])
         i += 1
     return chars1, origins1
+
+
+def _pass_join_hyphenation_text(chars0: list[str]) -> list[str]:
+    """Текстовий відповідник склейки переносу без побудови origins."""
+
+    chars1: list[str] = []
+    n = len(chars0)
+    i = 0
+    while i < n:
+        ch = chars0[i]
+        if ch == "-" and chars1 and chars1[-1].isalpha():
+            j = i + 1
+            while j < n and chars0[j] in (" ", "\t"):
+                j += 1
+            nl_len = 0
+            if j < n and chars0[j] == "\r" and j + 1 < n and chars0[j + 1] == "\n":
+                nl_len = 2
+            elif j < n and chars0[j] == "\n":
+                nl_len = 1
+            if nl_len and (j + nl_len) < n and chars0[j + nl_len].isalpha():
+                i = j + nl_len
+                continue
+        chars1.append(ch)
+        i += 1
+    return chars1
 
 
 def _pass_homoglyphs(chars1: list[str]) -> list[str]:

@@ -21,7 +21,7 @@ from search.calques import (
     resolve_zone,
     tier2_is_scorable,
 )
-from search.normalization import WORD_TOKEN_RE, normalize_text, tokenize
+from search.normalization import WORD_TOKEN_RE, normalize_for_matching, normalize_text, tokenize
 from search.types import (
     CONTENT_SECTION_KINDS,
     Channel,
@@ -401,7 +401,7 @@ def find_channel_t_signals(raw_text: str, rare_forms: Iterable[RareWordForm]) ->
 def normative_marker_ids(raw_text: str) -> tuple[str, ...]:
     """Різні нормативні маркери у стабільному порядку версіонованого списку."""
 
-    normalized = normalize_text(raw_text).text
+    normalized = normalize_for_matching(raw_text)
     return tuple(rule_id for rule_id, pattern in _NORMATIVE_PATTERNS if pattern.search(normalized))
 
 

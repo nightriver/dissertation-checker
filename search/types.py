@@ -106,7 +106,7 @@ class SourceSpan:
     parts: tuple[RawSpan, ...]  # впорядковані, не перетинаються
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CharOrigin:
     raw_start: int
     raw_end: int
@@ -358,6 +358,16 @@ class CalqueMetrics:
 
 
 @dataclass(frozen=True)
+class SectionCalqueMetrics:
+    section_id: str
+    tier1_hits: int
+    tier2_hits: int
+    tier3_hits: int
+    density: float
+    locally_dense: bool
+
+
+@dataclass(frozen=True)
 class CandidateMetrics:
     generated_by_channel: tuple[tuple[Channel, int], ...]
     retained_primary_by_channel: tuple[tuple[Channel, int], ...]
@@ -385,6 +395,7 @@ class SearchResult:
     candidate_metrics: CandidateMetrics
     dedup_metrics: DedupMetrics
     warnings: tuple[str, ...]
+    section_calque_metrics: tuple[SectionCalqueMetrics, ...] = ()
 
 
 # ---------------------------------------------------------------------------

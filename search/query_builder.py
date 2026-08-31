@@ -27,11 +27,15 @@ from collections import Counter
 from dataclasses import dataclass, replace
 
 from search import ALGO_VERSION
-from search.bibliography import donor_ids_for_mention
+from search.bibliography import (
+    _build_citation_index,
+    _linked_ru_entries_by_donor,
+    donor_ids_for_mention,
+)
 from search.calques import (
     DICT_VERSION,
     CalqueHit,
-    compute_metrics,
+    _compute_metrics_from_analysis,
     find_calques,
     find_calques_with_rejections,
     rule_by_id,
@@ -67,6 +71,7 @@ from search.types import (
     SearchQuery,
     SearchResult,
     SearchToken,
+    NormalizedText,
     SectionKind,
     SectionShortfall,
     ShortfallReason,
@@ -104,6 +109,17 @@ NORMATIVE_HEAVY_RATIO = 0.60
 
 _STOPWORDS = STOPWORDS
 
+_SYSTEM_LITERAL_TEXT_BY_ORIGIN_ID = {
+    "quote_open": "«",
+    "open": "«",
+    "quote_close": "»",
+    "close": "»",
+    "quote_close_space": "» ",
+    "space": " ",
+    "definition_literal": "определение",
+}
+_SYSTEM_SPACE_ORIGIN_RE = re.compile(r"space_\d+\Z")
+
 _UK_ONLY_CHARS = set("іїєґІЇЄҐ")
 _RU_ONLY_CHARS = set("ыэъёЫЭЪЁ")
 
@@ -133,6 +149,24 @@ class SurnameEvidence:
     raw_end: int
 
 
+@dataclass
+class _DonorQueryContext:
+    """Похідні ознаки донора, спільні для всіх його каналів і вікон."""
+
+    normalized_text: NormalizedText
+    word_tokens: list[SearchToken]
+    proper_name_indexes: frozenset[int]
+    has_two_capitalized_words: bool
+    meaningful_number_flags: tuple[bool, ...]
+    rare_form_flags: tuple[bool, ...]
+    long_content_word_flags: tuple[bool, ...]
+    number_bonuses: tuple[float, ...]
+    token_bonus_prefix: tuple[float, ...]
+    surname_evidence: tuple[SurnameEvidence, ...]
+    number_parts: tuple[QueryPart, ...]
+    normative_penalty_cache: dict[tuple[int, int], float]
+
+
 def compose_query_parts(parts: tuple[QueryPart, ...]) -> str:
     """Єдиний спосіб скласти канонічний рядок із provenance-частин (§13)."""
 
@@ -149,6 +183,14 @@ def validate_query_parts(parts: tuple[QueryPart, ...], query_text: str) -> bool:
             return False
         if part.origin == QueryPartOrigin.SYSTEM_LITERAL:
             if part.origin_id is None or part.source is not None:
+                return False
+            expected_text = _SYSTEM_LITERAL_TEXT_BY_ORIGIN_ID.get(part.origin_id)
+            if expected_text is None and (
+                not isinstance(part.origin_id, str)
+                or _SYSTEM_SPACE_ORIGIN_RE.fullmatch(part.origin_id) is None
+            ):
+                return False
+            if part.text != (expected_text or " "):
                 return False
         elif part.origin in (QueryPartOrigin.CALQUE_RULE, QueryPartOrigin.RU_REFERENCE):
             if part.origin_id is None:
@@ -206,19 +248,24 @@ def build_source_channel_query(
     score: float,
     freq: dict[str, int],
     subtype: str | None = None,
+    query_context: _DonorQueryContext | None = None,
 ) -> SearchQuery | None | str:
     """Канонічний A/N/B/T/L або K1-запит із точного вихідного вікна."""
 
-    normalized = normalize_text(donor.raw_text)
-    word_tokens = [token for token in tokenize(donor.raw_text, normalized) if token.is_word]
+    context = query_context or _build_donor_query_context(donor, block, freq)
+    word_tokens = context.word_tokens
     signal_spans = [(signal.raw_start, signal.raw_end) for signal in signals]
     contextual_n = channel == Channel.N and any(
         signal.rule_id == "N.novelty_heading" for signal in signals
     )
     if channel == Channel.L or contextual_n:
-        best = _select_best_unanchored_window(word_tokens, donor.raw_text, freq)
+        best = _select_best_unanchored_window(
+            word_tokens, donor.raw_text, freq, context=context
+        )
     else:
-        best = _select_best_window(word_tokens, signal_spans, donor.raw_text, freq)
+        best = _select_best_window(
+            word_tokens, signal_spans, donor.raw_text, freq, context=context
+        )
     if best is None:
         return None
     start_idx, end_idx, _ = best
@@ -248,6 +295,7 @@ def build_source_channel_query(
         reasons=tuple(sorted({signal.rule_id for signal in signals})),
         evidence_ids=tuple(f"sig-{donor.donor_id}-{channel.value}-{i}" for i in range(len(signals))),
         freq=freq,
+        query_context=context,
     )
 
 
@@ -259,9 +307,12 @@ def build_k_queries(
     score: float,
     freq: dict[str, int],
     calque_hits: tuple[CalqueHit, ...] | None = None,
+    linked_ru_entries: tuple[tuple[object, Confidence, int], ...] | None = None,
+    query_context: _DonorQueryContext | None = None,
 ) -> tuple[SearchQuery, ...]:
     """Не більше одного K1, двох K2 та одного K3 для одного речення (§12.6)."""
 
+    context = query_context or _build_donor_query_context(donor, block, freq)
     donor_start = donor.source.parts[0].raw_start
     donor_end = donor.source.parts[-1].raw_end
     hits = tuple(
@@ -292,13 +343,18 @@ def build_k_queries(
         score=score,
         freq=freq,
         subtype="K1",
+        query_context=context,
     )
     if isinstance(k1, SearchQuery):
         result.append(k1)
 
-    linked = _linked_ru_entries(document, donor, block)
-    surnames = extract_surname_evidence(donor.raw_text)
-    numbers = _number_parts(donor, block)
+    linked = (
+        _linked_ru_entries(document, donor, block)
+        if linked_ru_entries is None
+        else linked_ru_entries
+    )
+    surnames = context.surname_evidence
+    numbers = context.number_parts
     k2_contexts: list[tuple[object | None, SurnameEvidence | None]] = []
     if linked:
         k2_contexts.extend((item[0], surnames[0] if surnames else None) for item in linked[:2])
@@ -306,17 +362,48 @@ def build_k_queries(
         k2_contexts.append((None, surnames[0]))
     for index, (entry, surname) in enumerate(k2_contexts[:2]):
         hit = hits[min(index, len(hits) - 1)]
-        query = _build_k2_query(donor, block, hit, entry, surname, numbers, score, freq)
+        query = _build_k2_query(
+            donor,
+            block,
+            hit,
+            entry,
+            surname,
+            numbers,
+            score,
+            freq,
+            query_context=context,
+        )
         if query is not None:
             result.append(query)
 
-    k3 = _build_k3_query(document, donor, block, hits[0], linked, surnames, score, freq)
+    k3 = _build_k3_query(
+        document,
+        donor,
+        block,
+        hits[0],
+        linked,
+        surnames,
+        score,
+        freq,
+        query_context=context,
+    )
     if k3 is not None:
         result.append(k3)
     return tuple(result)
 
 
-def _build_k2_query(donor, block, hit, entry, surname, numbers, score, freq) -> SearchQuery | None:
+def _build_k2_query(
+    donor,
+    block,
+    hit,
+    entry,
+    surname,
+    numbers,
+    score,
+    freq,
+    *,
+    query_context: _DonorQueryContext | None = None,
+) -> SearchQuery | None:
     rule = rule_by_id(hit.rule_id)
     if not rule.ru_origin.strip() or (entry is None and surname is None):
         return None
@@ -352,11 +439,26 @@ def _build_k2_query(donor, block, hit, entry, surname, numbers, score, freq) -> 
         evidence_ids=(f"k2-{donor.donor_id}-{hit.rule_id}-{getattr(entry, 'entry_id', 'surname')}",),
         freq=freq,
         linked_ru=entry is not None,
+        query_context=query_context,
     )
 
 
-def _build_k3_query(document, donor, block, hit, linked, surnames, score, freq) -> SearchQuery | None:
-    if not surnames or not _has_definition_marker(donor.raw_text):
+def _build_k3_query(
+    document,
+    donor,
+    block,
+    hit,
+    linked,
+    surnames,
+    score,
+    freq,
+    *,
+    query_context: _DonorQueryContext | None = None,
+) -> SearchQuery | None:
+    context = query_context or _build_donor_query_context(donor, block, freq)
+    if not surnames or not _has_definition_marker(
+        donor.raw_text, normalized_text=context.normalized_text.text
+    ):
         return None
     rule = rule_by_id(hit.rule_id)
     if not rule.ru_origin.strip():
@@ -402,6 +504,7 @@ def _build_k3_query(document, donor, block, hit, linked, surnames, score, freq) 
         evidence_ids=(f"k3-{donor.donor_id}-{hit.rule_id}",),
         freq=freq,
         linked_ru=entry is not None,
+        query_context=context,
     )
 
 
@@ -434,7 +537,95 @@ def _donor_source(
     ))
 
 
-def _number_parts(donor: SentenceDonor, block: SearchBlock) -> tuple[QueryPart, ...]:
+def _build_query_context(
+    raw_text: str,
+    normalized_text: NormalizedText,
+    word_tokens: list[SearchToken],
+    freq: dict[str, int],
+) -> _DonorQueryContext:
+    """Готує ознаки токенів, які не залежать від конкретного вікна."""
+
+    surname_evidence = extract_surname_evidence(raw_text)
+    proper_name_indexes = _proper_name_indexes(
+        word_tokens,
+        raw_text,
+        surname_evidence=surname_evidence,
+    )
+    meaningful_number_flags = tuple(
+        _is_number_token(token) and _is_meaningful_number(token, raw_text)
+        for token in word_tokens
+    )
+    rare_form_flags = tuple(_is_rare_form_token(token, freq) for token in word_tokens)
+    long_content_word_flags = tuple(_is_long_content_word(token) for token in word_tokens)
+    number_bonuses = tuple(
+        NUMBER_DATE_BONUS if meaningful else 0.0
+        for meaningful in meaningful_number_flags
+    )
+    token_bonus_prefix = [0.0]
+    for index, (token, meaningful, rare, long_word, number_bonus) in enumerate(
+        zip(
+            word_tokens,
+            meaningful_number_flags,
+            rare_form_flags,
+            long_content_word_flags,
+            number_bonuses,
+        )
+    ):
+        bonus = (
+            (PROPER_NAME_BONUS if index in proper_name_indexes else 0.0)
+            + number_bonus
+            + (RARE_FORM_BONUS if rare else 0.0)
+            + (LONG_WORD_BONUS if long_word else 0.0)
+        )
+        token_bonus_prefix.append(token_bonus_prefix[-1] + bonus)
+    return _DonorQueryContext(
+        normalized_text=normalized_text,
+        word_tokens=word_tokens,
+        proper_name_indexes=proper_name_indexes,
+        has_two_capitalized_words=_has_two_capitalized_words(word_tokens),
+        meaningful_number_flags=meaningful_number_flags,
+        rare_form_flags=rare_form_flags,
+        long_content_word_flags=long_content_word_flags,
+        number_bonuses=number_bonuses,
+        token_bonus_prefix=tuple(token_bonus_prefix),
+        surname_evidence=surname_evidence,
+        number_parts=(),
+        normative_penalty_cache={},
+    )
+
+
+def _build_donor_query_context(
+    donor: SentenceDonor, block: SearchBlock, freq: dict[str, int]
+) -> _DonorQueryContext:
+    """Будує спільний контекст оцінки для одного донора."""
+
+    normalized_text = normalize_text(donor.raw_text)
+    word_tokens = [token for token in tokenize(donor.raw_text, normalized_text) if token.is_word]
+    context = _build_query_context(donor.raw_text, normalized_text, word_tokens, freq)
+    context.number_parts = _number_parts(donor, block, query_context=context)
+    return context
+
+
+def _number_parts(
+    donor: SentenceDonor,
+    block: SearchBlock,
+    *,
+    query_context: _DonorQueryContext | None = None,
+) -> tuple[QueryPart, ...]:
+    if query_context is not None:
+        return tuple(
+            QueryPart(
+                token.raw,
+                QueryPartOrigin.LITERAL_NUMBER,
+                None,
+                _donor_source(donor, block, token.raw_start, token.raw_end),
+            )
+            for token, meaningful in zip(
+                query_context.word_tokens,
+                query_context.meaningful_number_flags,
+            )
+            if meaningful
+        )
     result: list[QueryPart] = []
     normalized = normalize_text(donor.raw_text)
     for token in tokenize(donor.raw_text, normalized):
@@ -472,8 +663,8 @@ def _linked_ru_entries(document: SearchDocument, donor: SentenceDonor, block: Se
     return tuple(linked)
 
 
-def _has_definition_marker(raw_text: str) -> bool:
-    normalized = normalize_text(raw_text).text
+def _has_definition_marker(raw_text: str, *, normalized_text: str | None = None) -> bool:
+    normalized = normalized_text if normalized_text is not None else normalize_text(raw_text).text
     has_understand = any(
         signal.rule_id == "A.under_understand" for signal in find_channel_a_signals(normalized)
     )
@@ -492,9 +683,11 @@ def _make_query(
     evidence_ids: tuple[str, ...],
     freq: dict[str, int],
     linked_ru: bool = False,
+    query_context: _DonorQueryContext | None = None,
 ) -> SearchQuery:
     query_text = compose_query_parts(parts)
-    word_tokens = [token for token in tokenize(donor.raw_text, normalize_text(donor.raw_text)) if token.is_word]
+    context = query_context or _build_donor_query_context(donor, block, freq)
+    word_tokens = context.word_tokens
     sentence_base = donor.source.parts[0].raw_start
     anchor_text, anchor_source, anchor_fallback = _build_pdf_anchor(
         word_tokens,
@@ -503,11 +696,12 @@ def _make_query(
         block.physical_page,
         sentence_base,
         freq=freq,
+        query_context=context,
     )
     rank_bonus = 0.0
-    if extract_surname_evidence(donor.raw_text) or _has_two_capitalized_words(word_tokens):
+    if context.surname_evidence or context.has_two_capitalized_words:
         rank_bonus += 1.0
-    if any(_is_meaningful_number(token, donor.raw_text) for token in word_tokens if _is_number_token(token)):
+    if any(context.meaningful_number_flags):
         rank_bonus += 1.0
     if linked_ru:
         rank_bonus += 2.0
@@ -553,8 +747,18 @@ def _selection_stage(score: float, channel: Channel) -> int:
 
 
 def _select_best_unanchored_window(
-    word_tokens: list[SearchToken], raw_text: str, freq: dict[str, int]
+    word_tokens: list[SearchToken],
+    raw_text: str,
+    freq: dict[str, int],
+    *,
+    context: _DonorQueryContext | None = None,
 ) -> tuple[int, int, float] | None:
+    context = context or _build_query_context(
+        raw_text,
+        normalize_text(raw_text),
+        word_tokens,
+        freq,
+    )
     if len(word_tokens) < WINDOW_MIN_WORDS:
         return None
     candidates: list[tuple[float, int, int, int]] = []
@@ -563,7 +767,14 @@ def _select_best_unanchored_window(
             end = start + size
             if end > len(word_tokens):
                 break
-            score = _score_window(word_tokens, start, end, raw_text, freq) - SIGNAL_COVERAGE_BONUS
+            score = _score_window(
+                word_tokens,
+                start,
+                end,
+                raw_text,
+                freq,
+                context=context,
+            ) - SIGNAL_COVERAGE_BONUS
             candidates.append((-score, size, start, end))
     _, _, start, end = min(candidates)
     return start, end, -min(candidates)[0]
@@ -739,6 +950,8 @@ def build_search_result_with_candidates(
         block.block_id: find_calques_with_rejections(block)
         for block in document.blocks
     }
+    citation_index = _build_citation_index(document)
+    linked_ru_entries_by_donor = _linked_ru_entries_by_donor(document, citation_index)
     rare_forms = rare_word_forms(document)
     freq = _word_frequencies(document)
     queries: list[SearchQuery] = []
@@ -750,6 +963,7 @@ def build_search_result_with_candidates(
     for donor in document.sentences:
         block = blocks[donor.block_id]
         section = sections.get(donor.section_id)
+        query_context = _build_donor_query_context(donor, block, freq)
         block_calques = calque_analysis[block.block_id]
         evaluation = evaluate_candidate(
             donor,
@@ -808,6 +1022,7 @@ def build_search_result_with_candidates(
                     signals=items,
                     score=evaluation.final_score,
                     freq=freq,
+                    query_context=query_context,
                 )
                 if isinstance(query, SearchQuery):
                     queries.append(query)
@@ -825,6 +1040,8 @@ def build_search_result_with_candidates(
                 score=evaluation.final_score,
                 freq=freq,
                 calque_hits=block_calques[0],
+                linked_ru_entries=linked_ru_entries_by_donor.get(donor.donor_id, ()),
+                query_context=query_context,
             )
             for query in k_queries:
                 queries.append(replace(query, evidence_ids=evidence_ids))
@@ -839,6 +1056,7 @@ def build_search_result_with_candidates(
                 signals=tuple(grouped[Channel.T]),
                 score=0.0,
                 freq=freq,
+                query_context=query_context,
             )
             if isinstance(query, SearchQuery):
                 queries.append(query)
@@ -850,6 +1068,7 @@ def build_search_result_with_candidates(
                 signals=(),
                 score=0.0,
                 freq=freq,
+                query_context=query_context,
             )
             if isinstance(query, SearchQuery):
                 queries.append(query)
@@ -875,6 +1094,9 @@ def build_search_result_with_candidates(
             if channel != Channel.D:
                 attributed[channel] += 1
     channel_order = tuple(channel for channel in Channel if channel != Channel.D)
+    calque_metrics, section_calque_metrics = _compute_metrics_from_analysis(
+        document, calque_analysis
+    )
     result = SearchResult(
         document=document,
         algo_version=ALGO_VERSION,
@@ -882,7 +1104,7 @@ def build_search_result_with_candidates(
         queries=selected,
         shortfalls=shortfalls,
         signal_hits=tuple(signal_hits),
-        calque_metrics=compute_metrics(document),
+        calque_metrics=calque_metrics,
         candidate_metrics=CandidateMetrics(
             generated_by_channel=tuple((channel, generated[channel]) for channel in channel_order),
             retained_primary_by_channel=tuple((channel, retained[channel]) for channel in channel_order),
@@ -891,6 +1113,7 @@ def build_search_result_with_candidates(
         ),
         dedup_metrics=dedup_metrics,
         warnings=(),
+        section_calque_metrics=section_calque_metrics,
     )
     return result, tuple(queries)
 
@@ -1369,22 +1592,30 @@ def _is_rare_form_token(token: SearchToken, freq: dict[str, int]) -> bool:
 
 
 def _score_window(
-    word_tokens: list[SearchToken], start_idx: int, end_idx: int, raw_text: str, freq: dict[str, int]
+    word_tokens: list[SearchToken],
+    start_idx: int,
+    end_idx: int,
+    raw_text: str,
+    freq: dict[str, int],
+    *,
+    context: _DonorQueryContext | None = None,
 ) -> float:
-    score = SIGNAL_COVERAGE_BONUS
-    proper_indexes = _proper_name_indexes(word_tokens, raw_text)
-    for global_i in range(start_idx, end_idx):
-        token = word_tokens[global_i]
-        if global_i in proper_indexes:
-            score += PROPER_NAME_BONUS
-        if _is_number_token(token) and _is_meaningful_number(token, raw_text):
-            score += NUMBER_DATE_BONUS
-        if _is_rare_form_token(token, freq):
-            score += RARE_FORM_BONUS
-        if _is_long_content_word(token):
-            score += LONG_WORD_BONUS
+    context = context or _build_query_context(
+        raw_text,
+        normalize_text(raw_text),
+        word_tokens,
+        freq,
+    )
+    score = SIGNAL_COVERAGE_BONUS + (
+        context.token_bonus_prefix[end_idx] - context.token_bonus_prefix[start_idx]
+    )
     window_text = raw_text[word_tokens[start_idx].raw_start : word_tokens[end_idx - 1].raw_end]
-    score -= NORMATIVE_PENALTY * len(normative_marker_ids(window_text))
+    cache_key = (start_idx, end_idx)
+    penalty = context.normative_penalty_cache.get(cache_key)
+    if penalty is None:
+        penalty = NORMATIVE_PENALTY * len(normative_marker_ids(window_text))
+        context.normative_penalty_cache[cache_key] = penalty
+    score -= penalty
     return score
 
 
@@ -1393,7 +1624,15 @@ def _select_best_window(
     signal_raw_spans: list[tuple[int, int]],
     raw_text: str,
     freq: dict[str, int],
+    *,
+    context: _DonorQueryContext | None = None,
 ) -> tuple[int, int, float] | None:
+    context = context or _build_query_context(
+        raw_text,
+        normalize_text(raw_text),
+        word_tokens,
+        freq,
+    )
     n = len(word_tokens)
     if n < WINDOW_MIN_WORDS:
         return None
@@ -1409,7 +1648,14 @@ def _select_best_window(
                 if first_tok.raw_start <= sig_start and sig_end <= last_tok.raw_end:
                     key = (start_idx, end_idx)
                     if key not in candidates:
-                        candidates[key] = _score_window(word_tokens, start_idx, end_idx, raw_text, freq)
+                        candidates[key] = _score_window(
+                            word_tokens,
+                            start_idx,
+                            end_idx,
+                            raw_text,
+                            freq,
+                            context=context,
+                        )
     if not candidates:
         return None
     # §13 крок 5: за рівності — коротше, потім раніше.
@@ -1472,6 +1718,7 @@ def _build_pdf_anchor(
     sentence_base: int,
     *,
     freq: dict[str, int] | None = None,
+    query_context: _DonorQueryContext | None = None,
 ) -> tuple[str, SourceSpan, bool]:
     """
     Стійкий якір §15: 8–15 послідовних чистих вихідних слів з перевагою
@@ -1484,8 +1731,13 @@ def _build_pdf_anchor(
             parts=(RawSpan(block_id, physical_page, sentence_base, sentence_base + len(raw_text)),)
         )
         return text, source, True
-    frequencies = freq or {}
-    proper_indexes = _proper_name_indexes(word_tokens, raw_text)
+    context = query_context or _build_query_context(
+        raw_text,
+        normalize_text(raw_text),
+        word_tokens,
+        freq or {},
+    )
+    proper_indexes = context.proper_name_indexes
     candidates: list[tuple[int, int, int, int]] = []
     for start in range(n):
         for size in range(ANCHOR_MIN_WORDS, ANCHOR_MAX_WORDS + 1):
@@ -1497,7 +1749,7 @@ def _build_pdf_anchor(
                 continue
             score = sum(
                 (3 if index in proper_indexes else 0)
-                + (3 if _is_rare_form_token(token, frequencies) else 0)
+                + (3 if context.rare_form_flags[index] else 0)
                 + (2 if _is_number_token(token) else 0)
                 for index, token in enumerate(word_tokens[start:end], start=start)
             )
@@ -1528,9 +1780,18 @@ def _anchor_token_is_unstable(token: SearchToken, raw_text: str) -> bool:
     return "�" in raw or mixed or bool(_JOINED_HYPHEN_RE.search(raw))
 
 
-def _proper_name_indexes(tokens: list[SearchToken], raw_text: str) -> frozenset[int]:
+def _proper_name_indexes(
+    tokens: list[SearchToken],
+    raw_text: str,
+    *,
+    surname_evidence: tuple[SurnameEvidence, ...] | None = None,
+) -> frozenset[int]:
     indexes: set[int] = set()
-    for surname in extract_surname_evidence(raw_text):
+    for surname in (
+        extract_surname_evidence(raw_text)
+        if surname_evidence is None
+        else surname_evidence
+    ):
         for index, token in enumerate(tokens):
             if token.raw_start < surname.raw_end and token.raw_end > surname.raw_start:
                 indexes.add(index)

@@ -477,29 +477,47 @@ def build_search_summary(
     )
 
     section_calques: list[SectionCalqueSummaryView] = []
-    for section in result.document.sections:
-        if section.kind not in CONTENT_SECTION_KINDS:
-            continue
-        hits = tuple(
-            hit
-            for block in result.document.blocks
-            if block.section_id == section.section_id
-            for hit in collapse_components(find_calques(block))
-            if hit.zone == TextZone.AUTHOR_TEXT
-        )
-        by_tier = {tier: sum(hit.tier == tier for hit in hits) for tier in (1, 2, 3)}
-        section_density = 1000 * by_tier[1] / section.author_words if section.author_words else 0.0
-        section_calques.append(SectionCalqueSummaryView(
-            section_id=section.section_id,
-            heading=section.heading,
-            tier1_hits=by_tier[1],
-            tier2_hits=by_tier[2],
-            tier3_hits=by_tier[3],
-            density=section_density,
-            locally_dense=section_is_locally_dense(
-                section.author_words, by_tier[1], section_density
-            ),
-        ))
+    if result.section_calque_metrics:
+        metrics_by_section = {
+            item.section_id: item for item in result.section_calque_metrics
+        }
+        for section in result.document.sections:
+            if section.kind not in CONTENT_SECTION_KINDS:
+                continue
+            metrics = metrics_by_section[section.section_id]
+            section_calques.append(SectionCalqueSummaryView(
+                section_id=section.section_id,
+                heading=section.heading,
+                tier1_hits=metrics.tier1_hits,
+                tier2_hits=metrics.tier2_hits,
+                tier3_hits=metrics.tier3_hits,
+                density=metrics.density,
+                locally_dense=metrics.locally_dense,
+            ))
+    else:
+        for section in result.document.sections:
+            if section.kind not in CONTENT_SECTION_KINDS:
+                continue
+            hits = tuple(
+                hit
+                for block in result.document.blocks
+                if block.section_id == section.section_id
+                for hit in collapse_components(find_calques(block))
+                if hit.zone == TextZone.AUTHOR_TEXT
+            )
+            by_tier = {tier: sum(hit.tier == tier for hit in hits) for tier in (1, 2, 3)}
+            section_density = 1000 * by_tier[1] / section.author_words if section.author_words else 0.0
+            section_calques.append(SectionCalqueSummaryView(
+                section_id=section.section_id,
+                heading=section.heading,
+                tier1_hits=by_tier[1],
+                tier2_hits=by_tier[2],
+                tier3_hits=by_tier[3],
+                density=section_density,
+                locally_dense=section_is_locally_dense(
+                    section.author_words, by_tier[1], section_density
+                ),
+            ))
 
     return SearchSummaryView(
         n_pages=result.document.n_pages,

@@ -63,6 +63,10 @@ Streamlit-приложение для эксперта, который пров�
 .venv312\Scripts\python.exe -m pytest                            :: весь набор + coverage (порог 90 %)
 .venv312\Scripts\python.exe -m pytest tests\test_x.py --no-cov   :: точечно во время работы
 .venv312\Scripts\python.exe -m streamlit run app.py              :: приложение
+
+# швидкий цикл без важкого корпусу
+.venv312\Scripts\python.exe -m pytest --no-cov -m "not corpus"
+.venv312\Scripts\python.exe -m pytest --no-cov -m corpus
 ```
 
 Рабочее окружение — `.venv312` (Windows, `Scripts\python.exe`). `pytest.ini`

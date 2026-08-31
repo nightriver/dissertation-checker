@@ -31,10 +31,12 @@ from typing import Literal
 
 from search.normalization import map_normalized_offsets
 from search.types import (
+    CONTENT_SECTION_KINDS,
     ZONE_PRIORITY,
     CalqueMetrics,
     SearchBlock,
     SearchDocument,
+    SectionCalqueMetrics,
     TextZone,
     ZoneSpan,
 )
@@ -1485,6 +1487,71 @@ def _author_word_count(block: SearchBlock) -> int:
     return count
 
 
+def _compute_metrics_from_analysis(
+    document: SearchDocument,
+    calque_analysis: dict[
+        str, tuple[tuple[CalqueHit, ...], tuple[CalqueRejection, ...]]
+    ],
+) -> tuple[CalqueMetrics, tuple[SectionCalqueMetrics, ...]]:
+    """Рахує загальні й секційні метрики з уже готового аналізу блоків."""
+
+    author_words = 0
+    by_tier = {1: 0, 2: 0, 3: 0}
+    excluded: dict[TextZone, int] = {zone: 0 for zone in EXCLUDED_ZONES}
+    sections = {
+        section.section_id: {1: 0, 2: 0, 3: 0}
+        for section in document.sections
+        if section.kind in CONTENT_SECTION_KINDS
+    }
+
+    for block in document.blocks:
+        author_words += _author_word_count(block)
+        hits = collapse_components(calque_analysis.get(block.block_id, ((), ()))[0])
+        section_counts = sections.get(block.section_id)
+        for hit in hits:
+            if hit.zone == TextZone.AUTHOR_TEXT:
+                by_tier[hit.tier] += 1
+                if section_counts is not None:
+                    section_counts[hit.tier] += 1
+            else:
+                excluded[hit.zone] = excluded.get(hit.zone, 0) + 1
+
+    density = DENSITY_PER_WORDS * by_tier[1] / author_words if author_words else 0.0
+    metrics = CalqueMetrics(
+        author_words=author_words,
+        tier1_hits=by_tier[1],
+        tier2_hits=by_tier[2],
+        tier3_hits=by_tier[3],
+        tier1_density=density,
+        excluded_zone_hits=tuple((zone, excluded[zone]) for zone in EXCLUDED_ZONES),
+    )
+    section_by_id = {section.section_id: section for section in document.sections}
+    section_metrics = tuple(
+        SectionCalqueMetrics(
+            section_id=section_id,
+            tier1_hits=counts[1],
+            tier2_hits=counts[2],
+            tier3_hits=counts[3],
+            density=(
+                DENSITY_PER_WORDS * counts[1] / section_by_id[section_id].author_words
+                if section_by_id[section_id].author_words
+                else 0.0
+            ),
+            locally_dense=section_is_locally_dense(
+                section_by_id[section_id].author_words,
+                counts[1],
+                (
+                    DENSITY_PER_WORDS * counts[1] / section_by_id[section_id].author_words
+                    if section_by_id[section_id].author_words
+                    else 0.0
+                ),
+            ),
+        )
+        for section_id, counts in sections.items()
+    )
+    return metrics, section_metrics
+
+
 def compute_metrics(document: SearchDocument) -> CalqueMetrics:
     """
     Метрики калькованих зворотів по всьому документу (§8.4).
@@ -1494,29 +1561,12 @@ def compute_metrics(document: SearchDocument) -> CalqueMetrics:
     вони йдуть у `excluded_zone_hits` парами (зона, кількість), включно з
     нульовими. Порожній документ дає нулі й `tier1_density == 0.0`.
     """
-    author_words = 0
-    by_tier = {1: 0, 2: 0, 3: 0}
-    excluded: dict[TextZone, int] = {zone: 0 for zone in EXCLUDED_ZONES}
-
-    for block in document.blocks:
-        author_words += _author_word_count(block)
-        for hit in collapse_components(find_calques(block)):
-            if hit.zone == TextZone.AUTHOR_TEXT:
-                by_tier[hit.tier] += 1
-            else:
-                excluded[hit.zone] = excluded.get(hit.zone, 0) + 1
-
-    density = (
-        DENSITY_PER_WORDS * by_tier[1] / author_words if author_words else 0.0
-    )
-    return CalqueMetrics(
-        author_words=author_words,
-        tier1_hits=by_tier[1],
-        tier2_hits=by_tier[2],
-        tier3_hits=by_tier[3],
-        tier1_density=density,
-        excluded_zone_hits=tuple((zone, excluded[zone]) for zone in EXCLUDED_ZONES),
-    )
+    analysis = {
+        block.block_id: (find_calques(block), ())
+        for block in document.blocks
+    }
+    metrics, _ = _compute_metrics_from_analysis(document, analysis)
+    return metrics
 
 
 def density_band(density: float) -> Literal["neutral", "elevated", "prominent"]:

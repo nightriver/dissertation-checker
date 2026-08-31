@@ -153,12 +153,6 @@ def _document_payload(item: GoldenCorpusItem) -> dict:
     metrics = result.calque_metrics
     signal_by_channel = Counter(hit.channel.value for hit in result.signal_hits)
     signal_by_rule = Counter(_signal_rule_key(hit.rule_id) for hit in result.signal_hits)
-    query_by_section = {
-        section.section_id: tuple(
-            query for query in result.queries if query.section_id == section.section_id
-        )
-        for section in document.sections
-    }
     return {
         "file": item.path.name,
         "sha256": document.document_sha256,
@@ -221,6 +215,16 @@ def collect_golden(
     """Будує document/result/measurement рівно одним parser/query-проходом."""
 
     collected = collect_corpus(paths, progress=progress)
+    return collect_golden_from_corpus(paths, collected, progress=progress)
+
+
+def collect_golden_from_corpus(
+    paths: tuple[Path, ...],
+    collected: tuple[CorpusItem, ...],
+    progress: Callable[[str], None] | None = None,
+) -> tuple[GoldenCorpusItem, ...]:
+    """Додає вимірювання до готового corpus без повторного query-проходу."""
+
     by_path = {str(item.path.resolve()).casefold(): item for item in collected}
     ordered: list[GoldenCorpusItem] = []
     for path in paths:
@@ -330,7 +334,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("files", nargs=9, type=Path)
     parser.add_argument("--json", action="store_true", dest="as_json")
-    parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--progress", action="store_true")
     args = parser.parse_args(argv)
     progress = (
