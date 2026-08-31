@@ -104,6 +104,15 @@ def measure_pdf_bytes(data: bytes, *, name: str = "<memory>.pdf") -> FileMeasure
     # надрукувати попередження. Машинний stdout має лишатися чистим JSON.
     with redirect_stdout(sys.stderr):
         document = parse_search_document(data)
+    return measure_document(document, name=name)
+
+
+def measure_document(
+    document: SearchDocument,
+    *,
+    name: str = "<memory>.pdf",
+) -> FileMeasurement:
+    """Вимірює вже побудований документ без повторного розбору PDF."""
     metrics = compute_metrics(document)
     bibliography = annotate_bibliography(document.bibliography)
     languages = bibliography_language_stats(

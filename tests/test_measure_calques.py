@@ -9,7 +9,14 @@ from pathlib import Path
 
 import fitz
 
-from tools.measure_calques import main, measure_file, render_json
+from parser.searchdoc import parse_search_document
+from tools.measure_calques import (
+    main,
+    measure_document,
+    measure_file,
+    measure_pdf_bytes,
+    render_json,
+)
 
 
 def _write_pdf(path) -> None:
@@ -55,6 +62,17 @@ def test_json_keeps_input_file_order(tmp_path) -> None:
     report = render_json((measure_file(first), measure_file(second)))
 
     assert [item["file"] for item in json.loads(report)["files"]] == ["a.pdf", "b.pdf"]
+
+
+def test_document_adapter_matches_bytes_measurement(tmp_path) -> None:
+    path = tmp_path / "sample.pdf"
+    _write_pdf(path)
+    data = path.read_bytes()
+    document = parse_search_document(data)
+
+    assert measure_document(document, name=path.name) == measure_pdf_bytes(
+        data, name=path.name
+    )
 
 
 def test_missing_pdf_returns_nonzero_without_partial_report(tmp_path, capsys) -> None:
