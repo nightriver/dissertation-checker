@@ -44,6 +44,50 @@ STATUS_LABELS: dict[str, str] = {
     "found": "знайдено",
 }
 
+CHANNEL_LABELS: dict[Channel, str] = {
+    Channel.A: "Авторське положення",
+    Channel.N: "Наукова новизна",
+    Channel.B: "Емпіричні дані",
+    Channel.K: "Ознаки перекладу",
+    Channel.T: "Рідкісна словоформа",
+    Channel.L: "Довге змістовне речення",
+    Channel.D: "Нормативні посилання",
+}
+
+CALQUE_LEVEL_LABELS: dict[int, str] = {
+    1: "надійна ознака",
+    2: "допоміжна ознака",
+    3: "контекстна ознака",
+}
+
+CALQUE_SUBTYPE_LABELS: dict[str, str] = {
+    "K1": "точна українська фраза",
+    "K2": "зворотний пошук російською",
+    "K3": "пошук визначення",
+}
+
+TEXT_ZONE_LABELS: dict[TextZone, str] = {
+    TextZone.AUTHOR_TEXT: "авторський текст",
+    TextZone.QUOTED_TEXT: "цитований текст",
+    TextZone.FOOTNOTE_TEXT: "текст приміток і виносок",
+    TextZone.BIBLIOGRAPHY: "список використаних джерел",
+    TextZone.TOC: "зміст",
+    TextZone.HEADER_FOOTER: "колонтитули",
+    TextZone.UNCERTAIN: "текст із невизначеним типом",
+}
+
+_REJECTION_REASON_LABELS = {
+    "diversity_limit": "обмеження різноманітності запитів",
+    "k_no_buildable_subtype": "бракує даних для пошукового запиту за ознакою перекладу",
+    "l_duplicate_of_base": "фрагмент повторює вже створений запит",
+    "l_subsection_already_covered": "підрозділ уже представлено іншим запитом",
+    "no_valid_windows": "немає придатних фрагментів для запиту",
+    "score_below_threshold_4": "недостатньо змістовних ознак",
+    "section_not_content_kind": "службовий або незмістовний розділ",
+    "section_unknown": "тип розділу не визначено",
+    "section_unresolved": "межі розділу не визначено",
+}
+
 _PREFILL_REASON_LABELS = {
     "not_verified": "адресу пошуку ще не перевірено вручну",
     "stale_verification": "строк ручної перевірки адреси минув",
@@ -63,6 +107,26 @@ _SHORTFALL_LABELS = {
     ShortfallReason.PARTIAL_COVERAGE: "неповне текстове покриття",
     ShortfallReason.NORMATIVE_HEAVY: "переважно нормативний текст",
 }
+
+
+def channel_label(channel: Channel) -> str:
+    """Людська назва типу запиту без внутрішньої літерної абревіатури."""
+
+    return CHANNEL_LABELS[channel]
+
+
+def rejection_reason_label(reason: str) -> str:
+    """Перетворити внутрішній код відсіву на пояснення для експерта."""
+
+    threshold_prefix = "score_below_threshold_2:"
+    if reason.startswith(threshold_prefix):
+        channel_code = reason[len(threshold_prefix):]
+        try:
+            label = channel_label(Channel(channel_code)).lower()
+        except ValueError:
+            return "недостатньо ознак для створення запиту"
+        return f"недостатньо ознак: {label}"
+    return _REJECTION_REASON_LABELS.get(reason, "інша технічна причина відсіву")
 
 
 @dataclass(frozen=True)
@@ -278,9 +342,9 @@ def _calque_views(query: SearchQuery) -> tuple[tuple[CalqueIndicatorView, ...], 
             matched_text=matched,
             normative_text=rule.uk_norm,
             label=(
-                f"tier {rule.tier}: {matched} → {rule.uk_norm}"
+                f"{CALQUE_LEVEL_LABELS[rule.tier]}: {matched} → {rule.uk_norm}"
                 if matched is not None
-                else f"tier {rule.tier}: пов'язаний маркер → {rule.uk_norm}"
+                else f"{CALQUE_LEVEL_LABELS[rule.tier]}: пов'язаний маркер → {rule.uk_norm}"
             ),
         ))
     return tuple(views), tuple(spans)
@@ -357,9 +421,11 @@ def build_query_card(
             )
     return QueryCardView(
         query_id=query.query_id,
-        channel_label=f"[{query.primary_channel.value}]",
-        attributed_channel_labels=tuple(f"[{channel.value}]" for channel in query.attributed_channels),
-        subtype_label=query.subtype,
+        channel_label=channel_label(query.primary_channel),
+        attributed_channel_labels=tuple(
+            channel_label(channel) for channel in query.attributed_channels
+        ),
+        subtype_label=CALQUE_SUBTYPE_LABELS.get(query.subtype, query.subtype),
         query_text=query.query_text,
         page_label=f"Аркуш PDF {query.physical_page}",
         donor_text=query.donor_text,
@@ -384,7 +450,6 @@ def build_query_card(
         failed_engines=state.failed_engines,
         copy_fields=(
             CopyFieldView("Запит", query.query_text),
-            CopyFieldView("Фрагмент для Ctrl+F", query.pdf_anchor),
         ),
         status_actions=tuple(
             StatusActionView(code, label, code == state.status)
@@ -451,7 +516,9 @@ def build_search_summary(
         tier3_hits=calques.tier3_hits,
         tier1_density=calques.tier1_density,
         band=band,
-        excluded_zone_hits=tuple((zone.value, count) for zone, count in calques.excluded_zone_hits),
+        excluded_zone_hits=tuple(
+            (TEXT_ZONE_LABELS[zone], count) for zone, count in calques.excluded_zone_hits
+        ),
         notice=(
             "Це ознака перекладу, а не доказ запозичення. Перевірте російськомовні джерела."
             if band == "prominent" else None
@@ -532,7 +599,10 @@ def build_search_summary(
         engine_failures=engine_failures,
         shortfall_section_count=len(result.shortfalls),
         shortfall_reasons=shortfall_views,
-        rejected_by_reason=result.candidate_metrics.rejected_by_reason,
+        rejected_by_reason=tuple(
+            (rejection_reason_label(reason), count)
+            for reason, count in result.candidate_metrics.rejected_by_reason
+        ),
         generated_by_channel=result.candidate_metrics.generated_by_channel,
         retained_primary_by_channel=result.candidate_metrics.retained_primary_by_channel,
         attributed_by_channel=result.candidate_metrics.attributed_by_channel,

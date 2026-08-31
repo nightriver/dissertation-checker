@@ -59,7 +59,9 @@ def test_uploaded_pdf_renders_exactly_one_query_card():
     assert radios[0].index == 0
 
     markdown_text = "\n".join(md.value for md in app.markdown)
-    assert "[A]" in markdown_text
+    assert "Авторське положення" in markdown_text
+    assert "[A]" not in markdown_text
+    assert "Знахідка 1 із 1" in markdown_text
     assert "«" in markdown_text and "»" in markdown_text
 
     code_blocks = [c.value for c in app.get("code")]
@@ -81,7 +83,7 @@ def test_changing_the_status_radio_updates_the_triage_state():
     assert app.get("radio")[0].value == "found"
 
 
-def test_back_button_still_returns_from_the_search_screen():
+def test_main_navigation_still_links_back_from_the_search_screen():
     app = _run_with_uploaded_pdf()
-    app.button(key="search_back").click().run(timeout=30)
-    assert "mode" not in app.query_params
+    markdown_text = "\n".join(md.value for md in app.markdown)
+    assert 'href="?"' in markdown_text

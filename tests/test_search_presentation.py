@@ -4,7 +4,14 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from search.presentation import CopyFieldView, STATUS_LABELS, render_highlighted_text
+from search.presentation import (
+    CopyFieldView,
+    STATUS_LABELS,
+    channel_label,
+    rejection_reason_label,
+    render_highlighted_text,
+)
+from search.types import Channel
 
 
 def test_plain_text_is_escaped_even_without_highlights() -> None:
@@ -29,3 +36,14 @@ def test_view_models_are_immutable() -> None:
     item = CopyFieldView("Запит", "текст")
     with pytest.raises(FrozenInstanceError):
         item.text = "інший"
+
+
+def test_internal_channel_codes_are_rendered_as_plain_ukrainian() -> None:
+    assert channel_label(Channel.A) == "Авторське положення"
+    assert channel_label(Channel.K) == "Ознаки перекладу"
+    assert rejection_reason_label("score_below_threshold_2:N") == (
+        "недостатньо ознак: наукова новизна"
+    )
+    assert rejection_reason_label("diversity_limit") == (
+        "обмеження різноманітності запитів"
+    )

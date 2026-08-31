@@ -54,7 +54,7 @@ from compare.prepare import prepare_document_for_comparison
 from compare.presentation import format_physical_pages, render_comparison_table
 from parser.searchdoc import NoTextLayerError
 from search.engines import ENGINES
-from search.presentation import STATUS_LABELS
+from search.presentation import STATUS_LABELS, channel_label
 from search.state import ImportRejected, parse_project
 from search.types import SectionKind, SectionOverride, SectionOverrideAction
 from search.ui_logic import (
@@ -1012,19 +1012,19 @@ _SEARCH_SECTION_KIND_LABELS = {
 }
 
 
-def _render_search_card(card, state, states) -> None:
+def _render_search_card(card, state, states, *, position: int, total: int) -> None:
     """Тонка Streamlit-оболонка над готовою карткою PLAN_SEARCH.md §17."""
-    st.divider()
-    with st.container():
+    with st.container(border=True):
+        st.markdown(f"#### Знахідка {position} із {total}")
         subtype = f" · {card.subtype_label}" if card.subtype_label else ""
-        attributed = " ".join(card.attributed_channel_labels)
-        st.markdown(f"**{card.channel_label}{subtype}** · причини: {attributed}")
+        attributed = ", ".join(card.attributed_channel_labels)
+        st.markdown(f"**{card.channel_label}{subtype}** · підстави: {attributed}")
         st.caption(card.page_label)
         if card.calque_indicators:
             st.caption("Ознаки перекладу: " + "; ".join(item.label for item in card.calque_indicators))
         st.markdown(f"**Донор:** «{card.donor_html}»", unsafe_allow_html=True)
         if card.ru_reference_reason:
-            st.caption(f"Причина RU-опори: {card.ru_reference_reason}")
+            st.caption(f"Підстава для пошуку російською: {card.ru_reference_reason}")
         st.code(card.query_text)
 
         link_columns = st.columns(min(3, len(card.engine_links))) if card.engine_links else ()
@@ -1036,28 +1036,7 @@ def _render_search_card(card, state, states) -> None:
                     key=f"search_engine_{card.query_id}_{link.engine_code}",
                     width="stretch",
                 )
-            details = tuple(item for item in (link.warning, link.block_reason_label) if item)
-            if details:
-                st.caption(f"{link.label}: " + " · ".join(details))
-        if card.engine_links:
-            engine_labels = {link.engine_code: link.label for link in card.engine_links}
-            failed_engine = st.selectbox(
-                "Технічна помилка рушія",
-                tuple(engine_labels),
-                format_func=lambda code: engine_labels[code],
-                key=f"search_failed_engine_{card.query_id}",
-            )
-            if st.button("Позначити рушій недоступним", key=f"search_add_failed_{card.query_id}"):
-                st.session_state.search_query_states = apply_status_action(
-                    states,
-                    card.query_id,
-                    "failed_engine",
-                    failed_engine=failed_engine,
-                )
-                st.rerun()
 
-        st.caption("Фрагмент для Ctrl+F:")
-        st.code(card.anchor_text)
         if card.block_text is not None and st.checkbox(
             "Показати повний абзац",
             key=f"search_full_block_{card.query_id}",
@@ -1068,89 +1047,112 @@ def _render_search_card(card, state, states) -> None:
             previous = f" Попередній статус: {card.previous_status_label}." if card.previous_status_label else ""
             st.warning(card.needs_review_message + previous)
 
-        selected = st.radio(
-            "Статус",
-            _SEARCH_STATUS_OPTIONS,
-            index=_SEARCH_STATUS_OPTIONS.index(state.status),
-            format_func=lambda code: STATUS_LABELS[code],
-            key=f"search_status_{card.query_id}",
-            horizontal=True,
-        )
-        if selected != state.status:
-            if selected == "found":
-                first_engine = card.engine_links[0].engine_code if card.engine_links else "google"
-                st.session_state.search_query_states = apply_status_action(
-                    states,
-                    card.query_id,
-                    "found",
-                    found_engine=first_engine,
-                )
-            else:
-                st.session_state.search_query_states = apply_status_action(
-                    states, card.query_id, selected
-                )
-            st.rerun()
-
-        if state.status == "found":
-            engine_codes = tuple(link.engine_code for link in card.engine_links) or ("google",)
+        with st.expander(f"Результат перевірки: {card.status_label}"):
             engine_labels = {link.engine_code: link.label for link in card.engine_links}
-            current_engine = state.found_engine if state.found_engine in engine_codes else engine_codes[0]
-            found_engine = st.selectbox(
-                "Знайдено у",
-                engine_codes,
-                index=engine_codes.index(current_engine),
-                format_func=lambda code: engine_labels.get(code, code),
-                key=f"search_found_engine_{card.query_id}",
+            if card.engine_links:
+                failed_picker, failed_action = st.columns([2, 1])
+                with failed_picker:
+                    failed_engine = st.selectbox(
+                        "Недоступна пошукова система",
+                        tuple(engine_labels),
+                        format_func=lambda code: engine_labels[code],
+                        key=f"search_failed_engine_{card.query_id}",
+                    )
+                with failed_action:
+                    st.write("")
+                    if st.button(
+                        "Позначити недоступною",
+                        key=f"search_add_failed_{card.query_id}",
+                        width="stretch",
+                    ):
+                        st.session_state.search_query_states = apply_status_action(
+                            states,
+                            card.query_id,
+                            "failed_engine",
+                            failed_engine=failed_engine,
+                        )
+                        st.rerun()
+
+            selected = st.radio(
+                "Статус",
+                _SEARCH_STATUS_OPTIONS,
+                index=_SEARCH_STATUS_OPTIONS.index(state.status),
+                format_func=lambda code: STATUS_LABELS[code],
+                key=f"search_status_{card.query_id}",
+                horizontal=True,
             )
-            source_url = st.text_input(
-                "URL джерела",
-                value=state.source_url or "",
-                key=f"search_source_url_{card.query_id}",
-            )
-            comment = st.text_area(
-                "Коментар",
-                value=state.comment,
-                key=f"search_comment_{card.query_id}",
-            )
-            if st.button("Зберегти знайдений результат", key=f"search_save_found_{card.query_id}"):
-                try:
+            if selected != state.status:
+                if selected == "found":
+                    first_engine = card.engine_links[0].engine_code if card.engine_links else "google"
                     st.session_state.search_query_states = apply_status_action(
                         states,
                         card.query_id,
                         "found",
-                        found_engine=found_engine,
-                        source_url=source_url or None,
-                        comment=comment,
+                        found_engine=first_engine,
                     )
+                else:
+                    st.session_state.search_query_states = apply_status_action(
+                        states, card.query_id, selected
+                    )
+                st.rerun()
+
+            found_engine = None
+            source_url = None
+            if state.status == "found":
+                engine_codes = tuple(link.engine_code for link in card.engine_links) or ("google",)
+                current_engine = (
+                    state.found_engine if state.found_engine in engine_codes else engine_codes[0]
+                )
+                source_engine_column, source_url_column = st.columns([1, 2])
+                with source_engine_column:
+                    found_engine = st.selectbox(
+                        "Знайдено у",
+                        engine_codes,
+                        index=engine_codes.index(current_engine),
+                        format_func=lambda code: engine_labels.get(code, code),
+                        key=f"search_found_engine_{card.query_id}",
+                    )
+                with source_url_column:
+                    source_url = st.text_input(
+                        "Посилання на джерело",
+                        value=state.source_url or "",
+                        key=f"search_source_url_{card.query_id}",
+                    )
+
+            comment = st.text_area(
+                "Коментар",
+                value=state.comment,
+                key=f"search_comment_{card.query_id}",
+                height=80,
+            )
+            save_label = "Зберегти результат" if state.status == "found" else "Зберегти коментар"
+            if st.button(save_label, key=f"search_save_{card.query_id}"):
+                try:
+                    if state.status == "found":
+                        st.session_state.search_query_states = apply_status_action(
+                            states,
+                            card.query_id,
+                            "found",
+                            found_engine=found_engine,
+                            source_url=source_url or None,
+                            comment=comment,
+                        )
+                    elif state.status == "no_result":
+                        st.session_state.search_query_states = apply_status_action(
+                            states, card.query_id, "no_result", comment=comment
+                        )
+                    else:
+                        st.session_state.search_query_states = apply_status_action(
+                            states, card.query_id, "comment", comment=comment
+                        )
                 except ValueError as exc:
                     st.error(str(exc))
                 else:
                     st.rerun()
-        elif state.status == "no_result":
-            comment = st.text_area(
-                "Коментар",
-                value=state.comment,
-                key=f"search_comment_{card.query_id}",
-            )
-            if st.button("Зберегти коментар", key=f"search_save_no_result_{card.query_id}"):
-                st.session_state.search_query_states = apply_status_action(
-                    states, card.query_id, "no_result", comment=comment
-                )
-                st.rerun()
-        else:
-            comment = st.text_area(
-                "Коментар",
-                value=state.comment,
-                key=f"search_comment_{card.query_id}",
-            )
-            if st.button("Зберегти коментар", key=f"search_save_unchecked_{card.query_id}"):
-                st.session_state.search_query_states = apply_status_action(
-                    states, card.query_id, "comment", comment=comment
-                )
-                st.rerun()
 
-        if card.failed_engines:
-            st.caption("Технічні помилки: " + ", ".join(card.failed_engines))
+            if card.failed_engines:
+                failed_labels = [engine_labels.get(code, code) for code in card.failed_engines]
+                st.caption("Позначено недоступними: " + ", ".join(failed_labels))
 
 
 def render_manual_search_page() -> None:
@@ -1304,16 +1306,16 @@ def render_manual_search_page() -> None:
                     st.session_state.search_unmatched = imported.unmatched
                     st.rerun()
 
-    st.markdown("### Ознаки перекладу (K)")
+    st.markdown("### Ознаки перекладу")
     k1, k2, k3, density = st.columns(4)
-    k1.metric("Tier 1", summary.calques.tier1_hits)
-    k2.metric("Tier 2", summary.calques.tier2_hits)
-    k3.metric("Tier 3", summary.calques.tier3_hits)
-    density.metric("Tier 1 / 1000 слів", f"{summary.calques.tier1_density:.2f}")
+    k1.metric("Надійні ознаки", summary.calques.tier1_hits)
+    k2.metric("Допоміжні ознаки", summary.calques.tier2_hits)
+    k3.metric("Контекстні ознаки", summary.calques.tier3_hits)
+    density.metric("Надійних ознак на 1000 слів", f"{summary.calques.tier1_density:.2f}")
     excluded = ", ".join(
         f"{zone}: {count}" for zone, count in summary.calques.excluded_zone_hits
     )
-    st.caption(f"Виключені зони: {excluded}")
+    st.caption(f"Не враховано в авторському тексті: {excluded}")
     if summary.calques.notice:
         st.warning(summary.calques.notice)
 
@@ -1325,20 +1327,21 @@ def render_manual_search_page() -> None:
     bibliography = summary.bibliography
     st.markdown("### Рік і мови бібліографії")
     st.caption(
-        f"Рік роботи: {dissertation_year or '—'} · записів: {bibliography.total} · "
-        f"RU: {bibliography.ru} · UK: {bibliography.uk} · MIXED: {bibliography.mixed} · "
-        f"UNKNOWN: {bibliography.unknown} · RU%: {bibliography.ru_percentage_label} · "
-        f"охоплення списку: {bibliography.coverage_label}"
+        f"Рік дисертації: {dissertation_year or '—'} · Усього записів: {bibliography.total} · "
+        f"Російською: {bibliography.ru} · Українською: {bibliography.uk} · "
+        f"Змішаною мовою: {bibliography.mixed} · Мову не визначено: {bibliography.unknown} · "
+        f"Частка російськомовних: {bibliography.ru_percentage_label} · "
+        f"Розпізнано записів: {bibliography.coverage_label}"
     )
 
-    st.markdown("### K за розділами")
+    st.markdown("### Ознаки перекладу за розділами")
     st.dataframe(pd.DataFrame([
         {
             "Розділ": item.heading,
-            "Tier 1": item.tier1_hits,
-            "Tier 2": item.tier2_hits,
-            "Tier 3": item.tier3_hits,
-            "Щільність": f"{item.density:.2f}",
+            "Надійні ознаки": item.tier1_hits,
+            "Допоміжні ознаки": item.tier2_hits,
+            "Контекстні ознаки": item.tier3_hits,
+            "Надійних ознак на 1000 слів": f"{item.density:.2f}",
             "Висока концентрація": "так" if item.locally_dense else "ні",
         }
         for item in summary.section_calques
@@ -1356,14 +1359,43 @@ def render_manual_search_page() -> None:
                     f"Недобір: {section.shortfall.actual}/{section.shortfall.target}. "
                     f"Причина: {reason_labels[section.shortfall.primary_reason]}."
                 )
-            for card in section.visible_cards:
-                _render_search_card(card, states[card.query_id], states)
+            for card_number, card in enumerate(section.visible_cards, start=1):
+                _render_search_card(
+                    card,
+                    states[card.query_id],
+                    states,
+                    position=card_number,
+                    total=total_cards,
+                )
             if section.hidden_count and st.checkbox(
                 f"Ще {section.hidden_count} зачіпок",
                 key=f"search_more_{section.section_id}",
             ):
-                for card in section.hidden_cards:
-                    _render_search_card(card, states[card.query_id], states)
+                for card_number, card in enumerate(
+                    section.hidden_cards,
+                    start=len(section.visible_cards) + 1,
+                ):
+                    _render_search_card(
+                        card,
+                        states[card.query_id],
+                        states,
+                        position=card_number,
+                        total=total_cards,
+                    )
+
+    engine_notices: dict[str, str] = {}
+    for section in screen.sections:
+        for card in section.visible_cards + section.hidden_cards:
+            for link in card.engine_links:
+                details = tuple(
+                    item for item in (link.warning, link.block_reason_label) if item
+                )
+                if link.warning and details:
+                    engine_notices.setdefault(link.label, " · ".join(details))
+    if engine_notices:
+        st.markdown("#### Доступ до зовнішніх пошукових систем")
+        for engine_label, notice in engine_notices.items():
+            st.caption(f"{engine_label}: {notice}")
 
     st.markdown("### Стан проєкту")
     generated = dict(summary.generated_by_channel)
@@ -1372,10 +1404,10 @@ def render_manual_search_page() -> None:
     usefulness = {item.channel: item for item in summary.channel_usefulness}
     st.dataframe(pd.DataFrame([
         {
-            "Канал": channel.value,
+            "Тип запиту": channel_label(channel),
             "Згенеровано": generated[channel],
-            "Відібрано primary": retained[channel],
-            "Атрибуцій": attributed[channel],
+            "Відібрано як основні": retained[channel],
+            "Ураховано як ознаки": attributed[channel],
             "Знайдено": usefulness[channel].found,
             "Перевірено": usefulness[channel].checked,
             "Результативність": usefulness[channel].hit_rate_label,
@@ -1386,8 +1418,8 @@ def render_manual_search_page() -> None:
         f"{item.label}: {item.count}" for item in summary.engine_failures
     ))
     st.caption(
-        f"Розділів із недобором: {summary.shortfall_section_count} · "
-        "відсіви: " + (
+        f"Розділів, для яких бракує запитів: {summary.shortfall_section_count} · "
+        "Причини відсіву: " + (
             ", ".join(f"{reason}: {count}" for reason, count in summary.rejected_by_reason)
             or "немає"
         )
