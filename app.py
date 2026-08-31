@@ -788,7 +788,13 @@ def render_two_file_compare_page() -> None:
     strict_a = result.covered_tokens_a_strict / result.analyzed_tokens_a if result.analyzed_tokens_a else 0.0
     strict_b = result.covered_tokens_b_strict / result.analyzed_tokens_b if result.analyzed_tokens_b else 0.0
     metric_hits, metric_a, metric_b = st.columns(3)
-    metric_hits.metric("Знайдені фрагменти", len(accepted))
+    # Один рядок на 100 % покриття — це «збіглася вся робота», а не «знайдено
+    # одне місце». Без підпису число читається як мала знахідка.
+    matched_words = sum(segment.matched for segment in accepted)
+    metric_hits.metric(
+        "Знайдені фрагменти", len(accepted),
+        f"{matched_words} слів разом", delta_color="off",
+    )
     metric_a.metric(
         "Покриття дисертації", f"{coverage_a:.1%}",
         f"{strict_a:.1%} без нормативних", delta_color="off",

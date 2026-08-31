@@ -155,3 +155,43 @@ def test_unrelated_documents_keep_single_known_match():
 def test_off_alignment_counts_only_distant_drift():
     """Показник рахує саме віддалені знахідки, а не будь-яку перестановку."""
     assert count_off_alignment([]) == 0
+
+
+def test_long_verbatim_match_stays_one_row():
+    """
+    Суцільний збіг довший за MAX_CANDIDATE_TOKENS — один рядок, не кілька.
+
+    Область ріжеться на куски перед SequenceMatcher, але потоки опкодів
+    зшиваються назад (розділ 6.3, п. 7). Довжина навмисно перевищує межу
+    різання більш ніж удвічі, щоб швів було два, а не один.
+    """
+    long_text = " ".join(_words("речення", params.MAX_CANDIDATE_TOKENS * 2 + 500))
+    tokens = _tokens(long_text)
+    result = compare_tokens(tokens, tokens)
+    assert len(result.segments) == 1
+    segment = result.segments[0]
+    assert segment.a_start == 0
+    assert segment.a_end == len(tokens)
+    assert segment.matched == len(tokens)
+    assert segment.kind == "verbatim"
+
+
+def test_reglue_preserves_coverage():
+    """
+    Шлюз проти помилки прототипу: зшивка не має губити збіги.
+
+    Прототип склейки уронив покриття зі 100 % до 7,8 %, бо об'єднував блоки
+    конкатенацією списків замість об'єднання інтервалів.
+    """
+    tokens = _tokens(" ".join(_words("абзац", params.MAX_CANDIDATE_TOKENS * 2 + 500)))
+    result = compare_tokens(tokens, tokens)
+    assert coverage_from_segments(result.segments, "a") == len(tokens)
+    assert coverage_from_segments(result.segments, "b") == len(tokens)
+
+
+def test_seam_words_are_not_shown_twice():
+    """Перекриття кусків не повинно давати двох рядків з тим самим текстом."""
+    tokens = _tokens(" ".join(_words("пункт", params.MAX_CANDIDATE_TOKENS * 2 + 500)))
+    result = compare_tokens(tokens, tokens)
+    total_a = sum(segment.len_a for segment in result.segments)
+    assert total_a == len(tokens)

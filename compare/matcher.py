@@ -213,11 +213,13 @@ def find_candidates(
     raw_candidates = merge_candidates(
         _candidate_from_chain(chain, len(tokens_a), len(tokens_b)) for chain in chains
     )
+    # Довгу область більше не ріжемо тут: різати треба до SequenceMatcher,
+    # але зшивати назад — до групування, тому і те, і те живе всередині
+    # align_candidate_segments. Сюди повертаються цілі області.
     candidates = [
-        chunk
+        candidate
         for candidate in raw_candidates
-        for chunk in split_candidate(candidate)
-        if chunk.length >= params.MIN_CANDIDATE_TOKENS
+        if candidate.length >= params.MIN_CANDIDATE_TOKENS
     ]
     candidates.sort(
         key=lambda item: (item.seed_count / max(item.length, 1), item.length),
@@ -303,6 +305,71 @@ def _group_opcodes_by_gap(opcodes: Sequence[tuple]) -> list[list[tuple]]:
     return [list(opcodes[first:last + 1]) for first, last in bounds]
 
 
+def _stitched_opcodes(
+    candidate: Candidate,
+    tokens_a: Sequence[CompareToken],
+    tokens_b: Sequence[CompareToken],
+) -> list[tuple]:
+    """
+    Опкоди всієї області в абсолютних координатах токенів.
+
+    Довга область ріжеться на куски по ``MAX_CANDIDATE_TOKENS`` — це
+    жорсткий предел перед ``SequenceMatcher``, без нього довелося б
+    вирівнювати весь документ проти всього документа. Але потоки опкодів
+    сусідніх кусків зшиваються назад в один (розділ 6.3, п. 7): інакше
+    суцільний збіг показувався б окремим рядком на кожні 3000 слів, а
+    ``CANDIDATE_OVERLAP`` слів на кожному шві — двічі.
+
+    Шов проходить по блоку ``equal``, який перетинає межу кусків: у нього
+    обрізається початок, і обрізається симетрично з обох боків, тому
+    відповідність сторін усередині блока не втрачається.
+    """
+    stitched: list[tuple] = []
+    emitted_a = emitted_b = 0
+    for index, chunk in enumerate(split_candidate(candidate)):
+        words_a = [token.normalized for token in tokens_a[chunk.a_start:chunk.a_end]]
+        words_b = [token.normalized for token in tokens_b[chunk.b_start:chunk.b_end]]
+        opcodes = [
+            (tag, chunk.a_start + i1, chunk.a_start + i2, chunk.b_start + j1, chunk.b_start + j2)
+            for tag, i1, i2, j1, j2 in
+            SequenceMatcher(None, words_a, words_b, autojunk=False).get_opcodes()
+        ]
+        if index == 0:
+            stitched.extend(opcodes)
+        else:
+            # Хвіст попереднього куска після останнього equal — це край
+            # вікна, де вирівнювання найгірше. Віддаємо цю ділянку
+            # наступному куску, у якого вона всередині, а не з краю.
+            while stitched and stitched[-1][0] != "equal":
+                stitched.pop()
+            if stitched:
+                emitted_a, emitted_b = stitched[-1][2], stitched[-1][4]
+            stitched.extend(_resume_after_seam(opcodes, emitted_a, emitted_b))
+        if stitched:
+            emitted_a, emitted_b = max(emitted_a, stitched[-1][2]), max(emitted_b, stitched[-1][4])
+    return stitched
+
+
+def _resume_after_seam(opcodes: Sequence[tuple], emitted_a: int, emitted_b: int) -> list[tuple]:
+    """
+    Лишає з куска тільки те, що ще не випущено попереднім куском.
+
+    Відлік починається з першого блока ``equal``, який дотягується за межу
+    вже випущеного. Усе до нього лежить у перекритті й уже описане сусідом.
+    Якщо жоден ``equal`` шов не перетинає — це справжній розрив, і групування
+    нижче чесно розділить його на два рядки.
+    """
+    for position, (tag, a1, a2, b1, b2) in enumerate(opcodes):
+        if tag != "equal" or a2 <= emitted_a or b2 <= emitted_b:
+            continue
+        shift = max(emitted_a - a1, emitted_b - b1, 0)
+        if a1 + shift >= a2 or b1 + shift >= b2:
+            continue
+        head = (tag, a1 + shift, a2, b1 + shift, b2)
+        return [head, *opcodes[position + 1:]]
+    return []
+
+
 def align_candidate_segments(
     candidate: Candidate,
     tokens_a: Sequence[CompareToken],
@@ -315,13 +382,11 @@ def align_candidate_segments(
     Раніше вони склеювались в один сегмент, і в правій комірці таблиці
     опинявся текст, якого немає в лівій. Тепер кожен збіг — свій сегмент.
     """
-    words_a = [token.normalized for token in tokens_a[candidate.a_start:candidate.a_end]]
-    words_b = [token.normalized for token in tokens_b[candidate.b_start:candidate.b_end]]
-    opcodes = SequenceMatcher(None, words_a, words_b, autojunk=False).get_opcodes()
+    opcodes = _stitched_opcodes(candidate, tokens_a, tokens_b)
     return [
         segment
         for group in _group_opcodes_by_gap(opcodes)
-        if (segment := _align_group(group, words_a, words_b, tokens_a, tokens_b, candidate)) is not None
+        if (segment := _align_group(group, tokens_a, tokens_b)) is not None
     ]
 
 
@@ -337,32 +402,27 @@ def align_candidate(
 
 def _align_group(
     opcodes: Sequence[tuple],
-    words_a: Sequence[str],
-    words_b: Sequence[str],
     tokens_a: Sequence[CompareToken],
     tokens_b: Sequence[CompareToken],
-    candidate: Candidate,
 ) -> TextSegment | None:
     """
     Збирає сегмент з готової групи опкодів; fuzzy не впливає на прийняття.
 
-    Опкоди навмисно не перераховуються заново для вікна групи: інша межа
-    вікна дала б інший контекст, і всередині знову міг би зʼявитися розрив
-    довший за ``MAX_MATCH_GAP``.
+    Координати опкодів абсолютні. Опкоди навмисно не перераховуються заново
+    для вікна групи: інша межа вікна дала б інший контекст, і всередині
+    знову міг би зʼявитися розрив довший за ``MAX_MATCH_GAP``.
     """
-    a_left, b_left = opcodes[0][1], opcodes[0][3]
-    a_right, b_right = opcodes[-1][2], opcodes[-1][4]
-    len_a, len_b = a_right - a_left, b_right - b_left
-    a_start = candidate.a_start + a_left
-    b_start = candidate.b_start + b_left
+    a_start, b_start = opcodes[0][1], opcodes[0][3]
+    a_end, b_end = opcodes[-1][2], opcodes[-1][4]
+    len_a, len_b = a_end - a_start, b_end - b_start
 
     a_operations = ["replace"] * len_a
     b_operations = ["replace"] * len_b
     matched = fuzzy_matched = longest = 0
     changed = False
     for tag, i1, i2, j1, j2 in opcodes:
-        ai1, ai2 = i1 - a_left, i2 - a_left
-        bj1, bj2 = j1 - b_left, j2 - b_left
+        ai1, ai2 = i1 - a_start, i2 - a_start
+        bj1, bj2 = j1 - b_start, j2 - b_start
         if tag == "equal":
             size = i2 - i1
             matched += size
@@ -371,7 +431,10 @@ def _align_group(
             b_operations[bj1:bj2] = ["equal"] * size
         elif tag == "replace":
             changed = True
-            pairs = _fuzzy_pairs(words_a[i1:i2], words_b[j1:j2])
+            pairs = _fuzzy_pairs(
+                [token.normalized for token in tokens_a[i1:i2]],
+                [token.normalized for token in tokens_b[j1:j2]],
+            )
             for a_index, b_index in pairs:
                 a_operations[ai1 + a_index] = "fuzzy"
                 b_operations[bj1 + b_index] = "fuzzy"
@@ -397,10 +460,10 @@ def _align_group(
     )
     if not passes_low:
         return None
-    window_a = list(words_a[a_left:a_right])
-    window_b = list(words_b[b_left:b_right])
-    raw_a = " ".join(token.raw for token in tokens_a[a_start:a_start + len_a])
-    raw_b = " ".join(token.raw for token in tokens_b[b_start:b_start + len_b])
+    window_a = [token.normalized for token in tokens_a[a_start:a_end]]
+    window_b = [token.normalized for token in tokens_b[b_start:b_end]]
+    raw_a = " ".join(token.raw for token in tokens_a[a_start:a_end])
+    raw_b = " ".join(token.raw for token in tokens_b[b_start:b_end])
     boilerplate_phrases = (
         "дисертація містить результати власних досліджень",
         "на здобуття наукового ступеня",
