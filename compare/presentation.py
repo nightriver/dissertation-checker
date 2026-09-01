@@ -13,6 +13,50 @@ MATCH_COLOR = "#fff59d"
 DIFF_COLOR = "#b2ebf2"
 MAX_INLINE_SEGMENT_TOKENS = 120
 
+# Ширина, нижче якої дві колонки стають однією.
+STACK_BREAKPOINT_PX = 700
+
+# Висота власної шапки Streamlit. Вона непрозора і перекриває верх
+# контейнера прокрутки (section.stMain) рівно на стільки; з top:0 липка
+# шапка таблиці ховалася б під нею. Заміряно в браузері, не вгадано.
+STICKY_TOP_REM = 3.75
+
+SIDE_A_TITLE = "Перевірювана дисертація"
+SIDE_B_TITLE = "Ймовірне джерело"
+
+# Службові поля (номер, місце, тип, показники) живуть у шапці рядка, а не
+# окремими колонками. Через них таблиця раніше вимагала min-width 1050px,
+# і на вузькому екрані зʼявлялася горизонтальна прокрутка, повзунок якої
+# лежав під усіма знахідками — тобто був недосяжним.
+COMPARE_STYLE = (
+    "<style>"
+    ".compare-findings{margin:.5rem 0 1rem;font-size:.92rem;}"
+    ".compare-head,.compare-pair{display:grid;grid-template-columns:1fr 1fr;"
+    "gap:1px;background:rgba(128,128,128,.35);}"
+    f".compare-head{{position:sticky;top:{STICKY_TOP_REM}rem;z-index:3;font-weight:600;"
+    "border:1px solid rgba(128,128,128,.35);}"
+    ".compare-head>div,.compare-side{background:var(--background-color,#fff);padding:.55rem;}"
+    ".compare-find{border:1px solid rgba(128,128,128,.35);border-top:none;}"
+    ".compare-meta{display:flex;flex-wrap:wrap;gap:.15rem .9rem;align-items:baseline;"
+    "padding:.4rem .55rem;background:rgba(128,128,128,.10);"
+    "border-bottom:1px solid rgba(128,128,128,.35);}"
+    ".compare-num{font-weight:700;}"
+    ".compare-note{opacity:.75;}"
+    # Довгий нерозривний токен (шістнадцяткові дампи, ідентифікатори з
+    # лістингів коду) інакше сам розпирає колонку і повертає прокрутку.
+    ".compare-side{line-height:1.45;overflow-wrap:anywhere;}"
+    ".compare-findings details summary{cursor:pointer}"
+    ".compare-full-fragment{margin-top:.6rem;padding-top:.6rem;border-top:1px dashed #aaa;}"
+    f"@media (max-width:{STACK_BREAKPOINT_PX}px){{"
+    ".compare-head{display:none;}"
+    ".compare-pair{grid-template-columns:1fr;}"
+    # У стеку липка шапка схована, тому кожна половина підписує себе сама.
+    ".compare-side::before{content:attr(data-side);display:block;font-weight:600;"
+    "margin-bottom:.35rem;opacity:.8;}"
+    "}"
+    "</style>"
+)
+
 
 def format_physical_pages(tokens: Sequence[CompareToken], start: int, end: int) -> str:
     pages = sorted({
@@ -170,8 +214,10 @@ def render_comparison_table(
             labels.append("ймовірно нормативний")
         if segment.possibly_boilerplate:
             labels.append("типова формула")
-        label_html = f"<small>{html.escape(' · '.join(labels))}</small>" if labels else ""
-        kind_html = kind + (f"<br>{label_html}" if label_html else "")
+        label_html = (
+            f'<span class="compare-note">{html.escape(" · ".join(labels))}</span>'
+            if labels else ""
+        )
         # Прибрані дедуплікацією повтори лишаються видимими: п'ять копій
         # одного абзацу — це сигнал експертові, а не сміття.
         repeats = (
@@ -183,19 +229,18 @@ def render_comparison_table(
             f"схожість {segment.similarity:.0%}{repeats}"
         )
         rows.append(
-            f"<tr><td>{number}</td><td>{left}</td><td>{right}</td><td>{place}</td>"
-            f"<td>{kind_html}</td><td>{indicators}</td></tr>"
+            '<article class="compare-find">'
+            f'<header class="compare-meta"><span class="compare-num">{number}</span>'
+            f"<span>{place}</span><span>{kind}</span><span>{indicators}</span>"
+            f"{label_html}</header>"
+            '<div class="compare-pair">'
+            f'<div class="compare-side" data-side="{html.escape(SIDE_A_TITLE)}">{left}</div>'
+            f'<div class="compare-side" data-side="{html.escape(SIDE_B_TITLE)}">{right}</div>'
+            "</div></article>"
         )
     return (
-        '<style>'
-        '.compare-table{overflow-x:auto;margin:0.5rem 0 1rem;}'
-        '.compare-table table{border-collapse:collapse;min-width:1050px;width:100%;font-size:.92rem;}'
-        '.compare-table th,.compare-table td{border:1px solid rgba(128,128,128,.35);padding:.55rem;vertical-align:top;line-height:1.45;}'
-        '.compare-table th{position:sticky;top:0;background:var(--background-color,#fff);text-align:left;}'
-        '.compare-table th:nth-child(1){width:3rem}.compare-table th:nth-child(2),.compare-table th:nth-child(3){width:32%;}'
-        '.compare-table details summary{cursor:pointer}.compare-full-fragment{margin-top:.6rem;padding-top:.6rem;border-top:1px dashed #aaa;}'
-        '</style><div class="compare-table"><table><thead><tr><th>№</th>'
-        '<th>Перевірювана дисертація</th><th>Ймовірне джерело</th><th>Місце</th>'
-        '<th>Тип</th><th>Показники</th></tr></thead><tbody>'
-        + "".join(rows) + "</tbody></table></div>"
+        COMPARE_STYLE
+        + '<div class="compare-findings"><div class="compare-head">'
+        f"<div>{html.escape(SIDE_A_TITLE)}</div><div>{html.escape(SIDE_B_TITLE)}</div>"
+        "</div>" + "".join(rows) + "</div>"
     )

@@ -3,6 +3,9 @@ from compare.normalize import tokenize_lines
 from compare.presentation import (
     DIFF_COLOR,
     MATCH_COLOR,
+    SIDE_A_TITLE,
+    SIDE_B_TITLE,
+    STACK_BREAKPOINT_PX,
     format_physical_pages,
     render_comparison_table,
     render_fragment_html,
@@ -44,8 +47,38 @@ def test_table_contains_legend_colors_and_escaped_cells():
     assert MATCH_COLOR in table
     assert DIFF_COLOR in table
     assert "змінений" in table
-    assert "overflow-x:auto" in table
-    assert "змінений<br></td>" not in table
+    # Без міток рядок не тягне за собою порожній підпис.
+    assert '<span class="compare-note">' not in table
+
+
+def test_table_never_scrolls_horizontally():
+    """
+    Службові поля живуть у шапці рядка, тому ширина не фіксується.
+
+    Повзунок горизонтальної прокрутки лежав під усіма знахідками і на
+    довгій таблиці був недосяжним; тепер прокручуватись просто нічому.
+    """
+    tokens = tokenize_lines(_lines(" ".join(f"слово{index}" for index in range(30))))
+    lines = _lines(" ".join(f"слово{index}" for index in range(30)))
+    segment = compare_tokens(tokens, tokens).segments[0]
+    table = render_comparison_table([segment], lines, tokens, lines, tokens)
+    assert "overflow-x" not in table
+    assert "min-width" not in table
+    # Довгий нерозривний токен не має розпирати колонку.
+    assert "overflow-wrap:anywhere" in table
+
+
+def test_table_head_is_sticky_and_stacks_on_narrow_screen():
+    tokens = tokenize_lines(_lines(" ".join(f"слово{index}" for index in range(30))))
+    lines = _lines(" ".join(f"слово{index}" for index in range(30)))
+    segment = compare_tokens(tokens, tokens).segments[0]
+    table = render_comparison_table([segment], lines, tokens, lines, tokens)
+    assert "position:sticky" in table
+    assert f"@media (max-width:{STACK_BREAKPOINT_PX}px)" in table
+    # У стеку шапка схована, тому кожна половина підписана сама.
+    assert f'data-side="{SIDE_A_TITLE}"' in table
+    assert f'data-side="{SIDE_B_TITLE}"' in table
+    assert "content:attr(data-side)" in table
 
 
 def test_pdf_word_per_line_is_rendered_horizontally():
