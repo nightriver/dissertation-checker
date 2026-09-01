@@ -152,9 +152,9 @@ def test_gate_loaded_screen_shows_all_seven_blocks_and_fallbacks() -> None:
     markdown = "\n".join(item.value for item in app.markdown)
     for heading in (
         "Карта розділів",
-        "Ознаки перекладу (K)",
+        "Ознаки перекладу",
         "Рік і мови бібліографії",
-        "K за розділами",
+        "Ознаки перекладу за розділами",
         "Запити за розділами",
         "Стан проєкту",
     ):
@@ -170,9 +170,17 @@ def test_gate_loaded_screen_shows_all_seven_blocks_and_fallbacks() -> None:
 def test_gate_screen_keeps_zero_channel_and_engine_counters_visible() -> None:
     app = _run_app_with_pdf()
     frames = [item.value for item in app.get("dataframe")]
-    usefulness = next(frame for frame in frames if "Канал" in frame.columns)
-    assert set(usefulness["Канал"]) == {"A", "N", "B", "K", "T", "L"}
-    assert usefulness.loc[usefulness["Канал"] == "N", "Перевірено"].iloc[0] == 0
+    usefulness = next(frame for frame in frames if "Тип запиту" in frame.columns)
+    assert set(usefulness["Тип запиту"]) == {
+        "Авторське положення",
+        "Наукова новизна",
+        "Емпіричні дані",
+        "Ознаки перекладу",
+        "Рідкісна словоформа",
+        "Довге змістовне речення",
+    }
+    novelty_row = usefulness["Тип запиту"] == "Наукова новизна"
+    assert usefulness.loc[novelty_row, "Перевірено"].iloc[0] == 0
     captions = "\n".join(item.value for item in app.caption)
     assert "Google: 0" in captions and "НРАТ: 0" in captions
 
