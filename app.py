@@ -54,6 +54,7 @@ from compare.prepare import prepare_document_for_comparison
 from compare.presentation import format_physical_pages, render_comparison_table
 from parser.searchdoc import NoTextLayerError
 from search.engines import ENGINES
+from search.metadata import DissertationMetadata, extract_search_metadata
 from search.presentation import STATUS_LABELS, channel_label
 from search.state import ImportRejected, parse_project
 from search.types import SectionKind, SectionOverride, SectionOverrideAction
@@ -1209,11 +1210,31 @@ def render_manual_search_page() -> None:
         st.session_state.search_query_states = build_initial_query_states(result)
         st.session_state.search_section_overrides = ()
         st.session_state.search_unmatched = ()
+        st.session_state.search_metadata = extract_search_metadata(result.document)
 
     result = st.session_state.search_result
     states = st.session_state.search_query_states
+    metadata = st.session_state.get("search_metadata") or extract_search_metadata(result.document)
+    st.session_state.search_metadata = metadata
+    st.markdown(f"### {metadata.title or 'Назву роботи не розпізнано'}")
+    st.caption(f"{metadata.author or 'Автор не розпізнаний'} · {metadata.year or 'Рік не розпізнано'}")
+    with st.expander("Редагувати дані роботи"):
+        with st.form("search_metadata_form"):
+            author = st.text_input("Автор", value=metadata.author or "")
+            title = st.text_input("Назва роботи", value=metadata.title or "")
+            year = st.number_input(
+                "Рік роботи", min_value=1900, max_value=datetime.datetime.now().year + 1,
+                value=metadata.year, step=1,
+            )
+            if st.form_submit_button("Застосувати"):
+                st.session_state.search_metadata = DissertationMetadata(
+                    author=author.strip() or None,
+                    title=title.strip() or None,
+                    year=int(year) if year else None,
+                )
+                st.rerun()
     today = datetime.date.today()
-    screen = build_search_screen(result, states, ENGINES, today)
+    screen = build_search_screen(result, states, ENGINES, today, metadata=metadata)
     summary = screen.summary
 
     st.info(

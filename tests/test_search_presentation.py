@@ -13,6 +13,7 @@ from search.presentation import (
     rejection_reason_label,
     render_highlighted_text,
 )
+from search.metadata import DissertationMetadata
 from search.types import Channel
 
 
@@ -67,3 +68,16 @@ def test_missing_paragraph_does_not_create_a_short_fragment_fallback(paragraph):
     links = _assistant_links(paragraph, has_calque=False)
     assert len(links) == 2
     assert all(link.url is None for link in links)
+
+
+def test_ukrainian_assistant_prompt_includes_checked_work_metadata() -> None:
+    link = _assistant_links(
+        "Повний абзац.",
+        has_calque=False,
+        metadata=DissertationMetadata("Петренко Іван", "Назва роботи", 2022),
+    )[0]
+    prompt = parse_qs(urlsplit(link.url).query)["q"][0]
+    assert "Автор: Петренко Іван" in prompt
+    assert "Дисертація: Назва роботи" in prompt
+    assert "Рік роботи: 2022" in prompt
+    assert prompt.endswith("\n\nПовний абзац.")

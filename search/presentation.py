@@ -25,6 +25,7 @@ from search.calques import (
 )
 from search.engines import resolve_engine_link
 from search.language import bibliography_language_stats
+from search.metadata import DissertationMetadata
 from search.normalization import map_normalized_offsets, normalize_text
 from search.state import QueryState, is_counted_as_checked
 from search.types import (
@@ -378,10 +379,11 @@ def _ru_reference_reason(query: SearchQuery, document: SearchDocument | None) ->
 
 
 def _assistant_links(
-    paragraph: str | None, *, has_calque: bool,
+    paragraph: str | None, *, has_calque: bool, metadata: DissertationMetadata | None = None,
 ) -> tuple[AssistantLinkView, ...]:
     """Передати повний сирий абзац у промпт без лімітів короткого запиту."""
 
+    metadata = metadata or DissertationMetadata()
     instruction = (
         "Найди возможный русскоязычный оригинал этого украинского текста. "
         "Ищи дословные, переведенные и слегка перефразированные совпадения "
@@ -389,7 +391,11 @@ def _assistant_links(
         if has_calque else
         "Знайди можливе джерело цього українського тексту. "
         "Шукай дослівні та злегка перефразовані збіги у всіх типах джерел. "
-        "Покажи фрагменти, що збігаються, та наведи посилання."
+        "Виключи роботу, що перевіряється, її автореферат, копії, а також публікації цього ж автора.\n"
+        f"Автор: {metadata.author or 'не вказано'}\n"
+        f"Дисертація: {metadata.title or 'не вказано'}\n"
+        f"Рік роботи: {metadata.year or 'не вказано'}\n"
+        "Шукай більш ранні незалежні джерела. Покажи фрагменти, що збігаються, дати та посилання."
     )
     encoded = (
         quote(f"{instruction}\n\n{paragraph}", safe="")
@@ -411,6 +417,7 @@ def build_query_card(
     today: date,
     *,
     document: SearchDocument | None = None,
+    metadata: DissertationMetadata | None = None,
 ) -> QueryCardView:
     """Побудувати повну чисту модель картки з доказами та діями (§17)."""
 
@@ -490,7 +497,7 @@ def build_query_card(
             StatusActionView(code, label, code == state.status)
             for code, label in STATUS_LABELS.items()
         ),
-        assistant_links=_assistant_links(block_text, has_calque=bool(indicators)),
+        assistant_links=_assistant_links(block_text, has_calque=bool(indicators), metadata=metadata),
     )
 
 

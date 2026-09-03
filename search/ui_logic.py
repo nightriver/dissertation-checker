@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 
 from parser.searchdoc import parse_search_document
+from search.metadata import DissertationMetadata
 from search.presentation import QueryCardView, SearchSummaryView, build_query_card, build_search_summary
 from search.query_builder import build_search_result
 from search.state import (
@@ -159,6 +160,7 @@ def build_search_screen(
     today: date,
     *,
     visible_limit: int = DEFAULT_VISIBLE_PER_SECTION,
+    metadata: DissertationMetadata | None = None,
 ) -> SearchScreenView:
     """Побудувати секції «перші N + решта» та загальне зведення (§17)."""
 
@@ -177,6 +179,7 @@ def build_search_screen(
                 engines,
                 today,
                 document=result.document,
+                metadata=metadata,
             )
             for query in queries
         )

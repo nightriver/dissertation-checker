@@ -64,6 +64,7 @@ SEARCH_SCOPED_KEYS: tuple[str, ...] = (
     "search_import_result",
     "search_section_overrides",
     "search_unmatched",
+    "search_metadata",
 )
 _SEARCH_KEY = "current_search_file_key"
 
