@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import math
 
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-from table_highlighter.zones import CellZones, paragraph_text
+from table_highlighter.formatting import set_run_font
+from table_highlighter.zones import paragraph_text
 
 
 HIGHLIGHT = {"match": "yellow", "diff": "cyan"}
@@ -29,36 +29,8 @@ def _run_text(run) -> str:
     return "".join(element.text or "" for element in run.findall(qn("w:t")))
 
 
-def _rpr(run):
-    properties = run.find(qn("w:rPr"))
-    if properties is None:
-        properties = OxmlElement("w:rPr")
-        run.insert(0, properties)
-    return properties
-
-
 def _set_font(run, font_name: str, font_size: int, status: str | None = None) -> None:
-    properties = _rpr(run)
-    fonts = properties.find(qn("w:rFonts"))
-    if fonts is None:
-        fonts = OxmlElement("w:rFonts")
-        properties.append(fonts)
-    for name in ("ascii", "hAnsi", "eastAsia", "cs"):
-        fonts.set(qn(f"w:{name}"), font_name)
-    size = properties.find(qn("w:sz"))
-    if size is None:
-        size = OxmlElement("w:sz")
-        properties.append(size)
-    size.set(qn("w:val"), str(font_size * 2))
-    highlight = properties.find(qn("w:highlight"))
-    if status is None:
-        if highlight is not None:
-            properties.remove(highlight)
-    else:
-        if highlight is None:
-            highlight = OxmlElement("w:highlight")
-            properties.append(highlight)
-        highlight.set(qn("w:val"), HIGHLIGHT[status])
+    set_run_font(run, font_name, font_size, HIGHLIGHT.get(status))
 
 
 def _clone_run(
@@ -126,31 +98,3 @@ def style_text_paragraph(
                     preserve_nontext=offset == 0,
                 ),
             )
-
-
-def _estimate_lines(text: str, chars_per_line: float) -> int:
-    return max(1, math.ceil(len(text) / chars_per_line))
-
-
-def _cell_chars_per_line(cell, font_size: int) -> float:
-    width_pt = (cell.width / 12700) if cell.width else 400.0
-    return max(1.0, width_pt / (font_size * 0.6))
-
-
-def _leading_lines(zones: CellZones, chars_per_line: float) -> int:
-    total = 0
-    for item in zones.paragraphs:
-        if item.zone == "text":
-            break
-        total += _estimate_lines(paragraph_text(item.paragraph), chars_per_line)
-    return total
-
-
-def add_alignment_padding(left_cell, right_cell, left_zones: CellZones, right_zones: CellZones, font_size: int) -> int:
-    """Додає порожні абзаци перед лівою коміркою для вирівнювання маркерів."""
-    difference = _leading_lines(right_zones, _cell_chars_per_line(right_cell, font_size)) - _leading_lines(
-        left_zones, _cell_chars_per_line(left_cell, font_size)
-    )
-    for _ in range(max(0, difference)):
-        left_cell._tc.insert(1, OxmlElement("w:p"))
-    return max(0, difference)

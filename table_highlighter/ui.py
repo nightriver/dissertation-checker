@@ -9,7 +9,7 @@ from table_highlighter.types import HighlightOptions
 from ui_helpers import file_sha256
 
 
-_RESULT_KEY = "table_highlight_result"
+_RESULT_KEY = "table_highlight_result_v2"
 _SOURCE_KEY = "table_highlight_source_sha256"
 _OPTIONS_KEY = "table_highlight_result_options"
 
@@ -79,6 +79,7 @@ def render_table_highlight_page() -> None:
         )
         font_name = st.selectbox("Шрифт", ["Calibri", "Times New Roman", "Arial"], key="table_highlight_font")
         font_size = st.number_input("Розмір шрифту (pt)", 8, 16, 14, step=1, key="table_highlight_font_size")
+        st.caption("У всьому документі буде обраний шрифт і розмір, чорний текст без жирності, курсиву й підкреслення. URL залишаться активними. Кольором виділяються лише результати порівняння.")
         st.info("Вирівнювання маркерів сторінок увімкнено завжди: воно потрібне для зіставлення фрагментів експертом.")
 
     options = HighlightOptions(
@@ -123,7 +124,7 @@ def render_table_highlight_page() -> None:
     columns[1].metric("Пропущено рядків", stats.skipped_rows)
     columns[2].metric("Точні збіги", stats.exact_words)
     columns[3].metric("Нечіткі збіги", stats.fuzzy_words)
-    st.caption(f"Додано порожніх абзаців для вирівнювання маркерів: {stats.padding_paragraphs}.")
+    st.caption(f"Вирівняно пар маркерів сторінок: {stats.aligned_rows}.")
     if result.warnings:
         with st.expander(f"Попередження ({len(result.warnings)})", expanded=True):
             for warning in result.warnings:

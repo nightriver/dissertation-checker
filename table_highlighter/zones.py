@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from docx.oxml.ns import qn
 
 
-PAGE_MARKER_RE = re.compile(r"^\s*[Сс]\.\s*\d+[\d\s\-–—]*\s*$")
+PAGE_MARKER_RE = re.compile(r"^\s*[СсCc]\.\s*\d+[\d\s\-–—]*\s*$")
 COMMENT_RE = re.compile(r"^(?:\d+\.|Посилання на:|Там само$)")
 
 

@@ -8,6 +8,8 @@ from zipfile import BadZipFile, ZipFile, is_zipfile
 
 from docx import Document
 
+from table_highlighter.formatting import normalize_document
+from table_highlighter.layout import align_page_markers, logical_rows, supports_alignment
 from table_highlighter.matcher import align, left_statuses, right_statuses
 from table_highlighter.types import (
     DocumentValidationError,
@@ -18,7 +20,6 @@ from table_highlighter.types import (
     TableSummary,
 )
 from table_highlighter.writer import (
-    add_alignment_padding,
     style_plain_paragraph,
     style_text_paragraph,
     supports_highlighting,
@@ -50,7 +51,7 @@ def inspect_tables(data: bytes) -> tuple[TableSummary, ...]:
     """Повертає доступні таблиці без будь-яких змін документа."""
     document = _load_document(data)
     return tuple(
-        TableSummary(index=index, row_count=len(table.rows), two_column_rows=sum(len(row.cells) == 2 for row in table.rows))
+        TableSummary(index=index, row_count=len(logical_rows(table)), two_column_rows=sum(len(item.row.cells) == 2 for item in logical_rows(table)))
         for index, table in enumerate(document.tables)
     )
 
@@ -78,16 +79,23 @@ def process_document(data: bytes, options: HighlightOptions, progress_callback=N
         raise DocumentValidationError("Обраної таблиці не існує в документі.")
 
     table = document.tables[options.table_index]
+    normalize_document(document, options.font_name, options.font_size)
     warnings: list[RowWarning] = []
     stats = HighlightStats()
-    rows = tuple(_row_range(len(table.rows), options))
+    records = logical_rows(table)
+    rows = tuple(_row_range(len(records), options))
     for position, row_index in enumerate(rows, 1):
-        row = table.rows[row_index]
+        logical = records[row_index]
+        row = logical.row
         number = row_index + 1
         if progress_callback:
             progress_callback(position, len(rows), number)
         if len(row.cells) != 2 or row.cells[0]._tc is row.cells[1]._tc:
             warnings.append(_warning(number, "Рядок не має двох окремих комірок."))
+            stats = replace(stats, skipped_rows=stats.skipped_rows + 1)
+            continue
+        if not supports_alignment(row):
+            warnings.append(_warning(number, "Рядок містить злиті комірки; підсвічування та вирівнювання пропущено."))
             stats = replace(stats, skipped_rows=stats.skipped_rows + 1)
             continue
         left_cell, right_cell = row.cells
@@ -111,12 +119,11 @@ def process_document(data: bytes, options: HighlightOptions, progress_callback=N
             if not supports_highlighting(item.paragraph)
         ]
         if unsupported:
-            warnings.append(_warning(number, "Порівнювана зона містить непідтримуваний об'єкт Word; рядок збережено без змін."))
+            warnings.append(_warning(number, "Порівнювана зона містить непідтримуваний об'єкт Word; текст збережено, підсвічування та вирівнювання пропущено."))
             stats = replace(stats, skipped_rows=stats.skipped_rows + 1)
             continue
 
         alignment = align(left.text_paragraphs, right.text_paragraphs, options.threshold, options.relax_short_words)
-        padding = add_alignment_padding(left_cell, right_cell, left, right, options.font_size)
         for item in left.paragraphs:
             if item.zone == "text":
                 style_text_paragraph(item.paragraph, left_statuses(alignment)[item.index], options.font_name, options.font_size)
@@ -127,12 +134,13 @@ def process_document(data: bytes, options: HighlightOptions, progress_callback=N
                 style_text_paragraph(item.paragraph, right_statuses(alignment)[item.index], options.font_name, options.font_size)
             else:
                 style_plain_paragraph(item.paragraph, options.font_name, options.font_size)
+        align_page_markers(logical, left, right, options.font_name, options.font_size)
         stats = replace(
             stats,
             processed_rows=stats.processed_rows + 1,
             exact_words=stats.exact_words + alignment.exact_words,
             fuzzy_words=stats.fuzzy_words + alignment.fuzzy_words,
-            padding_paragraphs=stats.padding_paragraphs + padding,
+            aligned_rows=stats.aligned_rows + 1,
         )
 
     output = io.BytesIO()

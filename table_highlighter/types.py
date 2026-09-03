@@ -29,7 +29,7 @@ class TableSummary:
 
 @dataclass(frozen=True)
 class RowWarning:
-    """Причина, через яку рядок залишено без змін."""
+    """Причина пропуску підсвічування або вирівнювання рядка."""
 
     row_number: int
     message: str
@@ -43,7 +43,7 @@ class HighlightStats:
     skipped_rows: int = 0
     exact_words: int = 0
     fuzzy_words: int = 0
-    padding_paragraphs: int = 0
+    aligned_rows: int = 0
 
 
 @dataclass(frozen=True)
