@@ -1,12 +1,14 @@
 """Малі модульні тести безпечного форматування PLAN_SEARCH.md §17."""
 
 from dataclasses import FrozenInstanceError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from search.presentation import (
     CopyFieldView,
     STATUS_LABELS,
+    _assistant_links,
     channel_label,
     rejection_reason_label,
     render_highlighted_text,
@@ -47,3 +49,21 @@ def test_internal_channel_codes_are_rendered_as_plain_ukrainian() -> None:
     assert rejection_reason_label("diversity_limit") == (
         "обмеження різноманітності запитів"
     )
+
+
+@pytest.mark.parametrize("has_calque", [False, True])
+def test_assistant_prompt_preserves_long_paragraph_and_special_characters(has_calque):
+    paragraph = 'Український текст: «цитата» & q=інше + 100% #фрагмент <тег>\n' * 60
+    for link in _assistant_links(paragraph, has_calque=has_calque):
+        url = urlsplit(link.url)
+        assert not url.fragment
+        params = parse_qs(url.query)
+        assert set(params) == {"q"}
+        assert params["q"][0].split("\n\n", 1)[1] == paragraph
+
+
+@pytest.mark.parametrize("paragraph", [None, "", " \n "])
+def test_missing_paragraph_does_not_create_a_short_fragment_fallback(paragraph):
+    links = _assistant_links(paragraph, has_calque=False)
+    assert len(links) == 2
+    assert all(link.url is None for link in links)

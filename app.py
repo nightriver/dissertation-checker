@@ -1037,6 +1037,21 @@ def _render_search_card(card, state, states, *, position: int, total: int) -> No
                     width="stretch",
                 )
 
+        assistant_columns = st.columns(2)
+        for column, link in zip(assistant_columns, card.assistant_links):
+            with column:
+                st.link_button(
+                    link.label,
+                    link.url or "",
+                    key=f"search_assistant_{card.query_id}_{link.label.lower()}",
+                    help=(
+                        "Пошук джерела за повним абзацом у новій вкладці."
+                        if link.url else "Повний абзац недоступний."
+                    ),
+                    disabled=link.url is None,
+                    width="stretch",
+                )
+
         if card.block_text is not None and st.checkbox(
             "Показати повний абзац",
             key=f"search_full_block_{card.query_id}",

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -23,27 +24,28 @@ APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 
 HEADING_TEXT = "РОЗДІЛ 1"
 BODY_TEXT = (
+    "Початковий контекст. "
     "Ми пропонуємо, на нашу думку, важливе рішення для реформування "
-    "вітчизняного законодавства."
+    "вітчизняного законодавства. Завершальний контекст."
 )
 
 
-def _build_single_section_pdf_bytes() -> bytes:
+def _build_single_section_pdf_bytes(body_text: str = BODY_TEXT) -> bytes:
     doc = fitz.open()
     page = doc.new_page()
-    html = f"<p>{HEADING_TEXT}</p><p>{BODY_TEXT}</p>"
+    html = f"<p>{HEADING_TEXT}</p><p>{body_text}</p>"
     page.insert_htmlbox(fitz.Rect(72, 72, 500, 300), html)
     data = doc.tobytes()
     doc.close()
     return data
 
 
-def _run_with_uploaded_pdf() -> AppTest:
+def _run_with_uploaded_pdf(body_text: str = BODY_TEXT) -> AppTest:
     app = AppTest.from_file(APP_PATH)
     app.query_params["mode"] = "search"
     app.run(timeout=30)
     uploader = app.get("file_uploader")[0]
-    uploader.upload("dissertation.pdf", _build_single_section_pdf_bytes(), "application/pdf")
+    uploader.upload("dissertation.pdf", _build_single_section_pdf_bytes(body_text), "application/pdf")
     app.run(timeout=30)
     return app
 
@@ -87,3 +89,37 @@ def test_main_navigation_still_links_back_from_the_search_screen():
     app = _run_with_uploaded_pdf()
     markdown_text = "\n".join(md.value for md in app.markdown)
     assert 'href="?"' in markdown_text
+
+
+@pytest.mark.parametrize("body_text,instruction", [
+    (BODY_TEXT,
+     "Знайди можливе джерело цього українського тексту. "
+     "Шукай дослівні та злегка перефразовані збіги у всіх типах джерел. "
+     "Покажи фрагменти, що збігаються, та наведи посилання."),
+    (BODY_TEXT.replace("вітчизняного", "діючого"),
+     "Найди возможный русскоязычный оригинал этого украинского текста. "
+     "Ищи дословные, переведенные и слегка перефразированные совпадения "
+     "во всех типах источников. Покажи совпадающие фрагменты и дай ссылки."),
+], ids=["ordinary", "calque"])
+def test_assistant_buttons_send_full_paragraph_with_matching_prompt(body_text, instruction):
+    app = _run_with_uploaded_pdf(body_text)
+    assert not app.exception
+    result = app.session_state["search_result"]
+    assert result.queries
+    links = [link for link in app.get("link_button") if link.label in {"ChatGPT", "Perplexity"}]
+    assert len(links) == 2 * len(result.queries)
+    for query in result.queries:
+        paragraph = next(block.raw_text for block in result.document.blocks if block.block_id == query.block_id)
+        assert len(paragraph) > len(query.donor_text)
+        assert "Початковий контекст." in paragraph
+        assert "Завершальний контекст." in paragraph
+        for label, endpoint in (
+            ("ChatGPT", "https://chatgpt.com/"),
+            ("Perplexity", "https://www.perplexity.ai/search"),
+        ):
+            key = f"search_assistant_{query.query_id}_{label.lower()}"
+            link = next(item for item in links if item.proto.id.endswith(key))
+            assert not link.proto.disabled
+            url = urlsplit(link.proto.url)
+            assert f"{url.scheme}://{url.netloc}{url.path}" == endpoint
+            assert parse_qs(url.query) == {"q": [f"{instruction}\n\n{paragraph}"]}

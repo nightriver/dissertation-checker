@@ -14,6 +14,7 @@ import html
 import re
 from dataclasses import dataclass
 from datetime import date
+from urllib.parse import quote
 
 from search.calques import (
     collapse_components,
@@ -151,6 +152,12 @@ class EngineLinkView:
 
 
 @dataclass(frozen=True)
+class AssistantLinkView:
+    label: str
+    url: str | None
+
+
+@dataclass(frozen=True)
 class CalqueIndicatorView:
     rule_id: str
     tier: int
@@ -193,6 +200,7 @@ class QueryCardView:
     failed_engines: tuple[str, ...]
     copy_fields: tuple[CopyFieldView, ...]
     status_actions: tuple[StatusActionView, ...]
+    assistant_links: tuple[AssistantLinkView, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -369,6 +377,33 @@ def _ru_reference_reason(query: SearchQuery, document: SearchDocument | None) ->
     return None
 
 
+def _assistant_links(
+    paragraph: str | None, *, has_calque: bool,
+) -> tuple[AssistantLinkView, ...]:
+    """Передати повний сирий абзац у промпт без лімітів короткого запиту."""
+
+    instruction = (
+        "Найди возможный русскоязычный оригинал этого украинского текста. "
+        "Ищи дословные, переведенные и слегка перефразированные совпадения "
+        "во всех типах источников. Покажи совпадающие фрагменты и дай ссылки."
+        if has_calque else
+        "Знайди можливе джерело цього українського тексту. "
+        "Шукай дослівні та злегка перефразовані збіги у всіх типах джерел. "
+        "Покажи фрагменти, що збігаються, та наведи посилання."
+    )
+    encoded = (
+        quote(f"{instruction}\n\n{paragraph}", safe="")
+        if paragraph and paragraph.strip() else None
+    )
+    return tuple(
+        AssistantLinkView(label, f"{base_url}{encoded}" if encoded is not None else None)
+        for label, base_url in (
+            ("ChatGPT", "https://chatgpt.com/?q="),
+            ("Perplexity", "https://www.perplexity.ai/search?q="),
+        )
+    )
+
+
 def build_query_card(
     query: SearchQuery,
     state: QueryState,
@@ -455,6 +490,7 @@ def build_query_card(
             StatusActionView(code, label, code == state.status)
             for code, label in STATUS_LABELS.items()
         ),
+        assistant_links=_assistant_links(block_text, has_calque=bool(indicators)),
     )
 
 
