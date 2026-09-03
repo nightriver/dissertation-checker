@@ -48,6 +48,7 @@ from ui_helpers import (
     has_usable_text_lines,
     validate_search_upload,
     reset_search_scoped_state,
+    is_table_highlight_mode,
 )
 from compare.matcher import compare_documents, count_off_alignment
 from compare.prepare import prepare_document_for_comparison
@@ -189,6 +190,7 @@ APP_SECTIONS = (
     ("bibliography", "Перевірка джерел", "?"),
     ("search", "Пошук джерел вручну", "?mode=search"),
     ("compare", "Порівняння двох робіт", "?mode=compare"),
+    ("table-highlight", "Підсвічування таблиці", "?mode=table-highlight"),
 )
 
 
@@ -1516,6 +1518,8 @@ if is_compare_mode(st.query_params):
     active_section = "compare"
 elif is_search_mode(st.query_params):
     active_section = "search"
+elif is_table_highlight_mode(st.query_params):
+    active_section = "table-highlight"
 
 render_main_navigation(active_section)
 
@@ -1525,6 +1529,12 @@ if active_section == "compare":
 
 if active_section == "search":
     render_manual_search_page()
+    st.stop()
+
+if active_section == "table-highlight":
+    from table_highlighter.ui import render_table_highlight_page
+
+    render_table_highlight_page()
     st.stop()
 
 st.title("📚 Перевірка джерел дисертації")

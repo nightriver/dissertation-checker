@@ -30,6 +30,14 @@ def is_search_mode(query_params: MutableMapping[str, Any]) -> bool:
     return value == "search"
 
 
+def is_table_highlight_mode(query_params: MutableMapping[str, Any]) -> bool:
+    """Повертає True лише для режиму підсвічування таблиці DOCX."""
+    value = query_params.get("mode")
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    return value == "table-highlight"
+
+
 # ---------------------------------------------------------------------------
 # Ключі стану, прив'язані до конкретного завантаженого файлу
 # ---------------------------------------------------------------------------

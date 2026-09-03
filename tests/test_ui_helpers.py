@@ -13,6 +13,7 @@ from ui_helpers import (
     reset_file_scoped_state,
     is_compare_mode,
     is_search_mode,
+    is_table_highlight_mode,
     PAIR_SCOPED_KEYS,
     SEARCH_SCOPED_KEYS,
     file_sha256,
@@ -211,6 +212,17 @@ class TestSearchMode(unittest.TestCase):
     def test_search_and_compare_mode_are_mutually_exclusive(self):
         for value in ("search", "compare"):
             self.assertNotEqual(is_search_mode({"mode": value}), is_compare_mode({"mode": value}))
+
+
+class TestTableHighlightMode(unittest.TestCase):
+    def test_table_highlight_mode_is_explicit(self):
+        self.assertTrue(is_table_highlight_mode({"mode": "table-highlight"}))
+        self.assertFalse(is_table_highlight_mode({}))
+        self.assertFalse(is_table_highlight_mode({"mode": "compare"}))
+
+    def test_table_highlight_mode_accepts_legacy_list_value(self):
+        self.assertTrue(is_table_highlight_mode({"mode": ["table-highlight"]}))
+        self.assertFalse(is_table_highlight_mode({"mode": []}))
 
 
 class TestValidateSearchUpload(unittest.TestCase):
