@@ -91,6 +91,42 @@ def test_main_navigation_still_links_back_from_the_search_screen():
     assert 'href="?"' in markdown_text
 
 
+def test_title_metadata_header_and_prompts_use_complete_name_and_title():
+    with fitz.open(stream=_build_single_section_pdf_bytes(), filetype="pdf") as doc:
+        title_page = doc.new_page(pno=0)
+        title_page.insert_htmlbox(fitz.Rect(72, 72, 500, 700), (
+            "<p>ЗАКЛАД ВИЩОЇ ОСВІТИ</p>"
+            "<p>ПЕТРЕНКО</p><p>ІВАН ІВАНОВИЧ</p><p>УДК 004.9</p>"
+            "<p>ДИСЕРТАЦІЯ</p><p>ПРАВОВІ ЗАСАДИ</p><p>СУДОУСТРОЮ</p>"
+            "<p>Спеціальність 081 – Право</p><p>Київ – 2020</p>"
+        ))
+        data = doc.tobytes()
+    app = AppTest.from_file(APP_PATH)
+    app.query_params["mode"] = "search"
+    app.run(timeout=30)
+    app.get("file_uploader")[0].upload("work.pdf", data, "application/pdf")
+    app.run(timeout=30)
+    assert not app.exception
+    metadata = app.session_state["search_metadata"]
+    assert metadata.author == "Петренко Іван Іванович"
+    assert metadata.title == "ПРАВОВІ ЗАСАДИ СУДОУСТРОЮ"
+    assert metadata.year == 2020
+    texts = [(item.type, item.value) for item in app if item.type in {"subheader", "markdown", "caption"}]
+    author_index = texts.index(("subheader", metadata.author))
+    assert texts[author_index + 1:author_index + 3] == [
+        ("markdown", metadata.title), ("caption", "Рік роботи: 2020"),
+    ]
+    editor = next(item for item in app.expander if item.label == "Редагувати дані роботи")
+    assert not editor.proto.expanded
+    links = [item for item in app.get("link_button") if item.label in {"ChatGPT", "Perplexity"}]
+    assert len(links) == 2
+    for link in links:
+        prompt = parse_qs(urlsplit(link.proto.url).query)["q"][0]
+        assert "Автор: Петренко Іван Іванович\n" in prompt
+        assert "Дисертація: ПРАВОВІ ЗАСАДИ СУДОУСТРОЮ\n" in prompt
+        assert "Рік роботи: 2020\n" in prompt
+
+
 @pytest.mark.parametrize("body_text,instruction", [
     (BODY_TEXT,
      "Знайди можливе джерело цього українського тексту. "

@@ -1216,8 +1216,9 @@ def render_manual_search_page() -> None:
     states = st.session_state.search_query_states
     metadata = st.session_state.get("search_metadata") or extract_search_metadata(result.document)
     st.session_state.search_metadata = metadata
-    st.markdown(f"### {metadata.title or 'Назву роботи не розпізнано'}")
-    st.caption(f"{metadata.author or 'Автор не розпізнаний'} · {metadata.year or 'Рік не розпізнано'}")
+    st.subheader(metadata.author or "Автора не розпізнано", anchor=False)
+    st.write(metadata.title or "Назву роботи не розпізнано")
+    st.caption(f"Рік роботи: {metadata.year or 'не розпізнано'}")
     with st.expander("Редагувати дані роботи"):
         with st.form("search_metadata_form"):
             author = st.text_input("Автор", value=metadata.author or "")
