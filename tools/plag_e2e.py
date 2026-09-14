@@ -36,7 +36,7 @@ from plag_filter.checker import check_batch
 from plag_filter.fetch import fetch_document
 from plag_filter.pdf import append_protocol, filter_pdf, parse_report, render_page_png
 from plag_filter.project import from_json, new_project, protocol_paragraphs, to_json
-from plag_filter.rules import recompute
+from plag_filter.rules import derive_initials, extract_author, recompute
 from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
 
 _TMP_PREFIX = "plag_fetch_"
@@ -145,8 +145,19 @@ def _print_counters(project: PlagProject, report: PlagReport) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path, help="PDF звіту Plag")
-    parser.add_argument("--surname", required=True)
-    parser.add_argument("--initials", required=True)
+    parser.add_argument("--surname", help="обов'язково без --auto-author")
+    parser.add_argument("--given-name", default="")
+    parser.add_argument("--patronymic", default="")
+    parser.add_argument(
+        "--initials",
+        default="",
+        help="для сумісності; ігнорується разом із --auto-author",
+    )
+    parser.add_argument(
+        "--auto-author",
+        action="store_true",
+        help="взяти ПІБ із extract_author(title_text) — PLAN_PLAG_FILTER_V2.md, §9.2 етап 1",
+    )
     parser.add_argument("--year", required=True, type=int)
     parser.add_argument("--out", required=True, type=Path, help="каталог поза репозиторієм")
     args = parser.parse_args(argv)
@@ -155,9 +166,33 @@ def main(argv: list[str] | None = None) -> int:
     data = args.report.read_bytes()
 
     report = parse_report(data)
+
+    if args.auto_author:
+        guess = extract_author(report.title_text)
+        if guess is None:
+            print("Автора не знайдено в титулі — вкажіть --surname і --given-name вручну.")
+            return 2
+        surname = guess.surname
+        given_name = guess.given_name
+        patronymic = guess.patronymic
+        initials = derive_initials(given_name, patronymic)
+        print(
+            f"Автор: {surname} {given_name} {patronymic} ({initials}), "
+            f"confidence={guess.confidence}"
+        )
+    else:
+        if not args.surname:
+            parser.error("--surname обов'язковий без --auto-author")
+        surname = args.surname
+        given_name = args.given_name
+        patronymic = args.patronymic
+        initials = args.initials
+
     project = new_project(report, args.report.name)
-    project.surname = args.surname
-    project.initials = args.initials
+    project.surname = surname
+    project.given_name = given_name
+    project.patronymic = patronymic
+    project.initials = initials
     project.year = args.year
     project.confirmed = True
     recompute(project, report)

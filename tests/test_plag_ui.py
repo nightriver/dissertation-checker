@@ -75,20 +75,18 @@ def test_full_screen_scenario_without_manual_decisions() -> None:
     app.run(timeout=120)
     assert not app.exception
 
-    app.text_input(key="plag_surname").set_value("Вигаданко")
-    app.text_input(key="plag_initials").set_value("О. А.")
-    app.number_input(key="plag_year").set_value(2002)
-    app.run(timeout=120)
+    assert app.text_input(key="plag_surname").value.strip() != ""
 
-    app.checkbox(key="plag_confirmed").set_value(True)
+    app.button(key="plag_confirm").click()
     app.run(timeout=120)
     assert not app.exception
 
+    project = app.session_state["plag_project"]
+    assert project.confirmed is True
+    assert all(state.manual is None for state in project.states.values())
+
     markdown = "\n".join(item.value for item in app.markdown)
     assert "Джерела на аркуші" in markdown
-
-    project = app.session_state["plag_project"]
-    assert all(state.manual is None for state in project.states.values())
 
     before_page = app.session_state["plag_page"]
     next_button = next(b for b in app.get("button") if b.label == "Наступна ▶")
@@ -98,3 +96,10 @@ def test_full_screen_scenario_without_manual_decisions() -> None:
 
     after_page = app.session_state["plag_page"]
     assert after_page == before_page + 1
+
+    app.text_input(key="plag_given_name").set_value("Змінено")
+    app.run(timeout=120)
+    assert not app.exception
+
+    project = app.session_state["plag_project"]
+    assert project.confirmed is False

@@ -1,7 +1,8 @@
 """Правила режиму очищення звіту Plag: автор, дати, рішення.
 
-Контракт узятий з `PLAN_PLAG_FILTER.md`, §3, §4, §5, §9. Числа й порядок
-правил не змінюються без правки плану.
+Контракт узятий з `PLAN_PLAG_FILTER.md`, §3, §4, §5, §9, доповнений
+`PLAN_PLAG_FILTER_V2.md`, §8.2, §9.2 (етап 1). Числа й порядок правил не
+змінюються без правки плану.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from urllib.parse import unquote, urlparse
 
 from parser.text_forensics import normalize_mixed_homoglyphs
 from plag_filter.types import (
+    AuthorGuess,
     AuthorHit,
     DateInterval,
     Decision,
@@ -120,6 +122,76 @@ def find_author(pages: list[str], surname: str, initials: str) -> AuthorHit | No
         end = min(len(normalized), match.end() + 60)
         return AuthorHit(page=page_index, snippet=normalized[start:end])
     return None
+
+
+# ---------------------------------------------------------------------------
+# PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 1 — автор і рік із титулу
+# ---------------------------------------------------------------------------
+
+_RUKOPYSU_RE = re.compile(r"рукопису", re.IGNORECASE)
+_ANCHOR_RE = re.compile(r"на\s+правах\s+рукопису", re.IGNORECASE)
+_AUTHOR_WORD_RE = re.compile(r"[А-ЯҐЄІЇа-яґєії'’ʼ-]+")
+_LOWER_UPPER_BOUNDARY_RE = re.compile(rf"(?<=[{_LOWER}])(?=[{_CAP}])")
+_PATRONYMIC_SUFFIXES = (
+    "ович",
+    "евич",
+    "йович",
+    "івна",
+    "ївна",
+    "овна",
+    "евна",
+    "ич",
+    "ична",
+)
+
+
+def derive_initials(given_name: str, patronymic: str) -> str:
+    """Ініціали з імені та по батькові — PLAN_PLAG_FILTER_V2.md, §8.2."""
+    letters = [part.strip()[0].upper() for part in (given_name, patronymic) if part.strip()]
+    return "".join(f"{letter}." for letter in letters)
+
+
+def _title_case_word(word: str) -> str:
+    parts = word.split("-")
+    return "-".join(part[:1].upper() + part[1:].lower() if part else part for part in parts)
+
+
+def extract_author(title_text: str) -> AuthorGuess | None:
+    """Витягти автора з тексту титулу — PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 1."""
+    text = re.sub(r"\s+\d{1,4}\s+", " ", title_text)
+    text = _RUKOPYSU_RE.sub(lambda m: m.group(0) + " ", text)
+    text = _SPACED_CAPS_RE.sub(lambda m: m.group(0).replace(" ", ""), text)
+
+    anchor = _ANCHOR_RE.search(text)
+    if anchor is None:
+        return None
+
+    tail = _LOWER_UPPER_BOUNDARY_RE.sub(" ", text[anchor.end() :])
+    matches = list(_AUTHOR_WORD_RE.finditer(tail))[:3]
+    if len(matches) < 3:
+        return None
+
+    surname_raw, given_raw, patronymic_raw = (match.group(0) for match in matches)
+    if not patronymic_raw.casefold().endswith(_PATRONYMIC_SUFFIXES):
+        return None
+
+    surname = _title_case_word(surname_raw)
+    given_name = _title_case_word(given_raw)
+    patronymic = _title_case_word(patronymic_raw)
+    initials = derive_initials(given_name, patronymic)
+
+    rest = tail[matches[2].end() :]
+    confidence: Literal["confirmed", "single"] = (
+        "confirmed" if find_author([rest], surname, initials) is not None else "single"
+    )
+
+    return AuthorGuess(
+        surname=surname,
+        given_name=given_name,
+        patronymic=patronymic,
+        initials=initials,
+        confidence=confidence,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +311,17 @@ def date_from_pdf_pages(pages: list[str]) -> tuple[DateInterval | None, str | No
     interval = DateInterval(date(year, 1, 1), date(year, 12, 31), "year")
     basis = f"pdf:{fragment} (стор. {page_number})"
     return interval, basis, False
+
+
+_TITLE_YEAR_RE = re.compile(rf"(?:{_CITIES})\s*[–—-]\s*((?:19|20)\d\d)")
+
+
+def extract_title_year(title_text: str) -> int | None:
+    """Рік дисертації з тексту титулу — PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 1."""
+    match = _TITLE_YEAR_RE.search(title_text.casefold())
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 _YEAR_IN_TEXT_RE = re.compile(r"(?<!\d)(19\d\d|20\d\d)(?!\d)")

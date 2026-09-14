@@ -1,7 +1,8 @@
 """Типи даних режиму очищення звіту Plag.
 
-Контракт узятий з `PLAN_PLAG_FILTER.md`, §9. Поля та їхній сенс не змінюються
-без правки плану.
+Контракт узятий з `PLAN_PLAG_FILTER.md`, §9, доповнений
+`PLAN_PLAG_FILTER_V2.md`, §8.1. Поля та їхній сенс не змінюються без правки
+плану.
 """
 
 from __future__ import annotations
@@ -104,6 +105,17 @@ class AuthorHit:
     snippet: str
 
 
+@dataclass(frozen=True)
+class AuthorGuess:
+    """Автор, розпізнаний із тексту титулу — PLAN_PLAG_FILTER_V2.md, §8.1."""
+
+    surname: str
+    given_name: str
+    patronymic: str
+    initials: str
+    confidence: Literal["confirmed", "single"]
+
+
 @dataclass
 class SourceCheck:
     """Результат перевірки одного джерела за адресою."""
@@ -144,4 +156,6 @@ class PlagProject:
     initials: str
     year: int | None
     confirmed: bool
+    given_name: str = ""
+    patronymic: str = ""
     states: dict[int, SourceState] = field(default_factory=dict)

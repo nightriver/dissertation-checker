@@ -1,6 +1,7 @@
 """Проєкт очищення звіту Plag як дані: серіалізація та протокол.
 
-Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §8, §9.
+Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §8, §9, доповнений
+`PLAN_PLAG_FILTER_V2.md`, §8.1, §9.2 (етап 1).
 """
 
 from __future__ import annotations
@@ -43,13 +44,15 @@ def new_project(report: PlagReport, report_name: str) -> PlagProject:
         for number, row in report.rows.items()
     }
     project = PlagProject(
-        schema_version=1,
+        schema_version=2,
         report_sha256=report.sha256,
         report_name=report_name,
         surname="",
         initials="",
         year=None,
         confirmed=False,
+        given_name="",
+        patronymic="",
         states=states,
     )
     recompute(project, report)
@@ -156,6 +159,8 @@ def to_json(project: PlagProject) -> str:
         "initials": project.initials,
         "year": project.year,
         "confirmed": project.confirmed,
+        "given_name": project.given_name,
+        "patronymic": project.patronymic,
         "states": {
             str(number): _state_to_dict(state) for number, state in project.states.items()
         },
@@ -172,7 +177,7 @@ def from_json(text: str, report: PlagReport) -> PlagProject:
     data = json.loads(text)
 
     schema_version = data.get("schema_version")
-    if schema_version != 1:
+    if schema_version not in (1, 2):
         raise ValueError(f"Непідтримувана версія схеми проєкту: {schema_version!r}")
 
     report_sha256 = data.get("report_sha256")
@@ -189,13 +194,15 @@ def from_json(text: str, report: PlagReport) -> PlagProject:
         states[number] = state
 
     return PlagProject(
-        schema_version=schema_version,
+        schema_version=2,
         report_sha256=report_sha256,
         report_name=data["report_name"],
         surname=data["surname"],
         initials=data["initials"],
         year=data["year"],
         confirmed=data["confirmed"],
+        given_name=data.get("given_name", ""),
+        patronymic=data.get("patronymic", ""),
         states=states,
     )
 
@@ -223,8 +230,14 @@ def protocol_paragraphs(project: PlagProject, report: PlagReport) -> list[str]:
 
     confirmed_text = "підтверджено" if project.confirmed else "не підтверджено"
     year_text = str(project.year) if project.year is not None else "не вказано"
+    if project.given_name:
+        author_text = " ".join(
+            part for part in (project.surname, project.given_name, project.patronymic) if part
+        )
+    else:
+        author_text = f"{project.surname} {project.initials}"
     paragraphs.append(
-        f"Автор дисертації: {project.surname} {project.initials}. "
+        f"Автор дисертації: {author_text}. "
         f"Рік дисертації: {year_text}. Автора і рік {confirmed_text}."
     )
 

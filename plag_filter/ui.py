@@ -1,9 +1,10 @@
-"""Екран режиму очищення звіту Plag — PLAN_PLAG_FILTER.md, §8, §9.
+"""Екран режиму очищення звіту Plag — PLAN_PLAG_FILTER.md, §8, §9, доповнений
+`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етап 1).
 
-Постраничний перегляд «варіант б»: заголовок і завантажувач, дані про
-роботу, лічильники, дії з проєктом, перегляд аркуша з панеллю джерел,
-згорнута таблиця всіх джерел. Завантаження очищеного PDF додає протокол
-у кінець файлу — §10.2, етап 8.
+Постраничний перегляд «варіант б»: заголовок і завантажувач, картка автора,
+лічильники, дії з проєктом, перегляд аркуша з панеллю джерел, згорнута
+таблиця всіх джерел. Завантаження очищеного PDF додає протокол у кінець
+файлу — §10.2, етап 8.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from plag_filter.pdf import (
     render_page_png,
 )
 from plag_filter.project import from_json, new_project, protocol_paragraphs, to_json
-from plag_filter.rules import order_numbers, recompute, top20_share
+from plag_filter.rules import derive_initials, extract_author, extract_title_year, order_numbers, recompute, top20_share
 from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
 from ui_helpers import file_sha256
 
@@ -44,9 +45,9 @@ _RESETTABLE_KEYS = (
     _DATA_KEY,
     _PAGE_KEY,
     "plag_surname",
-    "plag_initials",
+    "plag_given_name",
+    "plag_patronymic",
     "plag_year",
-    "plag_confirmed",
 )
 
 _SORT_OPTIONS = {
@@ -82,11 +83,6 @@ def _year_hint_lines(data: bytes) -> list[dict]:
         return lines
     finally:
         doc.close()
-
-
-def _initials_ok(initials: str) -> bool:
-    letters = [ch for ch in initials if ch.isalpha()]
-    return 1 <= len(letters) <= 2
 
 
 def _format_percent(row) -> str:
@@ -177,45 +173,81 @@ def _render_source_row(
                 st.rerun()
 
 
-def _render_work_section(data: bytes, report: PlagReport, project: PlagProject) -> None:
-    with st.expander("Робота", expanded=True):
-        st.text(report.title_text[:600])
+def _seed_author_fields(data: bytes, report: PlagReport, project: PlagProject) -> None:
+    """Заповнити поля автора при першій появі екрана — §9.2 етап 1."""
+    if "plag_surname" not in st.session_state:
+        guess = extract_author(report.title_text)
+        st.session_state["plag_surname"] = project.surname or (guess.surname if guess else "")
+        st.session_state["plag_given_name"] = project.given_name or (
+            guess.given_name if guess else ""
+        )
+        st.session_state["plag_patronymic"] = project.patronymic or (
+            guess.patronymic if guess else ""
+        )
+    if "plag_year" not in st.session_state:
+        st.session_state["plag_year"] = (
+            project.year
+            or extract_dissertation_year(_year_hint_lines(data))
+            or extract_title_year(report.title_text)
+            or 2000
+        )
 
-        if "plag_surname" not in st.session_state:
-            st.session_state["plag_surname"] = project.surname
-        if "plag_initials" not in st.session_state:
-            st.session_state["plag_initials"] = project.initials
-        if "plag_year" not in st.session_state:
-            st.session_state["plag_year"] = (
-                project.year or extract_dissertation_year(_year_hint_lines(data)) or 2000
-            )
 
-        col_surname, col_initials, col_year = st.columns(3)
+def _render_author_card(data: bytes, report: PlagReport, project: PlagProject) -> None:
+    """Картка автора з титулу дисертації — PLAN_PLAG_FILTER_V2.md, §9.2 етап 1."""
+    guess = extract_author(report.title_text)
+    _seed_author_fields(data, report, project)
+
+    surname = st.session_state["plag_surname"]
+    given_name = st.session_state["plag_given_name"]
+    patronymic = st.session_state["plag_patronymic"]
+    year = st.session_state["plag_year"]
+
+    full_name = " ".join(part for part in (surname, given_name, patronymic) if part)
+    st.markdown(f"**Автор: {full_name} · {int(year)}**")
+
+    if guess is None:
+        st.warning("Автора в титулі не знайдено — заповніть поля")
+    elif guess.confidence == "single":
+        st.warning("Автора знайдено в одному місці титулу — перевірте")
+
+    with st.expander("Виправити автора", expanded=guess is None):
+        col_surname, col_given, col_patronymic, col_year = st.columns(4)
         with col_surname:
             surname = st.text_input("Прізвище", key="plag_surname")
-        with col_initials:
-            initials = st.text_input("Ініціали", key="plag_initials")
+        with col_given:
+            given_name = st.text_input("Ім'я", key="plag_given_name")
+        with col_patronymic:
+            patronymic = st.text_input("По батькові", key="plag_patronymic")
         with col_year:
             year = st.number_input(
                 "Рік дисертації", min_value=1900, max_value=2099, step=1, key="plag_year"
             )
 
-        can_confirm = bool(surname.strip()) and _initials_ok(initials) and 1900 <= int(year) <= 2099
-        if "plag_confirmed" not in st.session_state:
-            st.session_state["plag_confirmed"] = project.confirmed
-        if not can_confirm:
-            st.session_state["plag_confirmed"] = False
-        confirmed = st.checkbox(
-            "Автора і рік перевірено", key="plag_confirmed", disabled=not can_confirm
+        can_confirm = (
+            bool(surname.strip()) and bool(given_name.strip()) and 1900 <= int(year) <= 2099
         )
-        if not confirmed:
-            st.warning("Правила власних і пізніших робіт не застосовуються")
+        if st.button(
+            "Все вірно — перевірити джерела", key="plag_confirm", disabled=not can_confirm
+        ):
+            project.surname = surname
+            project.given_name = given_name
+            project.patronymic = patronymic
+            project.year = int(year)
+            project.initials = derive_initials(given_name, patronymic)
+            project.confirmed = True
+            recompute(project, report)
+            st.rerun()
 
-        project.surname = surname
-        project.initials = initials
-        project.year = int(year)
-        project.confirmed = confirmed
+    if project.confirmed and (
+        surname != project.surname
+        or given_name != project.given_name
+        or patronymic != project.patronymic
+        or int(year) != project.year
+    ):
+        project.confirmed = False
         recompute(project, report)
+        st.warning("Автора змінено — підтвердіть ще раз")
 
 
 def _render_counters(report: PlagReport, project: PlagProject) -> None:
@@ -418,7 +450,7 @@ def render_plag_filter_page() -> None:
     data = st.session_state[_DATA_KEY]
     project: PlagProject = st.session_state[_PROJECT_KEY]
 
-    _render_work_section(data, report, project)
+    _render_author_card(data, report, project)
 
     st.divider()
     _render_counters(report, project)

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -85,7 +86,7 @@ def make_project(
     states: dict[int, SourceState] | None = None,
 ) -> PlagProject:
     return PlagProject(
-        schema_version=1,
+        schema_version=2,
         report_sha256="deadbeef",
         report_name="report.pdf",
         surname=SURNAME,
@@ -152,10 +153,44 @@ def test_from_json_rejects_different_sha256() -> None:
 def test_from_json_rejects_unsupported_schema_version() -> None:
     report = make_report({1: make_row(1, 5.0)})
     project = make_project(states={1: make_state(1)})
-    text = to_json(project).replace('"schema_version": 1', '"schema_version": 2')
+    text = to_json(project).replace('"schema_version": 2', '"schema_version": 3')
 
     with pytest.raises(ValueError):
         from_json(text, report)
+
+
+def test_from_json_reads_schema_version_1_without_new_fields() -> None:
+    report = make_report({1: make_row(1, 5.0)})
+    payload = {
+        "schema_version": 1,
+        "report_sha256": report.sha256,
+        "report_name": "report.pdf",
+        "surname": SURNAME,
+        "initials": INITIALS,
+        "year": 2020,
+        "confirmed": True,
+        "states": {},
+    }
+    text_v1 = json.dumps(payload, ensure_ascii=False)
+
+    restored = from_json(text_v1, report)
+
+    assert restored.given_name == ""
+    assert restored.patronymic == ""
+    assert restored.schema_version == 2
+
+
+def test_to_json_from_json_roundtrip_preserves_given_name_and_patronymic() -> None:
+    report = make_report({1: make_row(1, 5.0)})
+    project = make_project(states={1: make_state(1)})
+    project.given_name = "Олена"
+    project.patronymic = "Андріївна"
+
+    restored = from_json(to_json(project), report)
+
+    assert restored == project
+    assert restored.given_name == "Олена"
+    assert restored.patronymic == "Андріївна"
 
 
 def test_from_json_rejects_mismatched_source_id() -> None:
@@ -177,7 +212,7 @@ def test_new_project_marks_low_percent_rows_below_threshold() -> None:
 
     project = new_project(report, "report.pdf")
 
-    assert project.schema_version == 1
+    assert project.schema_version == 2
     assert project.report_sha256 == report.sha256
     assert project.states[1].decision == "exclude"
     assert project.states[1].reason == "below_threshold"
