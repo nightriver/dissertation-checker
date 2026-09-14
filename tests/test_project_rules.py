@@ -25,7 +25,7 @@ TESTS_DIR = ROOT / "tests"
 SELF = Path(__file__).resolve()
 
 # Модулі, які пишуться українською (код, docstrings, коментарі).
-UKRAINIAN_SOURCES = sorted(SEARCH_DIR.glob("*.py")) + [
+UKRAINIAN_SOURCES = sorted(SEARCH_DIR.glob("*.py")) + sorted((ROOT / "plag_filter").glob("*.py")) + [
     ROOT / "parser" / "searchdoc.py",
     ROOT / "ui_helpers.py",
 ]
