@@ -43,6 +43,18 @@ from tools.measure_plag_memory import _peak_working_set_bytes
 
 _TMP_PREFIX = "plag_fetch_"
 
+# Поділ причин на два блоки — той самий, що в plag_filter/ui.py,
+# PLAN_PLAG_FILTER_V2.md, §9.2 етап 9.
+_EXCLUDED_REASONS = ("own_work", "cites_author", "later", "below_threshold", "manual_exclude")
+_KEPT_REASONS = (
+    "earlier",
+    "date_unknown",
+    "unavailable",
+    "date_conflict",
+    "same_year",
+    "manual_keep",
+)
+
 # Лог завантажень поточної партії: (адреса, тривалість с, розміри байт, код помилки).
 _DownloadLogEntry = tuple[str, float, tuple[int, ...], str | None]
 
@@ -163,9 +175,17 @@ def _print_counters(project: PlagProject, report: PlagReport) -> None:
     )
     print(f"Джерел ≥ 0,1 % (або нерозпізнаний відсоток): {counted}")
 
+    # Два блоки підсумку — той самий поділ причин, що й `_render_summary`
+    # у plag_filter/ui.py, PLAN_PLAG_FILTER_V2.md, §9.2 етап 9.
     by_reason: Counter[str] = Counter(state.reason for state in project.states.values())
-    for reason, label in REASON_LABELS.items():
-        print(f"  {label}: {by_reason.get(reason, 0)}")
+    print("Виключено з PDF:")
+    for reason in _EXCLUDED_REASONS:
+        print(f"  {REASON_LABELS[reason]}: {by_reason.get(reason, 0)}")
+    print("Залишено в PDF:")
+    for reason in _KEPT_REASONS:
+        print(f"  {REASON_LABELS[reason]}: {by_reason.get(reason, 0)}")
+    not_checked = by_reason.get("unchecked", 0) + by_reason.get("unconfirmed", 0)
+    print(f"  Ще не перевірено: {not_checked}")
 
     errors: Counter[str] = Counter()
     for state in project.states.values():
