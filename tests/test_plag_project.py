@@ -127,6 +127,54 @@ def test_to_json_from_json_roundtrip_preserves_project() -> None:
     assert restored == project
 
 
+def test_to_json_from_json_roundtrip_preserves_citation_years() -> None:
+    report = make_report({1: make_row(1, 5.0)})
+    check = SourceCheck(
+        checked_for="петренко|о.а.",
+        url="https://example.org/doc",
+        final_url="https://example.org/doc",
+        error=None,
+        author_hit=None,
+        doc_date=None,
+        date_basis=None,
+        date_conflict=False,
+        url_year_hint=None,
+        hints={},
+        citation_years=[2008, 2010],
+    )
+    project = make_project(
+        year=2002, states={1: make_state(1, check=check, decision="exclude", reason="later")}
+    )
+
+    restored = from_json(to_json(project), report)
+
+    assert restored == project
+    assert restored.states[1].check.citation_years == [2008, 2010]
+
+
+def test_from_json_defaults_citation_years_to_empty_list_without_field() -> None:
+    report = make_report({1: make_row(1, 5.0)})
+    check = SourceCheck(
+        checked_for="петренко|о.а.",
+        url="https://example.org/doc",
+        final_url="https://example.org/doc",
+        error=None,
+        author_hit=None,
+        doc_date=None,
+        date_basis=None,
+        date_conflict=False,
+        url_year_hint=None,
+        hints={},
+    )
+    project = make_project(states={1: make_state(1, check=check)})
+    text = json.loads(to_json(project))
+    del text["states"]["1"]["check"]["citation_years"]
+
+    restored = from_json(json.dumps(text, ensure_ascii=False), report)
+
+    assert restored.states[1].check.citation_years == []
+
+
 def test_to_json_from_json_roundtrip_without_check_or_manual() -> None:
     report = make_report({1: make_row(1, 5.0)})
     project = make_project(states={1: make_state(1)})
@@ -364,6 +412,31 @@ def test_protocol_paragraphs_cites_author_fragment_trimmed_to_120_chars() -> Non
     assert len(matches) == 1
     assert "б" * 120 in matches[0]
     assert "б" * 121 not in matches[0]
+
+
+def test_protocol_paragraphs_later_contains_citation_evidence() -> None:
+    check = SourceCheck(
+        checked_for="петренко|о.а.",
+        url="https://example.org/doc",
+        final_url=None,
+        error=None,
+        author_hit=None,
+        doc_date=None,
+        date_basis=None,
+        date_conflict=False,
+        url_year_hint=None,
+        hints={},
+        citation_years=[2008, 2010],
+    )
+    report = make_report({1: make_row(1, 5.0)})
+    states = {1: make_state(1, check=check, decision="exclude", reason="later")}
+    project = make_project(year=2002, states=states)
+
+    paragraphs = protocol_paragraphs(project, report)
+
+    matches = [paragraph for paragraph in paragraphs if "№1" in paragraph and "пізніша за дисертацію" in paragraph]
+    assert len(matches) == 1
+    assert "цитує праці" in matches[0]
 
 
 def test_protocol_paragraphs_list_disputed_with_reason_labels() -> None:

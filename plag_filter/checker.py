@@ -1,7 +1,8 @@
 """Перевірка партії джерел режиму очищення звіту Plag.
 
 Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §5, §6, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.3, §9.2 (етап 3) — паралельна перевірка.
+`PLAN_PLAG_FILTER_V2.md`, §8.3, §9.2 (етапи 3, 5) — паралельна перевірка та
+роки цитування для правила «цитує пізніші праці».
 Мережа підставляється параметром `fetch`; у продукті це `fetch.fetch_document`.
 """
 
@@ -16,6 +17,7 @@ from urllib.parse import urlparse
 from plag_filter.fetch import FetchResult, fetch_document
 from plag_filter.rules import (
     author_key,
+    citation_years,
     date_from_court_text,
     date_from_html_head,
     date_from_meta,
@@ -109,6 +111,7 @@ def _build_check(url: str, checked_for: str, result: FetchResult, surname: str, 
         date_conflict=date_conflict,
         url_year_hint=url_year_hint(url),
         hints=dict(result.hints),
+        citation_years=citation_years(result.pages),
     )
 
 

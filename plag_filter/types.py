@@ -138,6 +138,7 @@ class SourceCheck:
     date_conflict: bool
     url_year_hint: int | None
     hints: dict[str, str]
+    citation_years: list[int] = field(default_factory=list)
 
 
 @dataclass

@@ -23,6 +23,7 @@ from plag_filter.types import (
     PlagProject,
     PlagReport,
     Reason,
+    SourceCheck,
     SourceRow,
     SourceState,
 )
@@ -404,6 +405,9 @@ def date_from_html_head(text: str) -> tuple[DateInterval | None, str | None, boo
 # PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 4 — роки цитування у списку літератури.
 MAX_CITATION_YEARS = 1000
 
+# PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 5 — поріг «цитує пізніші праці».
+MIN_LATER_CITATIONS = 2
+
 _CITATION_YEAR_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"[,.]\s*((?:19|20)\d\d)\.?\s*[–—-]\s*\d+\s*с\."),
     re.compile(r"[–—-]\s*((?:19|20)\d\d)\.?\s*[–—-]\s*(?:№|вип|т\.|с\.)"),
@@ -486,20 +490,46 @@ def decide(row: SourceRow, state: SourceState, project: PlagProject) -> tuple[De
     if check.date_conflict:
         return "disputed", "date_conflict"
 
-    if check.doc_date is None:
-        return "disputed", "date_unknown"
-
     year = project.year
-    if year is None:
+
+    if check.doc_date is not None:
+        if year is None:
+            return "disputed", "same_year"
+
+        if check.doc_date.start > date(year, 12, 31):
+            return "exclude", "later"
+
+        if check.doc_date.end < date(year, 1, 1):
+            return "keep", "earlier"
+
         return "disputed", "same_year"
 
-    if check.doc_date.start > date(year, 12, 31):
-        return "exclude", "later"
+    if year is not None:
+        later_years = [y for y in check.citation_years if y > year]
+        if len(later_years) >= MIN_LATER_CITATIONS:
+            return "exclude", "later"
 
-    if check.doc_date.end < date(year, 1, 1):
-        return "keep", "earlier"
+    return "disputed", "date_unknown"
 
-    return "disputed", "same_year"
+
+def date_evidence(check: SourceCheck, year: int | None) -> str:
+    """Свідчення про дату джерела для панелі й протоколу —
+    PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 (етапи 5–6).
+
+    При встановленій даті документа — інтервал і підстава; коли дати немає,
+    але серед цитувань є пізніші за рік дисертації — кількість і найбільший
+    рік; архівна гілка додається на етапі 6; інакше — порожній рядок.
+    """
+    if check.doc_date is not None:
+        basis = check.date_basis or "—"
+        return f"{check.doc_date.start.isoformat()}–{check.doc_date.end.isoformat()} · {basis}"
+
+    if year is not None:
+        later_years = [y for y in check.citation_years if y > year]
+        if len(later_years) >= MIN_LATER_CITATIONS:
+            return f"цитує праці {max(later_years)} р. ({len(later_years)} записів)"
+
+    return ""
 
 
 def recompute(project: PlagProject, report: PlagReport) -> None:

@@ -1,5 +1,5 @@
 """Екран режиму очищення звіту Plag — PLAN_PLAG_FILTER.md, §8, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етап 1).
+`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 5).
 
 Постраничний перегляд «варіант б»: заголовок і завантажувач, картка автора,
 лічильники, дії з проєктом, перегляд аркуша з панеллю джерел, згорнута
@@ -27,7 +27,15 @@ from plag_filter.pdf import (
     render_page_png,
 )
 from plag_filter.project import from_json, new_project, protocol_paragraphs, to_json
-from plag_filter.rules import derive_initials, extract_author, extract_title_year, order_numbers, recompute, top20_share
+from plag_filter.rules import (
+    date_evidence,
+    derive_initials,
+    extract_author,
+    extract_title_year,
+    order_numbers,
+    recompute,
+    top20_share,
+)
 from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
 from ui_helpers import file_sha256
 
@@ -90,7 +98,7 @@ def _format_percent(row) -> str:
     return row.percent_text if row.percent_text else "?"
 
 
-def _evidence_text(state) -> str:
+def _evidence_text(state, project: PlagProject) -> str:
     check = state.check
     if check is None:
         return ""
@@ -105,13 +113,12 @@ def _evidence_text(state) -> str:
         )
     elif state.reason == "unavailable":
         parts.append(f"Помилка: {check.error}")
-    elif check.doc_date is not None:
-        basis = check.date_basis or "—"
-        parts.append(
-            f"Дата документа: {check.doc_date.start.isoformat()}–{check.doc_date.end.isoformat()} · {basis}"
-        )
-    elif check.date_conflict:
-        parts.append("Суперечливі дати в документі")
+    else:
+        evidence = date_evidence(check, project.year)
+        if evidence:
+            parts.append(f"Дата документа: {evidence}")
+        elif check.date_conflict:
+            parts.append("Суперечливі дати в документі")
     if check.url_year_hint is not None:
         parts.append(f"рік в адресі: {check.url_year_hint}")
     return " · ".join(parts)
@@ -141,7 +148,7 @@ def _render_source_row(
     with st.container(border=True):
         st.markdown(f"**№ {number} · {row.label} · {_format_percent(row)}**")
         st.caption(REASON_LABELS[state.reason])
-        evidence = _evidence_text(state)
+        evidence = _evidence_text(state, project)
         if evidence:
             st.caption(evidence)
 

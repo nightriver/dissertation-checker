@@ -349,6 +349,29 @@ def test_check_batch_marks_later_when_document_date_after_dissertation_year(tmp_
     assert project.states[1].check.doc_date.start.year == 2020
 
 
+def test_check_batch_fills_citation_years_and_marks_later_without_doc_date(tmp_path: Path) -> None:
+    url = "https://a.example/refs"
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    pages = [
+        "Звичайний текст без вихідних даних.",
+        "Ще один звичайний текст без вихідних даних.",
+        "Список літератури: Іванов І. І., Стаття. 2008. – 5 с. "
+        "Петров П. П., Праця. 2010. – 10 с.",
+    ]
+    fetch = FakeFetch({url: ok_result(url, pages=pages)})
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    check = project.states[1].check
+    assert check.doc_date is None
+    assert check.date_conflict is False
+    assert check.citation_years == [2008, 2010]
+    assert project.states[1].decision == "exclude"
+    assert project.states[1].reason == "later"
+
+
 def test_check_batch_marks_unavailable_on_fetch_error(tmp_path: Path) -> None:
     url = "https://a.example/broken"
     row = make_row(1, urls=(url,))

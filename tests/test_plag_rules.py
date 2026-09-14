@@ -13,9 +13,11 @@ from plag_filter.rules import (
     HTML_HEAD_CHARS,
     MAX_AUTHOR_HITS,
     MAX_CITATION_YEARS,
+    MIN_LATER_CITATIONS,
     author_key,
     citation_years,
     classify_hit,
+    date_evidence,
     date_from_court_text,
     date_from_html_head,
     date_from_meta,
@@ -80,6 +82,7 @@ def make_check(
     author_hit: AuthorHit | None = None,
     doc_date: DateInterval | None = None,
     date_conflict: bool = False,
+    citation_years_list: list[int] | None = None,
 ) -> SourceCheck:
     return SourceCheck(
         checked_for=checked_for,
@@ -92,6 +95,7 @@ def make_check(
         date_conflict=date_conflict,
         url_year_hint=None,
         hints={},
+        citation_years=citation_years_list or [],
     )
 
 
@@ -458,6 +462,29 @@ def test_citation_years_respects_max_limit() -> None:
 
 
 # ---------------------------------------------------------------------------
+# date_evidence — PLAN_PLAG_FILTER_V2.md, §8.2 етап 5
+# ---------------------------------------------------------------------------
+
+
+def test_date_evidence_uses_doc_date_when_present() -> None:
+    check = make_check(doc_date=DateInterval(date(2018, 1, 1), date(2018, 12, 31), "year"))
+    check.date_basis = "pdf:Київ – 2018 (стор. 1)"
+    evidence = date_evidence(check, 2020)
+    assert evidence == "2018-01-01–2018-12-31 · pdf:Київ – 2018 (стор. 1)"
+
+
+def test_date_evidence_citation_years_phrase() -> None:
+    check = make_check(doc_date=None, citation_years_list=[2021, 2022])
+    evidence = date_evidence(check, 2020)
+    assert evidence == "цитує праці 2022 р. (2 записів)"
+
+
+def test_date_evidence_empty_when_no_evidence() -> None:
+    check = make_check(doc_date=None, citation_years_list=[2021])
+    assert date_evidence(check, 2020) == ""
+
+
+# ---------------------------------------------------------------------------
 # date_from_pdf_pages — §5
 # ---------------------------------------------------------------------------
 
@@ -648,6 +675,39 @@ def test_decide_rule8_date_unknown() -> None:
     assert decide(row, state, project) == ("disputed", "date_unknown")
 
 
+# ---------------------------------------------------------------------------
+# decide — 8б/8г, цитування пізніших праць, PLAN_PLAG_FILTER_V2.md, §8.2 етап 5
+# ---------------------------------------------------------------------------
+
+
+def test_decide_rule8b_later_from_citation_years() -> None:
+    row = make_row(percent=5.0)
+    assert MIN_LATER_CITATIONS == 2
+    check = make_check(doc_date=None, citation_years_list=[2021, 2022])
+    state = make_state(check=check)
+    project = make_project(year=2020)
+    assert decide(row, state, project) == ("exclude", "later")
+
+
+def test_decide_rule8g_date_unknown_when_below_min_later_citations() -> None:
+    row = make_row(percent=5.0)
+    check = make_check(doc_date=None, citation_years_list=[2021])
+    state = make_state(check=check)
+    project = make_project(year=2020)
+    assert decide(row, state, project) == ("disputed", "date_unknown")
+
+
+def test_decide_rule8a_wins_over_citation_years_when_doc_date_present() -> None:
+    row = make_row(percent=5.0)
+    check = make_check(
+        doc_date=DateInterval(date(2018, 1, 1), date(2018, 12, 31), "year"),
+        citation_years_list=[2021, 2022],
+    )
+    state = make_state(check=check)
+    project = make_project(year=2020)
+    assert decide(row, state, project) == ("keep", "earlier")
+
+
 def test_decide_rule9_later() -> None:
     row = make_row(percent=5.0)
     check = make_check(doc_date=DateInterval(date(2021, 1, 1), date(2021, 12, 31), "year"))
@@ -691,6 +751,26 @@ def test_recompute_marks_checked_source_unchecked_after_initials_change() -> Non
     recompute(project, report)
     assert project.states[1].decision == "disputed"
     assert project.states[1].reason == "unchecked"
+
+
+def test_recompute_year_change_from_later_to_date_unknown_without_recheck() -> None:
+    row = make_row(number=1, percent=5.0)
+    check = make_check(
+        checked_for=author_key(SURNAME, INITIALS),
+        doc_date=None,
+        citation_years_list=[2008, 2010],
+    )
+    state = make_state(number=1, check=check)
+    project = make_project(year=2002, states={1: state})
+    report = make_report({1: row})
+
+    recompute(project, report)
+    assert project.states[1].reason == "later"
+
+    project.year = 2015
+    recompute(project, report)
+    assert project.states[1].decision == "disputed"
+    assert project.states[1].reason == "date_unknown"
 
 
 def test_recompute_year_change_moves_same_year_to_later() -> None:

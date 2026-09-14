@@ -1,7 +1,7 @@
 """Проєкт очищення звіту Plag як дані: серіалізація та протокол.
 
 Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §8, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.1, §9.2 (етапи 1–2).
+`PLAN_PLAG_FILTER_V2.md`, §8.1, §9.2 (етапи 1–2, 5).
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import json
 from collections import defaultdict
 from datetime import date
 
-from plag_filter.rules import recompute
+from plag_filter.rules import date_evidence, recompute
 from plag_filter.types import (
     AuthorHit,
     DateInterval,
@@ -105,6 +105,7 @@ def _check_to_dict(check: SourceCheck | None) -> dict | None:
         "date_conflict": check.date_conflict,
         "url_year_hint": check.url_year_hint,
         "hints": dict(check.hints),
+        "citation_years": list(check.citation_years),
     }
 
 
@@ -122,6 +123,7 @@ def _check_from_dict(data: dict | None) -> SourceCheck | None:
         date_conflict=data["date_conflict"],
         url_year_hint=data["url_year_hint"],
         hints=dict(data["hints"]),
+        citation_years=list(data.get("citation_years", [])),
     )
 
 
@@ -281,15 +283,9 @@ def protocol_paragraphs(project: PlagProject, report: PlagReport) -> list[str]:
 
     for number in numbers_by_reason.get("later", []):
         state = project.states[number]
-        date_text = "невідома"
-        basis_text = "невідома"
-        if state.check is not None and state.check.doc_date is not None:
-            date_text = state.check.doc_date.start.isoformat()
-            basis_text = state.check.date_basis or "невідома"
-        paragraphs.append(
-            f"№{number}: пізніша за дисертацію, дата документа: {date_text}, "
-            f"підстава: {basis_text}."
-        )
+        evidence = date_evidence(state.check, project.year) if state.check is not None else ""
+        evidence = evidence or "невідома"
+        paragraphs.append(f"№{number}: пізніша за дисертацію, {evidence}.")
 
     disputed_numbers = [
         number for number, state in sorted(project.states.items()) if state.decision == "disputed"
