@@ -152,6 +152,8 @@ class TestPairScopedState(unittest.TestCase):
         self.assertIn("compare_type_filter", PAIR_SCOPED_KEYS)
         self.assertIn("compare_sort", PAIR_SCOPED_KEYS)
         self.assertIn("compare_show_normative", PAIR_SCOPED_KEYS)
+        # Готовий .docx попередньої пари не має пережити зміну файлів.
+        self.assertIn("compare_docx_cache", PAIR_SCOPED_KEYS)
         self.assertNotIn("compare_filters", PAIR_SCOPED_KEYS)
 
     def test_same_pair_is_noop(self):

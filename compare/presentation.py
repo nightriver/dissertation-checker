@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from compare.types import CompareToken, DiffSpan, TextSegment
 from parser.types import LineItem
@@ -115,21 +116,31 @@ def _line_separator(
     return " "
 
 
-def render_fragment_html(
+# Розрив рядка у фрагменті. HTML малює його як <br>, Word — як розрив run.
+LINE_BREAK = "break"
+
+
+def fragment_pieces(
     lines: Sequence[LineItem],
     tokens: Sequence[CompareToken],
     start: int,
     end: int,
     spans: Sequence[DiffSpan],
     context_tokens: int = 8,
-) -> str:
-    """Повертає оригінальний текст із пунктуацією та контрольованими span."""
+) -> list[tuple[str, str | None]]:
+    """
+    Розкладає фрагмент на шматки (текст, операція) з оригінальною пунктуацією.
+
+    Операція ``None`` — текст без підсвічування, ``LINE_BREAK`` — розрив
+    рядка. Один джерельний розклад для екрана і для Word, щоб експорт не
+    розходився з тим, що експерт бачив у таблиці.
+    """
     if not tokens or start >= end:
-        return ""
+        return []
     visible_start = max(0, start - context_tokens)
     visible_end = min(len(tokens), end + context_tokens)
     operations = _span_operations(spans)
-    output: list[str] = []
+    output: list[tuple[str, str | None]] = []
     previous_line: int | None = None
     previous_end = 0
     previous_operation: str | None = None
@@ -145,17 +156,18 @@ def render_fragment_html(
                     previous_part = previous_token.parts[-1]
                     if previous_part.line_index == part.line_index:
                         prefix_start = previous_part.char_end
-                        output.append("…")
-                output.append(html.escape(text[prefix_start:part.char_start]))
+                        output.append(("…", None))
+                output.append((text[prefix_start:part.char_start], None))
             elif part.line_index == previous_line:
                 gap = text[previous_end:part.char_start]
-                output.append(_styled(gap, operation if operation == previous_operation else None))
+                output.append((gap, operation if operation == previous_operation else None))
             else:
                 previous_text = lines[previous_line].get("line") or ""
-                output.append(html.escape(previous_text[previous_end:]))
-                output.append(_line_separator(lines, previous_line, part.line_index, part_index > 0))
-                output.append(html.escape(text[:part.char_start]))
-            output.append(_styled(text[part.char_start:part.char_end], operation))
+                output.append((previous_text[previous_end:], None))
+                separator = _line_separator(lines, previous_line, part.line_index, part_index > 0)
+                output.append(("", LINE_BREAK) if separator == "<br>" else (separator, None))
+                output.append((text[:part.char_start], None))
+            output.append((text[part.char_start:part.char_end], operation))
             previous_line = part.line_index
             previous_end = part.char_end
             previous_operation = operation
@@ -166,10 +178,25 @@ def render_fragment_html(
             next_part = tokens[visible_end].parts[0]
             if next_part.line_index == previous_line:
                 suffix_end = next_part.char_start
-        output.append(html.escape(last_text[previous_end:suffix_end]))
+        output.append((last_text[previous_end:suffix_end], None))
         if visible_end < len(tokens):
-            output.append("…")
-    return "".join(output)
+            output.append(("…", None))
+    return output
+
+
+def render_fragment_html(
+    lines: Sequence[LineItem],
+    tokens: Sequence[CompareToken],
+    start: int,
+    end: int,
+    spans: Sequence[DiffSpan],
+    context_tokens: int = 8,
+) -> str:
+    """Повертає оригінальний текст із пунктуацією та контрольованими span."""
+    return "".join(
+        "<br>" if operation == LINE_BREAK else _styled(text, operation)
+        for text, operation in fragment_pieces(lines, tokens, start, end, spans, context_tokens)
+    )
 
 
 def _render_collapsible_fragment(
@@ -191,6 +218,48 @@ def _render_collapsible_fragment(
     )
 
 
+@dataclass(frozen=True)
+class FindingMeta:
+    """Службові поля знахідки: однакові на екрані і у Word."""
+
+    place: str
+    kind: str
+    indicators: str
+    labels: tuple[str, ...]
+
+
+def finding_meta(
+    segment: TextSegment,
+    tokens_a: Sequence[CompareToken],
+    tokens_b: Sequence[CompareToken],
+) -> FindingMeta:
+    place = (
+        f"{format_physical_pages(tokens_a, segment.a_start, segment.a_end)} / "
+        f"{format_physical_pages(tokens_b, segment.b_start, segment.b_end)}"
+    )
+    labels = []
+    if segment.possibly_normative:
+        labels.append("ймовірно нормативний")
+    if segment.possibly_boilerplate:
+        labels.append("типова формула")
+    # Прибрані дедуплікацією повтори лишаються видимими: п'ять копій
+    # одного абзацу — це сигнал експертові, а не сміття.
+    repeats = (
+        f" · ще {segment.suppressed_repeats} таких самих місць"
+        if segment.suppressed_repeats else ""
+    )
+    indicators = (
+        f"{segment.matched} слів · {segment.coverage_a:.0%}/{segment.coverage_b:.0%} · "
+        f"схожість {segment.similarity:.0%}{repeats}"
+    )
+    return FindingMeta(
+        place=place,
+        kind="дослівний" if segment.kind == "verbatim" else "змінений",
+        indicators=indicators,
+        labels=tuple(labels),
+    )
+
+
 def render_comparison_table(
     segments: Sequence[TextSegment],
     lines_a: Sequence[LineItem], tokens_a: Sequence[CompareToken],
@@ -204,30 +273,14 @@ def render_comparison_table(
         right = _render_collapsible_fragment(
             lines_b, tokens_b, segment.b_start, segment.b_end, segment.b_spans
         )
-        place = html.escape(
-            f"{format_physical_pages(tokens_a, segment.a_start, segment.a_end)} / "
-            f"{format_physical_pages(tokens_b, segment.b_start, segment.b_end)}"
-        )
-        kind = "дослівний" if segment.kind == "verbatim" else "змінений"
-        labels = []
-        if segment.possibly_normative:
-            labels.append("ймовірно нормативний")
-        if segment.possibly_boilerplate:
-            labels.append("типова формула")
+        meta = finding_meta(segment, tokens_a, tokens_b)
+        place = html.escape(meta.place)
+        kind = meta.kind
         label_html = (
-            f'<span class="compare-note">{html.escape(" · ".join(labels))}</span>'
-            if labels else ""
+            f'<span class="compare-note">{html.escape(" · ".join(meta.labels))}</span>'
+            if meta.labels else ""
         )
-        # Прибрані дедуплікацією повтори лишаються видимими: п'ять копій
-        # одного абзацу — це сигнал експертові, а не сміття.
-        repeats = (
-            f" · ще {segment.suppressed_repeats} таких самих місць"
-            if segment.suppressed_repeats else ""
-        )
-        indicators = html.escape(
-            f"{segment.matched} слів · {segment.coverage_a:.0%}/{segment.coverage_b:.0%} · "
-            f"схожість {segment.similarity:.0%}{repeats}"
-        )
+        indicators = html.escape(meta.indicators)
         rows.append(
             '<article class="compare-find">'
             f'<header class="compare-meta"><span class="compare-num">{number}</span>'

@@ -68,6 +68,7 @@ PAIR_SCOPED_KEYS: tuple[str, ...] = (
     "compare_type_filter",
     "compare_sort",
     "compare_show_normative",
+    "compare_docx_cache",
 )
 _PAIR_KEY = "current_compare_pair_key"
 

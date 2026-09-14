@@ -51,6 +51,7 @@ from ui_helpers import (
     is_table_highlight_mode,
     is_plag_filter_mode,
 )
+from compare.docx_export import DOCX_MIME, build_comparison_docx
 from compare.matcher import compare_documents, count_off_alignment
 from compare.prepare import prepare_document_for_comparison
 from compare.presentation import format_physical_pages, render_comparison_table
@@ -997,6 +998,47 @@ def render_two_file_compare_page() -> None:
     if len(visible) > limit and st.button("Показати ще", key="compare_show_more"):
         st.session_state.compare_visible_limit = limit + 100
         st.rerun()
+
+    # У файл іде весь відфільтрований перелік, а не лише перша сотня на екрані.
+    st.divider()
+    st.markdown("#### Вивантаження таблиці")
+    st.caption(
+        f"У документ Word потраплять усі {len(visible)} знахідок за поточними "
+        "фільтром і сортуванням, повністю, без згортання довгих фрагментів."
+    )
+    summary = [
+        f"Знайдені фрагменти: {len(accepted)} ({matched_words} слів разом)",
+        f"Покриття дисертації: {coverage_a:.1%} ({strict_a:.1%} без нормативних)",
+        f"Покриття джерела: {coverage_b:.1%} ({strict_b:.1%} без нормативних)",
+        f"Фільтр: тип — {type_filter}; сортування — {sort_mode}; "
+        f"ймовірно нормативні — {'показано' if show_normative else 'приховано'}",
+    ]
+    if not result.analysis_complete:
+        summary.append(
+            f"Аналіз обмежено: оброблено {result.candidates_processed} із "
+            f"{result.candidates_total} областей-кандидатів; відсотки — нижня оцінка."
+        )
+    # Збірка сотень знахідок триває секунди, тому файл не перебудовується на
+    # кожен rerun — лише коли змінився результат або фільтри.
+    docx_key = (id(result), pair_key, type_filter, sort_mode, show_normative)
+    cached_docx = st.session_state.get("compare_docx_cache")
+    if cached_docx is None or cached_docx[0] != docx_key:
+        with st.spinner("Підготовка документа Word…"):
+            cached_docx = (docx_key, build_comparison_docx(
+                visible, lines_a, prepared_a.tokens, lines_b, prepared_b.tokens,
+                name_a=uploaded_a.name, name_b=uploaded_b.name, summary=summary,
+            ))
+        st.session_state.compare_docx_cache = cached_docx
+    docx_bytes = cached_docx[1]
+    st.download_button(
+        "📄 Завантажити таблицю у Word (.docx)",
+        data=docx_bytes,
+        file_name=f"Порівняння — {uploaded_a.name.rsplit('.', 1)[0]}.docx",
+        mime=DOCX_MIME,
+        type="primary",
+        use_container_width=True,
+        key="compare_download_docx",
+    )
 
 
 # Порядок опцій радіо-кнопки; підписи — з `search.presentation.STATUS_LABELS`,
