@@ -1,5 +1,6 @@
 """Тести перевірки партії джерел режиму очищення звіту Plag —
-PLAN_PLAG_FILTER.md, §10.2, етап 6.
+PLAN_PLAG_FILTER.md, §10.2, етап 6, доповнено `PLAN_PLAG_FILTER_V2.md`,
+§9.2 (етап 3) — паралельна перевірка.
 
 Замість мережі — підроблена функція `fetch`, що повертає заздалегідь
 підготовлені `FetchResult` за адресою. Дані вигадані — PLAN_PLAG_FILTER.md,
@@ -8,12 +9,15 @@ PLAN_PLAG_FILTER.md, §10.2, етап 6.
 
 from __future__ import annotations
 
+import threading
+import time
+from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
 import pytest
 
-from plag_filter.checker import check_batch, recheck_source
+from plag_filter.checker import check_batch, pending_count, recheck_source
 from plag_filter.fetch import FetchResult
 from plag_filter.rules import author_key
 from plag_filter.types import (
@@ -414,3 +418,160 @@ def test_recheck_source_updates_check_and_recomputes_decision(tmp_path: Path) ->
     assert project.states[1].check.url == alt_url
     assert project.states[1].decision == "exclude"
     assert project.states[1].reason == "own_work"
+
+
+# ---------------------------------------------------------------------------
+# Паралельна перевірка — PLAN_PLAG_FILTER_V2.md, §9.2, етап 3
+# ---------------------------------------------------------------------------
+
+
+def _make_batch(count: int, hosts: int) -> tuple[PlagReport, dict[str, SourceRow]]:
+    """30 джерел на кількох хостах — детермінований набір для порівняння workers."""
+    rows: dict[int, SourceRow] = {}
+    widths: dict[int, float] = {}
+    for number in range(1, count + 1):
+        host_index = number % hosts
+        url = f"https://host{host_index}.example/doc{number}"
+        rows[number] = make_row(number, percent=5.0, urls=(url,))
+        widths[number] = float(count - number)
+    report = make_report(rows, highlight_width=widths)
+    return report, rows
+
+
+def _fake_result_for(number: int, url: str) -> FetchResult:
+    if number % 3 == 0:
+        return ok_result(url, pages=["УДК 004.9. Петренко О. А. авторський текст."])
+    if number % 3 == 1:
+        return ok_result(url, pages=["Звичайний текст без прізвища автора."])
+    return error_result(url, "http_404")
+
+
+class _RecordingFetch:
+    """Підроблена мережа з журналом викликів під `Lock` — потокобезпечна."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.calls: list[str] = []
+
+    def __call__(self, url: str, *, tmp_dir: Path) -> FetchResult:
+        with self.lock:
+            self.calls.append(url)
+        number = int(url.rsplit("doc", 1)[1])
+        return _fake_result_for(number, url)
+
+
+def test_check_batch_workers_matches_sequential_result(tmp_path: Path) -> None:
+    count, hosts = 30, 10
+    report1, rows1 = _make_batch(count, hosts)
+    report2, rows2 = _make_batch(count, hosts)
+    states1 = {number: make_state(number) for number in rows1}
+    states2 = {number: make_state(number) for number in rows2}
+    project1 = make_project(states1)
+    project2 = make_project(states2)
+
+    check_batch(report1, project1, fetch=_RecordingFetch(), tmp_dir=tmp_path, limit=count, workers=1)
+    check_batch(report2, project2, fetch=_RecordingFetch(), tmp_dir=tmp_path, limit=count, workers=6)
+
+    for number in range(1, count + 1):
+        state1, state2 = project1.states[number], project2.states[number]
+        assert state1.decision == state2.decision
+        assert state1.reason == state2.reason
+        assert state1.check.error == state2.check.error
+        hit1 = state1.check.author_hit
+        hit2 = state2.check.author_hit
+        assert (hit1 is None) == (hit2 is None)
+        if hit1 is not None:
+            assert hit1.kind == hit2.kind
+
+
+def test_check_batch_limits_concurrent_requests_per_host(tmp_path: Path) -> None:
+    count, hosts = 24, 8
+    report, rows = _make_batch(count, hosts)
+    states = {number: make_state(number) for number in rows}
+    project = make_project(states)
+
+    lock = threading.Lock()
+    current_per_host: dict[str, int] = defaultdict(int)
+    max_per_host: dict[str, int] = defaultdict(int)
+    current_total = 0
+    max_total = 0
+
+    def slow_fetch(url: str, *, tmp_dir: Path) -> FetchResult:
+        nonlocal current_total, max_total
+        host = url.split("//", 1)[1].split("/", 1)[0]
+        with lock:
+            current_per_host[host] += 1
+            max_per_host[host] = max(max_per_host[host], current_per_host[host])
+            current_total += 1
+            max_total = max(max_total, current_total)
+        time.sleep(0.05)
+        number = int(url.rsplit("doc", 1)[1])
+        result = _fake_result_for(number, url)
+        with lock:
+            current_per_host[host] -= 1
+            current_total -= 1
+        return result
+
+    check_batch(report, project, fetch=slow_fetch, tmp_dir=tmp_path, limit=count, workers=6)
+
+    assert max(max_per_host.values()) == 1
+    assert 2 <= max_total <= 6
+
+
+def test_check_batch_rate_limited_host_skips_remaining_with_workers(tmp_path: Path) -> None:
+    shared_url = "https://busy.example/shared"
+    rows = {
+        1: make_row(1, urls=("https://busy.example/one",)),
+        2: make_row(2, urls=("https://busy.example/two",)),
+        3: make_row(3, urls=(shared_url,)),
+        4: make_row(4, urls=(shared_url,)),
+    }
+    report = make_report(rows, highlight_width={1: 4.0, 2: 3.0, 3: 2.0, 4: 1.0})
+    states = {number: make_state(number) for number in rows}
+    project = make_project(states)
+    fetch = FakeFetch({"https://busy.example/one": error_result("https://busy.example/one", "rate_limited")})
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path, limit=4, workers=6)
+
+    assert fetch.calls.count("https://busy.example/one") == 1
+    assert "https://busy.example/two" not in fetch.calls
+    assert shared_url not in fetch.calls
+    assert project.states[2].check.error == "rate_limited"
+    assert project.states[3].check.error == "rate_limited"
+    assert project.states[4].check.error == "rate_limited"
+
+
+def test_check_batch_progress_called_from_calling_thread(tmp_path: Path) -> None:
+    count, hosts = 12, 6
+    report, rows = _make_batch(count, hosts)
+    states = {number: make_state(number) for number in rows}
+    project = make_project(states)
+    test_thread = threading.get_ident()
+
+    calls: list[tuple[int, int]] = []
+    threads_seen: set[int] = set()
+
+    def progress(done: int, total: int) -> None:
+        calls.append((done, total))
+        threads_seen.add(threading.get_ident())
+
+    check_batch(
+        report, project, fetch=_RecordingFetch(), tmp_dir=tmp_path,
+        limit=count, workers=6, progress=progress,
+    )
+
+    assert calls == [(i, count) for i in range(1, count + 1)]
+    assert threads_seen == {test_thread}
+
+
+def test_pending_count_before_and_after_batch(tmp_path: Path) -> None:
+    count, hosts = 10, 5
+    report, rows = _make_batch(count, hosts)
+    states = {number: make_state(number) for number in rows}
+    project = make_project(states)
+
+    assert pending_count(report, project) == count
+
+    check_batch(report, project, fetch=_RecordingFetch(), tmp_dir=tmp_path, limit=4, workers=1)
+
+    assert pending_count(report, project) == count - 4

@@ -17,7 +17,8 @@ import pandas as pd
 import streamlit as st
 
 from parser.extractor import extract_dissertation_year
-from plag_filter.checker import check_batch, recheck_source
+from plag_filter import fetch as fetch_module
+from plag_filter.checker import CHUNK_SIZE, MAX_WORKERS, check_batch, pending_count, recheck_source
 from plag_filter.pdf import (
     UnsupportedReportError,
     append_protocol,
@@ -286,20 +287,8 @@ def _render_counters(report: PlagReport, project: PlagProject) -> None:
 
 
 def _render_actions(data: bytes, report: PlagReport, project: PlagProject, filename: str) -> None:
-    action_cols = st.columns(4)
+    action_cols = st.columns(3)
     with action_cols[0]:
-        if st.button("Перевірити наступні 20", disabled=not project.confirmed):
-            progress_bar = st.progress(0.0)
-
-            def _progress(done: int, total: int) -> None:
-                if total:
-                    progress_bar.progress(done / total)
-
-            with tempfile.TemporaryDirectory() as tmp:
-                check_batch(report, project, tmp_dir=Path(tmp), progress=_progress)
-            st.rerun()
-
-    with action_cols[1]:
         st.download_button(
             "Зберегти проєкт (JSON)",
             data=to_json(project),
@@ -308,7 +297,7 @@ def _render_actions(data: bytes, report: PlagReport, project: PlagProject, filen
             key="plag_save_project",
         )
 
-    with action_cols[2]:
+    with action_cols[1]:
         restore_upload = st.file_uploader(
             "Відновити проєкт", type=["json"], key="plag_restore_upload"
         )
@@ -321,7 +310,7 @@ def _render_actions(data: bytes, report: PlagReport, project: PlagProject, filen
                 st.session_state[_PROJECT_KEY] = restored
                 st.rerun()
 
-    with action_cols[3]:
+    with action_cols[2]:
         excluded = {
             number for number, state in project.states.items() if state.decision == "exclude"
         }
@@ -336,6 +325,48 @@ def _render_actions(data: bytes, report: PlagReport, project: PlagProject, filen
         )
 
     st.caption("Збережіть проєкт, щоб не втратити рішення")
+
+
+def _visible_source_count(report: PlagReport) -> int:
+    """Джерела ≥ 0,1 % або з нерозпізнаним відсотком — PLAN_PLAG_FILTER_V2.md, §9.2 етап 3."""
+    return sum(1 for row in report.rows.values() if row.percent is None or row.percent >= 0.1)
+
+
+def _render_autocheck(report: PlagReport, project: PlagProject) -> None:
+    """Автоматична паралельна перевірка джерел після підтвердження автора —
+    PLAN_PLAG_FILTER_V2.md, §9.2, етап 3."""
+    if not project.confirmed:
+        return
+    remaining = pending_count(report, project)
+    if remaining <= 0:
+        return
+
+    total = _visible_source_count(report)
+    checked = max(total - remaining, 0)
+
+    if st.session_state.get("plag_check_stopped", False):
+        st.info("Перевірку зупинено")
+        if st.button("Продовжити перевірку", key="plag_resume"):
+            st.session_state["plag_check_stopped"] = False
+            st.rerun()
+        return
+
+    st.progress(checked / total if total else 0.0, text=f"Перевірено {checked} з {total}")
+    if st.button("Зупинити", key="plag_stop"):
+        st.session_state["plag_check_stopped"] = True
+        st.rerun()
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        check_batch(
+            report,
+            project,
+            tmp_dir=Path(tmp),
+            limit=CHUNK_SIZE,
+            workers=MAX_WORKERS,
+            fetch=fetch_module.fetch_document,
+        )
+    st.rerun()
 
 
 def _render_page_view(data: bytes, report: PlagReport, project: PlagProject) -> None:
@@ -455,6 +486,9 @@ def render_plag_filter_page() -> None:
     project: PlagProject = st.session_state[_PROJECT_KEY]
 
     _render_author_card(data, report, project)
+
+    st.divider()
+    _render_autocheck(report, project)
 
     st.divider()
     _render_counters(report, project)

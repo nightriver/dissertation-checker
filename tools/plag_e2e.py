@@ -39,6 +39,7 @@ from plag_filter.pdf import append_protocol, filter_pdf, parse_report, render_pa
 from plag_filter.project import from_json, new_project, protocol_paragraphs, to_json
 from plag_filter.rules import derive_initials, extract_author, recompute
 from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
+from tools.measure_plag_memory import _peak_working_set_bytes
 
 _TMP_PREFIX = "plag_fetch_"
 
@@ -193,6 +194,12 @@ def main(argv: list[str] | None = None) -> int:
         help="взяти ПІБ із extract_author(title_text) — PLAN_PLAG_FILTER_V2.md, §9.2 етап 1",
     )
     parser.add_argument("--year", required=True, type=int)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=6,
+        help="паралельних запитів у check_batch — PLAN_PLAG_FILTER_V2.md, §9.2 етап 3",
+    )
     parser.add_argument("--out", required=True, type=Path, help="каталог поза репозиторієм")
     parser.add_argument(
         "--label-check",
@@ -246,7 +253,9 @@ def main(argv: list[str] | None = None) -> int:
             log: list[_DownloadLogEntry] = []
             fetch = _make_timed_fetch(tmp_dir, log)
             start = time.perf_counter()
-            checked = check_batch(report, project, fetch=fetch, tmp_dir=tmp_dir, limit=20)
+            checked = check_batch(
+                report, project, fetch=fetch, tmp_dir=tmp_dir, limit=20, workers=args.workers
+            )
             elapsed = time.perf_counter() - start
             total_batch_seconds += elapsed
             _print_batch_log(batch_no, elapsed, checked, log)
@@ -286,6 +295,9 @@ def main(argv: list[str] | None = None) -> int:
         _label_check(project, report, args.label_check)
     print(f"Проєкт: {project_path}")
     print(f"Очищений PDF: {out_pdf}")
+
+    peak_bytes = _peak_working_set_bytes()
+    print(f"Пікова пам'ять процесу: {peak_bytes / (1024 * 1024):.1f} МБ")
     return 0
 
 

@@ -1,11 +1,14 @@
 """Перевірка партії джерел режиму очищення звіту Plag.
 
-Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §5, §6, §9. Мережа підставляється
-параметром `fetch`; у продукті це `fetch.fetch_document`.
+Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §5, §6, §9, доповнений
+`PLAN_PLAG_FILTER_V2.md`, §8.3, §9.2 (етап 3) — паралельна перевірка.
+Мережа підставляється параметром `fetch`; у продукті це `fetch.fetch_document`.
 """
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -22,6 +25,10 @@ from plag_filter.rules import (
 from plag_filter.types import PlagProject, PlagReport, SourceCheck
 
 FetchFn = Callable[..., FetchResult]
+
+# Числа паралельної перевірки — PLAN_PLAG_FILTER_V2.md, §8.3, §9.2 (етап 3).
+MAX_WORKERS = 6
+CHUNK_SIZE = 12
 
 
 def _candidate_numbers(report: PlagReport, project: PlagProject, checked_for: str) -> list[int]:
@@ -99,59 +106,100 @@ def check_batch(
     tmp_dir: Path,
     limit: int = 20,
     progress: Callable[[int, int], None] | None = None,
+    workers: int = 1,
 ) -> list[int]:
-    """Перевірити чергову партію джерел — PLAN_PLAG_FILTER.md, §9.
+    """Перевірити чергову партію джерел — PLAN_PLAG_FILTER.md, §9, доповнено
+    `PLAN_PLAG_FILTER_V2.md`, §9.2 (етап 3) — паралельна перевірка.
 
     Бере джерела з відсотком ≥ 0,1 або нерозпізнаним, які ще не перевірялися
     або перевірялися для іншого автора, за спаданням W, за рівності — за
     номером. Ручне рішення повторній перевірці не заважає й зберігається.
     Однакова адреса в партії запитується один раз; після `rate_limited`
     решта джерел того самого хоста в цій партії не запитуються.
+
+    `workers` — скільки запитів виконується одночасно (`ThreadPoolExecutor`),
+    але не більше одного одночасного запиту на хост. Запис у `state.check` і
+    виклик `progress` завжди відбуваються у потоці, що викликав `check_batch`,
+    у порядку кандидатів — незалежно від порядку завершення мережевих
+    запитів. При `workers=1` поведінка ідентична послідовній.
     """
     if not project.confirmed:
         raise ValueError("Проєкт не підтверджено — партію перевіряти не можна")
 
     checked_for = author_key(project.surname, project.initials)
     candidates = _candidate_numbers(report, project, checked_for)[:limit]
-
-    cache: dict[str, FetchResult] = {}
-    blocked_hosts: set[str] = set()
-
     total = len(candidates)
-    for index, number in enumerate(candidates, start=1):
+
+    urls: dict[int, str] = {}
+    hosts: dict[int, str] = {}
+    for number in candidates:
         row = report.rows[number]
         state = project.states[number]
         url = state.alt_url if state.alt_url else row.urls[0]
-        host = urlparse(url).hostname or ""
+        urls[number] = url
+        hosts[number] = (urlparse(url).hostname or "").casefold()
 
-        if host in blocked_hosts:
-            result = FetchResult(
-                ok=False,
-                error="rate_limited",
-                url=url,
-                final_url=None,
-                kind=None,
-                pages=[],
-                meta={},
-                jsonld=[],
-                repository_meta={},
-                hints={},
-            )
-        elif url in cache:
-            result = cache[url]
-        else:
+    cache: dict[str, FetchResult] = {}
+    cache_lock = threading.Lock()
+    blocked_hosts: set[str] = set()
+    blocked_lock = threading.Lock()
+    host_locks: dict[str, threading.Lock] = {host: threading.Lock() for host in set(hosts.values())}
+
+    def fetch_for(number: int) -> FetchResult:
+        url = urls[number]
+        host = hosts[number]
+        with host_locks[host]:
+            with blocked_lock:
+                if host in blocked_hosts:
+                    return FetchResult(
+                        ok=False,
+                        error="rate_limited",
+                        url=url,
+                        final_url=None,
+                        kind=None,
+                        pages=[],
+                        meta={},
+                        jsonld=[],
+                        repository_meta={},
+                        hints={},
+                    )
+            with cache_lock:
+                cached = cache.get(url)
+            if cached is not None:
+                return cached
             result = fetch(url, tmp_dir=tmp_dir)
-            cache[url] = result
+            with cache_lock:
+                cache[url] = result
             if not result.ok and result.error == "rate_limited":
-                blocked_hosts.add(host)
+                with blocked_lock:
+                    blocked_hosts.add(host)
+            return result
 
-        state.check = _build_check(url, checked_for, result, project.surname, project.initials)
+    results: dict[int, FetchResult]
+    if workers <= 1:
+        results = {number: fetch_for(number) for number in candidates}
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {number: pool.submit(fetch_for, number) for number in candidates}
+            results = {number: futures[number].result() for number in candidates}
 
+    for index, number in enumerate(candidates, start=1):
+        state = project.states[number]
+        state.check = _build_check(
+            urls[number], checked_for, results[number], project.surname, project.initials
+        )
         if progress is not None:
             progress(index, total)
 
     recompute(project, report)
     return candidates
+
+
+def pending_count(report: PlagReport, project: PlagProject) -> int:
+    """Скільки джерел обрав би `check_batch` без обмеження `limit` —
+    PLAN_PLAG_FILTER_V2.md, §8.3, §9.2 (етап 3)."""
+    checked_for = author_key(project.surname, project.initials)
+    return len(_candidate_numbers(report, project, checked_for))
 
 
 def recheck_source(
