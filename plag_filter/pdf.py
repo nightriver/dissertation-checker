@@ -39,6 +39,12 @@ PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 FOOTER_Y = 30.0  # колонтитул: групи нижче цієї межі ігноруються
 BODY_FIRST = 3  # перший аркуш тіла — фіксований індекс шаблону Plag
 
+# Сторінка протоколу — A4, поля 40 пт, інтервал між абзацами 10 пт — §8.
+PROTOCOL_PAGE_WIDTH = 595.0
+PROTOCOL_PAGE_HEIGHT = 842.0
+PROTOCOL_MARGIN = 40.0
+PROTOCOL_GAP = 10.0
+
 
 class UnsupportedReportError(Exception):
     """Звіт не відповідає шаблону mPDF 7.1.9, очікуваному від Plag.
@@ -333,6 +339,101 @@ def render_page_png(
     try:
         pixmap = doc[page].get_pixmap(dpi=dpi)
         return pixmap.tobytes("png")
+    finally:
+        doc.close()
+
+
+def _protocol_html(text: str) -> str:
+    escaped = (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+    return f"<p>{escaped}</p>"
+
+
+def _new_protocol_page(doc: fitz.Document) -> fitz.Page:
+    return doc.new_page(width=PROTOCOL_PAGE_WIDTH, height=PROTOCOL_PAGE_HEIGHT)
+
+
+def _protocol_rect(y: float) -> fitz.Rect:
+    return fitz.Rect(
+        PROTOCOL_MARGIN, y, PROTOCOL_PAGE_WIDTH - PROTOCOL_MARGIN, PROTOCOL_PAGE_HEIGHT - PROTOCOL_MARGIN
+    )
+
+
+def _fits(text: str, rect: fitz.Rect) -> bool:
+    """Перевірити, чи текст влазить у прямокутник заданої висоти — §8.
+
+    Перевірка йде на порожній пробній сторінці: `insert_htmlbox` враховує
+    лише геометрію самого прямокутника, тож вміст поза ним не впливає.
+    """
+    probe = fitz.open()
+    try:
+        probe_page = _new_protocol_page(probe)
+        spare, _scale = probe_page.insert_htmlbox(rect, _protocol_html(text), scale_low=1)
+        return spare >= 0
+    finally:
+        probe.close()
+
+
+def _split_to_fit(text: str, rect: fitz.Rect) -> tuple[str, str]:
+    """Знайти найбільший префікс `text` за словами, що влазить у `rect` — §8.
+
+    Абзац завжди фіксовано вставляється цілком, окрім переліку спірних
+    номерів, довжина якого залежить від звіту: коли він не влазить навіть
+    на порожню сторінку, його ділять по пробілах, а решту переносять далі.
+    """
+    words = text.split(" ")
+    if len(words) <= 1:
+        return text, ""
+    low, high = 1, len(words)
+    fit_count = 1
+    while low <= high:
+        mid = (low + high) // 2
+        if _fits(" ".join(words[:mid]), rect):
+            fit_count = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    head = " ".join(words[:fit_count])
+    tail = " ".join(words[fit_count:])
+    return head, tail
+
+
+def _place_paragraph(
+    doc: fitz.Document, page: fitz.Page, y: float, text: str
+) -> tuple[fitz.Page, float]:
+    """Вставити абзац, за потреби переносячи його на нові сторінки — §8."""
+    remaining = text
+    while remaining:
+        if y > PROTOCOL_MARGIN and not _fits(remaining, _protocol_rect(y)):
+            page = _new_protocol_page(doc)
+            y = PROTOCOL_MARGIN
+
+        rect = _protocol_rect(y)
+        if _fits(remaining, rect):
+            spare, _scale = page.insert_htmlbox(rect, _protocol_html(remaining), scale_low=1)
+            used_height = rect.height - max(spare, 0.0)
+            y = rect.y0 + used_height + PROTOCOL_GAP
+            remaining = ""
+        else:
+            # Абзац не влазить навіть на порожню сторінку — переносимо частинами.
+            head, tail = _split_to_fit(remaining, rect)
+            spare, _scale = page.insert_htmlbox(rect, _protocol_html(head), scale_low=1)
+            used_height = rect.height - max(spare, 0.0)
+            y = rect.y0 + used_height + PROTOCOL_GAP
+            remaining = tail
+    return page, y
+
+
+def append_protocol(pdf: bytes, paragraphs: list[str]) -> bytes:
+    """Додати протокол очищення в кінець PDF, абзац за абзацом — PLAN_PLAG_FILTER.md, §8, §9."""
+    doc = fitz.open(stream=pdf, filetype="pdf")
+    try:
+        page = _new_protocol_page(doc)
+        y = PROTOCOL_MARGIN
+        for text in paragraphs:
+            page, y = _place_paragraph(doc, page, y, text)
+        return doc.tobytes()
     finally:
         doc.close()
 

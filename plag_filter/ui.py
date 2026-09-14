@@ -2,8 +2,8 @@
 
 Постраничний перегляд «варіант б»: заголовок і завантажувач, дані про
 роботу, лічильники, дії з проєктом, перегляд аркуша з панеллю джерел,
-згорнута таблиця всіх джерел. Протокол у PDF цей етап не додає — §10.2,
-етап 7.
+згорнута таблиця всіх джерел. Завантаження очищеного PDF додає протокол
+у кінець файлу — §10.2, етап 8.
 """
 
 from __future__ import annotations
@@ -17,8 +17,14 @@ import streamlit as st
 
 from parser.extractor import extract_dissertation_year
 from plag_filter.checker import check_batch, recheck_source
-from plag_filter.pdf import UnsupportedReportError, filter_pdf, parse_report, render_page_png
-from plag_filter.project import from_json, new_project, to_json
+from plag_filter.pdf import (
+    UnsupportedReportError,
+    append_protocol,
+    filter_pdf,
+    parse_report,
+    render_page_png,
+)
+from plag_filter.project import from_json, new_project, protocol_paragraphs, to_json
 from plag_filter.rules import order_numbers, recompute, top20_share
 from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
 from ui_helpers import file_sha256
@@ -48,6 +54,11 @@ _SORT_OPTIONS = {
     "за найдовшим фрагментом": "longest",
     "за номером": "number",
 }
+
+
+def _filtered_pdf_name(filename: str) -> str:
+    """Ім'я файлу очищеного PDF з протоколом — PLAN_PLAG_FILTER.md, §8."""
+    return f"{Path(filename).stem}_filtered.pdf"
 
 
 def _reset_if_new_file(data: bytes) -> None:
@@ -279,10 +290,11 @@ def _render_actions(data: bytes, report: PlagReport, project: PlagProject, filen
             number for number, state in project.states.items() if state.decision == "exclude"
         }
         cleaned = filter_pdf(data, report, excluded)
+        with_protocol = append_protocol(cleaned, protocol_paragraphs(project, report))
         st.download_button(
             "Завантажити очищений PDF",
-            data=cleaned,
-            file_name=f"{Path(filename).stem}_filtered.pdf",
+            data=with_protocol,
+            file_name=_filtered_pdf_name(filename),
             mime="application/pdf",
             key="plag_download_cleaned",
         )
