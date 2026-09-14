@@ -139,6 +139,8 @@ class SourceCheck:
     url_year_hint: int | None
     hints: dict[str, str]
     citation_years: list[int] = field(default_factory=list)
+    archive_used: bool = False
+    archive_first_capture: str | None = None
 
 
 @dataclass

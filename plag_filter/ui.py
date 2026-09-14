@@ -1,5 +1,5 @@
 """Екран режиму очищення звіту Plag — PLAN_PLAG_FILTER.md, §8, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 5).
+`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 5–6).
 
 Постраничний перегляд «варіант б»: заголовок і завантажувач, картка автора,
 лічильники, дії з проєктом, перегляд аркуша з панеллю джерел, згорнута
@@ -119,6 +119,8 @@ def _evidence_text(state, project: PlagProject) -> str:
             parts.append(f"Дата документа: {evidence}")
         elif check.date_conflict:
             parts.append("Суперечливі дати в документі")
+    if check.archive_used:
+        parts.append("Архівна копія")
     if check.url_year_hint is not None:
         parts.append(f"рік в адресі: {check.url_year_hint}")
     return " · ".join(parts)

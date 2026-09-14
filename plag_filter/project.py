@@ -1,7 +1,7 @@
 """Проєкт очищення звіту Plag як дані: серіалізація та протокол.
 
 Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §8, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.1, §9.2 (етапи 1–2, 5).
+`PLAN_PLAG_FILTER_V2.md`, §8.1, §9.2 (етапи 1–2, 5–6).
 """
 
 from __future__ import annotations
@@ -106,6 +106,8 @@ def _check_to_dict(check: SourceCheck | None) -> dict | None:
         "url_year_hint": check.url_year_hint,
         "hints": dict(check.hints),
         "citation_years": list(check.citation_years),
+        "archive_used": check.archive_used,
+        "archive_first_capture": check.archive_first_capture,
     }
 
 
@@ -124,6 +126,8 @@ def _check_from_dict(data: dict | None) -> SourceCheck | None:
         url_year_hint=data["url_year_hint"],
         hints=dict(data["hints"]),
         citation_years=list(data.get("citation_years", [])),
+        archive_used=data.get("archive_used", False),
+        archive_first_capture=data.get("archive_first_capture"),
     )
 
 

@@ -176,6 +176,14 @@ def _print_counters(project: PlagProject, report: PlagReport) -> None:
         for code, count in sorted(errors.items()):
             print(f"  {code}: {count}")
 
+    # PLAN_PLAG_FILTER_V2.md, §9.2 етап 6 — Web Archive.
+    archive_used = sum(1 for state in project.states.values() if state.check is not None and state.check.archive_used)
+    archive_captured = sum(
+        1 for state in project.states.values() if state.check is not None and state.check.archive_first_capture is not None
+    )
+    print(f"Архівних копій використано: {archive_used}")
+    print(f"Джерел із датою першого знімка архіву: {archive_captured}")
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)

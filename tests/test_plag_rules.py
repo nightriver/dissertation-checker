@@ -83,6 +83,7 @@ def make_check(
     doc_date: DateInterval | None = None,
     date_conflict: bool = False,
     citation_years_list: list[int] | None = None,
+    archive_first_capture: str | None = None,
 ) -> SourceCheck:
     return SourceCheck(
         checked_for=checked_for,
@@ -96,6 +97,7 @@ def make_check(
         url_year_hint=None,
         hints={},
         citation_years=citation_years_list or [],
+        archive_first_capture=archive_first_capture,
     )
 
 
@@ -706,6 +708,43 @@ def test_decide_rule8a_wins_over_citation_years_when_doc_date_present() -> None:
     state = make_state(check=check)
     project = make_project(year=2020)
     assert decide(row, state, project) == ("keep", "earlier")
+
+
+# ---------------------------------------------------------------------------
+# decide — 8в, перший знімок архіву, PLAN_PLAG_FILTER_V2.md, §8.2 етап 6
+# ---------------------------------------------------------------------------
+
+
+def test_decide_rule8v_earlier_from_archive_first_capture() -> None:
+    row = make_row(percent=5.0)
+    check = make_check(doc_date=None, archive_first_capture="2001-06-01")
+    state = make_state(check=check)
+    project = make_project(year=2002)
+    assert decide(row, state, project) == ("keep", "earlier")
+
+
+def test_decide_rule8v_date_unknown_when_archive_first_capture_after_year() -> None:
+    row = make_row(percent=5.0)
+    check = make_check(doc_date=None, archive_first_capture="2005-01-01")
+    state = make_state(check=check)
+    project = make_project(year=2002)
+    assert decide(row, state, project) == ("disputed", "date_unknown")
+
+
+def test_decide_rule8b_wins_over_archive_first_capture() -> None:
+    row = make_row(percent=5.0)
+    check = make_check(
+        doc_date=None, citation_years_list=[2021, 2022], archive_first_capture="2001-06-01"
+    )
+    state = make_state(check=check)
+    project = make_project(year=2020)
+    assert decide(row, state, project) == ("exclude", "later")
+
+
+def test_date_evidence_archive_first_capture_phrase() -> None:
+    check = make_check(doc_date=None, archive_first_capture="2001-06-01")
+    evidence = date_evidence(check, 2002)
+    assert evidence == "архів: перший знімок 2001-06-01"
 
 
 def test_decide_rule9_later() -> None:

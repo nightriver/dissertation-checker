@@ -175,6 +175,58 @@ def test_from_json_defaults_citation_years_to_empty_list_without_field() -> None
     assert restored.states[1].check.citation_years == []
 
 
+def test_to_json_from_json_roundtrip_preserves_archive_fields() -> None:
+    report = make_report({1: make_row(1, 5.0)})
+    check = SourceCheck(
+        checked_for="петренко|о.а.",
+        url="https://example.org/doc",
+        final_url="https://web.archive.org/web/20030101000000id_/https://example.org/doc",
+        error=None,
+        author_hit=None,
+        doc_date=None,
+        date_basis="archive:pdf:2002 (стор. 1)",
+        date_conflict=False,
+        url_year_hint=None,
+        hints={"original_error": "http_404"},
+        archive_used=True,
+        archive_first_capture="2001-06-01",
+    )
+    project = make_project(
+        year=2002, states={1: make_state(1, check=check, decision="keep", reason="earlier")}
+    )
+
+    restored = from_json(to_json(project), report)
+
+    assert restored == project
+    assert restored.states[1].check.archive_used is True
+    assert restored.states[1].check.archive_first_capture == "2001-06-01"
+
+
+def test_from_json_defaults_archive_fields_without_them() -> None:
+    report = make_report({1: make_row(1, 5.0)})
+    check = SourceCheck(
+        checked_for="петренко|о.а.",
+        url="https://example.org/doc",
+        final_url="https://example.org/doc",
+        error=None,
+        author_hit=None,
+        doc_date=None,
+        date_basis=None,
+        date_conflict=False,
+        url_year_hint=None,
+        hints={},
+    )
+    project = make_project(states={1: make_state(1, check=check)})
+    text = json.loads(to_json(project))
+    del text["states"]["1"]["check"]["archive_used"]
+    del text["states"]["1"]["check"]["archive_first_capture"]
+
+    restored = from_json(json.dumps(text, ensure_ascii=False), report)
+
+    assert restored.states[1].check.archive_used is False
+    assert restored.states[1].check.archive_first_capture is None
+
+
 def test_to_json_from_json_roundtrip_without_check_or_manual() -> None:
     report = make_report({1: make_row(1, 5.0)})
     project = make_project(states={1: make_state(1)})

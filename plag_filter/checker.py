@@ -1,8 +1,9 @@
 """Перевірка партії джерел режиму очищення звіту Plag.
 
 Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §5, §6, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.3, §9.2 (етапи 3, 5) — паралельна перевірка та
-роки цитування для правила «цитує пізніші праці».
+`PLAN_PLAG_FILTER_V2.md`, §8.3, §9.2 (етапи 3, 5, 6) — паралельна перевірка,
+роки цитування для правила «цитує пізніші праці» та ланцюжок звернень до
+Web Archive для недоступних і недатованих документів.
 Мережа підставляється параметром `fetch`; у продукті це `fetch.fetch_document`.
 """
 
@@ -12,9 +13,15 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
-from plag_filter.fetch import FetchResult, fetch_document
+from plag_filter.fetch import (
+    FetchResult,
+    fetch_document,
+    parse_cdx_first_capture,
+    wayback_copy_url,
+    wayback_cdx_url,
+)
 from plag_filter.rules import (
     author_key,
     citation_years,
@@ -33,6 +40,10 @@ FetchFn = Callable[..., FetchResult]
 # Числа паралельної перевірки — PLAN_PLAG_FILTER_V2.md, §8.3, §9.2 (етап 3).
 MAX_WORKERS = 6
 CHUNK_SIZE = 12
+
+# Помилки, після яких пробуємо іншу схему і Web Archive —
+# PLAN_PLAG_FILTER_V2.md, §8.3, §9.2 (етап 6).
+RETRY_ERRORS = frozenset({"http_404", "http_403", "network_error", "timeout"})
 
 
 def _candidate_numbers(report: PlagReport, project: PlagProject, checked_for: str) -> list[int]:
@@ -115,6 +126,111 @@ def _build_check(url: str, checked_for: str, result: FetchResult, surname: str, 
     )
 
 
+def _swap_scheme(url: str) -> str:
+    """Замінити схему `http` на `https` і навпаки — PLAN_PLAG_FILTER_V2.md, §9.2 етап 6."""
+    parsed = urlparse(url)
+    scheme = "https" if parsed.scheme == "http" else "http"
+    return urlunparse(parsed._replace(scheme=scheme))
+
+
+def _rate_limited_result(url: str) -> FetchResult:
+    return FetchResult(
+        ok=False,
+        error="rate_limited",
+        url=url,
+        final_url=None,
+        kind=None,
+        pages=[],
+        meta={},
+        jsonld=[],
+        repository_meta={},
+        hints={},
+    )
+
+
+def _cached_fetch(
+    url: str,
+    fetch: FetchFn,
+    tmp_dir: Path,
+    cache: dict[str, FetchResult],
+    cache_lock: threading.Lock,
+) -> FetchResult:
+    with cache_lock:
+        cached = cache.get(url)
+    if cached is not None:
+        return cached
+    result = fetch(url, tmp_dir=tmp_dir)
+    with cache_lock:
+        cache[url] = result
+    return result
+
+
+def _fetch_with_fallback(
+    url: str,
+    year: int | None,
+    fetch: FetchFn,
+    tmp_dir: Path,
+    cache: dict[str, FetchResult],
+    cache_lock: threading.Lock,
+    archive_lock: threading.Lock,
+    archive_state: dict[str, bool],
+) -> tuple[FetchResult, bool, str | None]:
+    """Ланцюжок `fetch(url)` → заміна схеми → архівна копія —
+    PLAN_PLAG_FILTER_V2.md, §8.4, §9.2 (етап 6).
+
+    Повертає `(result, archive_used, original_error)`. Архівна копія
+    використовується, лише якщо і пряма, і схемозамінна спроба з помилкою з
+    `RETRY_ERRORS`; успіх архіву позначається `archive_used` і зберігає
+    вихідну помилку `r.error` для підказки `hints["original_error"]`. Усі
+    звернення до `WAYBACK_BASE` — під `archive_lock`; після `rate_limited`
+    від архіву подальші архівні спроби в цій партії пропускаються.
+    """
+    result = _cached_fetch(url, fetch, tmp_dir, cache, cache_lock)
+    if result.ok or result.error not in RETRY_ERRORS:
+        return result, False, None
+
+    original_error = result.error
+    swap_result = _cached_fetch(_swap_scheme(url), fetch, tmp_dir, cache, cache_lock)
+    if swap_result.ok:
+        return swap_result, False, None
+
+    if year is None:
+        return result, False, None
+
+    with archive_lock:
+        if archive_state["blocked"]:
+            return result, False, None
+        archive_result = fetch(wayback_copy_url(url, year), tmp_dir=tmp_dir)
+        if not archive_result.ok and archive_result.error == "rate_limited":
+            archive_state["blocked"] = True
+
+    if archive_result.ok:
+        return archive_result, True, original_error
+    return result, False, None
+
+
+def _fetch_archive_first_capture(
+    url: str,
+    fetch: FetchFn,
+    tmp_dir: Path,
+    archive_lock: threading.Lock,
+    archive_state: dict[str, bool],
+) -> str | None:
+    """Дата першого знімка адреси в архіві — PLAN_PLAG_FILTER_V2.md, §8.4,
+    §9.2 (етап 6). Лише для успішно завантажених недатованих документів."""
+    with archive_lock:
+        if archive_state["blocked"]:
+            return None
+        result = fetch(wayback_cdx_url(url), tmp_dir=tmp_dir)
+        if not result.ok:
+            if result.error == "rate_limited":
+                archive_state["blocked"] = True
+            return None
+    if not result.pages:
+        return None
+    return parse_cdx_first_capture(result.pages[0])
+
+
 def check_batch(
     report: PlagReport,
     project: PlagProject,
@@ -161,38 +277,38 @@ def check_batch(
     blocked_hosts: set[str] = set()
     blocked_lock = threading.Lock()
     host_locks: dict[str, threading.Lock] = {host: threading.Lock() for host in set(hosts.values())}
+    archive_lock = threading.Lock()
+    archive_state: dict[str, bool] = {"blocked": False}
 
-    def fetch_for(number: int) -> FetchResult:
+    def fetch_for(number: int) -> SourceCheck:
         url = urls[number]
         host = hosts[number]
         with host_locks[host]:
             with blocked_lock:
-                if host in blocked_hosts:
-                    return FetchResult(
-                        ok=False,
-                        error="rate_limited",
-                        url=url,
-                        final_url=None,
-                        kind=None,
-                        pages=[],
-                        meta={},
-                        jsonld=[],
-                        repository_meta={},
-                        hints={},
-                    )
-            with cache_lock:
-                cached = cache.get(url)
-            if cached is not None:
-                return cached
-            result = fetch(url, tmp_dir=tmp_dir)
-            with cache_lock:
-                cache[url] = result
-            if not result.ok and result.error == "rate_limited":
-                with blocked_lock:
-                    blocked_hosts.add(host)
-            return result
+                host_blocked = host in blocked_hosts
+            if host_blocked:
+                result, archive_used, original_error = _rate_limited_result(url), False, None
+            else:
+                result, archive_used, original_error = _fetch_with_fallback(
+                    url, project.year, fetch, tmp_dir, cache, cache_lock, archive_lock, archive_state
+                )
+                if not result.ok and result.error == "rate_limited":
+                    with blocked_lock:
+                        blocked_hosts.add(host)
 
-    results: dict[int, FetchResult]
+        check = _build_check(url, checked_for, result, project.surname, project.initials)
+        if archive_used:
+            check.archive_used = True
+            check.hints["original_error"] = original_error
+            if check.date_basis is not None:
+                check.date_basis = f"archive:{check.date_basis}"
+        if result.ok and check.doc_date is None and not check.date_conflict:
+            check.archive_first_capture = _fetch_archive_first_capture(
+                url, fetch, tmp_dir, archive_lock, archive_state
+            )
+        return check
+
+    results: dict[int, SourceCheck]
     if workers <= 1:
         results = {number: fetch_for(number) for number in candidates}
     else:
@@ -201,10 +317,7 @@ def check_batch(
             results = {number: futures[number].result() for number in candidates}
 
     for index, number in enumerate(candidates, start=1):
-        state = project.states[number]
-        state.check = _build_check(
-            urls[number], checked_for, results[number], project.surname, project.initials
-        )
+        project.states[number].check = results[number]
         if progress is not None:
             progress(index, total)
 

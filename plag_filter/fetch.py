@@ -1,14 +1,18 @@
 """Завантаження документів джерел для режиму очищення звіту Plag.
 
-Контракт узятий з `PLAN_PLAG_FILTER.md`, §6, §9. Лише стандартна бібліотека
-та PyMuPDF; нових залежностей не додавати. Завантаження послідовні — паралелі
-й повторні спроби тут не робляться.
+Контракт узятий з `PLAN_PLAG_FILTER.md`, §6, §9, доповнений
+`PLAN_PLAG_FILTER_V2.md`, §8.4, §9.2 (етап 6) — адреси Web Archive. Лише
+стандартна бібліотека та PyMuPDF; нових залежностей не додавати. Одне
+завантаження документа тут лишається послідовним; паралельність і ланцюжок
+повторних спроб (заміна схеми, архівна копія) — у `checker.py`.
 """
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import os
+import re
 import socket
 import tempfile
 import urllib.error
@@ -226,6 +230,8 @@ def _fetch_once(
             if isinstance(exc.reason, (socket.timeout, TimeoutError)):
                 return _error_result(url, "timeout"), None
             return _error_result(url, "network_error"), None
+        except http.client.HTTPException:
+            return _error_result(url, "network_error"), None
         break
 
     return _download_and_parse(url, current_url, response, tmp_dir)
@@ -355,6 +361,33 @@ def _parse_html(
         hints=hints,
     )
     return result, target
+
+
+# PLAN_PLAG_FILTER_V2.md, §8.4, §9.2 етап 6 — Web Archive: копія недоступного
+# документа та дата першого знімка.
+WAYBACK_BASE = "https://web.archive.org"
+
+_CDX_TIMESTAMP_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})\d{6}$")
+
+
+def wayback_copy_url(url: str, year: int) -> str:
+    """Адреса архівної копії документа — PLAN_PLAG_FILTER_V2.md, §8.4."""
+    return f"{WAYBACK_BASE}/web/{year + 1}0101000000id_/{url}"
+
+
+def wayback_cdx_url(url: str) -> str:
+    """Адреса запиту CDX API за першим знімком — PLAN_PLAG_FILTER_V2.md, §8.4."""
+    return f"{WAYBACK_BASE}/cdx/search/cdx?url={quote(url, safe='')}&limit=1&fl=timestamp"
+
+
+def parse_cdx_first_capture(text: str) -> str | None:
+    """Дата першого знімка з відповіді CDX API — PLAN_PLAG_FILTER_V2.md, §8.4."""
+    first_line = text.splitlines()[0].strip() if text.splitlines() else ""
+    match = _CDX_TIMESTAMP_RE.match(first_line)
+    if match is None:
+        return None
+    year, month, day = match.groups()
+    return f"{year}-{month}-{day}"
 
 
 def fetch_document(url: str, *, tmp_dir: Path, allow_private: bool = False) -> FetchResult:

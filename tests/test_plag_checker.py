@@ -1,6 +1,6 @@
 """Тести перевірки партії джерел режиму очищення звіту Plag —
 PLAN_PLAG_FILTER.md, §10.2, етап 6, доповнено `PLAN_PLAG_FILTER_V2.md`,
-§9.2 (етап 3) — паралельна перевірка.
+§9.2 (етапи 3, 6) — паралельна перевірка та ланцюжок звернень до Web Archive.
 
 Замість мережі — підроблена функція `fetch`, що повертає заздалегідь
 підготовлені `FetchResult` за адресою. Дані вигадані — PLAN_PLAG_FILTER.md,
@@ -9,6 +9,7 @@ PLAN_PLAG_FILTER.md, §10.2, етап 6, доповнено `PLAN_PLAG_FILTER_V2
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import defaultdict
@@ -18,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from plag_filter.checker import check_batch, pending_count, recheck_source
-from plag_filter.fetch import FetchResult
+from plag_filter.fetch import FetchResult, wayback_copy_url, wayback_cdx_url
 from plag_filter.rules import author_key
 from plag_filter.types import (
     AuthorHit,
@@ -496,6 +497,235 @@ def test_recheck_source_updates_check_and_recomputes_decision(tmp_path: Path) ->
 
 
 # ---------------------------------------------------------------------------
+# Web Archive — PLAN_PLAG_FILTER_V2.md, §8.4, §9.2, етап 6
+# ---------------------------------------------------------------------------
+
+
+def test_check_batch_retries_https_then_archive_on_retry_error(tmp_path: Path) -> None:
+    url = "http://a.example/doc"
+    swapped = "https://a.example/doc"
+    archive_url = wayback_copy_url(url, 2002)
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch(
+        {
+            url: error_result(url, "http_404"),
+            swapped: error_result(swapped, "http_404"),
+            archive_url: ok_result(archive_url, pages=["Харків – 2000. Інший текст."]),
+        }
+    )
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert fetch.calls == [url, swapped, archive_url]
+    check = project.states[1].check
+    assert check.error is None
+    assert check.archive_used is True
+    assert check.final_url == archive_url
+    assert check.hints["original_error"] == "http_404"
+    assert check.date_basis is not None
+    assert check.date_basis.startswith("archive:")
+
+
+def test_check_batch_keeps_original_error_when_all_three_attempts_fail(tmp_path: Path) -> None:
+    url = "http://a.example/broken2"
+    swapped = "https://a.example/broken2"
+    archive_url = wayback_copy_url(url, 2002)
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch(
+        {
+            url: error_result(url, "http_404"),
+            swapped: error_result(swapped, "http_404"),
+            archive_url: error_result(archive_url, "http_404"),
+        }
+    )
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    check = project.states[1].check
+    assert check.error == "http_404"
+    assert check.archive_used is False
+
+
+@pytest.mark.parametrize("error_code", ["http_500", "too_large"])
+def test_check_batch_does_not_retry_for_non_retry_errors(tmp_path: Path, error_code: str) -> None:
+    url = f"http://a.example/{error_code}"
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch({url: error_result(url, error_code)})
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert fetch.calls == [url]
+    assert project.states[1].check.error == error_code
+
+
+def test_check_batch_requests_cdx_only_for_successful_undated(tmp_path: Path) -> None:
+    url = "https://a.example/undated"
+    cdx_url = wayback_cdx_url(url)
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch(
+        {
+            url: ok_result(url, pages=["Звичайний текст без прізвища і без дати."]),
+            cdx_url: ok_result(cdx_url, pages=["20010601123456\n"]),
+        }
+    )
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert cdx_url in fetch.calls
+    assert project.states[1].check.archive_first_capture == "2001-06-01"
+
+
+def test_check_batch_does_not_request_cdx_when_doc_date_known(tmp_path: Path) -> None:
+    url = "https://a.example/dated"
+    cdx_url = wayback_cdx_url(url)
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch({url: ok_result(url, pages=["Харків – 2000. Інший текст."])})
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert cdx_url not in fetch.calls
+
+
+def test_check_batch_archive_first_capture_before_year_marks_earlier(tmp_path: Path) -> None:
+    url = "https://a.example/undated2"
+    cdx_url = wayback_cdx_url(url)
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch(
+        {
+            url: ok_result(url, pages=["Звичайний текст без дати."]),
+            cdx_url: ok_result(cdx_url, pages=["20010601123456\n"]),
+        }
+    )
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert project.states[1].decision == "keep"
+    assert project.states[1].reason == "earlier"
+
+
+def test_check_batch_archive_first_capture_after_year_marks_date_unknown(tmp_path: Path) -> None:
+    url = "https://a.example/undated3"
+    cdx_url = wayback_cdx_url(url)
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch(
+        {
+            url: ok_result(url, pages=["Звичайний текст без дати."]),
+            cdx_url: ok_result(cdx_url, pages=["20050101123456\n"]),
+        }
+    )
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert project.states[1].decision == "disputed"
+    assert project.states[1].reason == "date_unknown"
+
+
+def test_check_batch_archive_requests_serialized_with_workers(tmp_path: Path) -> None:
+    count = 6
+    rows: dict[int, SourceRow] = {}
+    widths: dict[int, float] = {}
+    fetch_map: dict[str, FetchResult] = {}
+    for i in range(1, count + 1):
+        url = f"http://host{i}.example/doc"
+        swapped = f"https://host{i}.example/doc"
+        archive_url = wayback_copy_url(url, 2002)
+        rows[i] = make_row(i, urls=(url,))
+        widths[i] = float(count - i)
+        fetch_map[url] = error_result(url, "http_404")
+        fetch_map[swapped] = error_result(swapped, "http_404")
+        fetch_map[archive_url] = ok_result(archive_url, pages=["Харків – 2000."])
+    report = make_report(rows, highlight_width=widths)
+    states = {i: make_state(i) for i in rows}
+    project = make_project(states, year=2002)
+
+    lock = threading.Lock()
+    current = 0
+    max_current = 0
+
+    def slow_fetch(url: str, *, tmp_dir: Path) -> FetchResult:
+        nonlocal current, max_current
+        is_archive = url.startswith("https://web.archive.org")
+        if is_archive:
+            with lock:
+                current += 1
+                max_current = max(max_current, current)
+            time.sleep(0.05)
+        result = fetch_map.get(url, error_result(url, "network_error"))
+        if is_archive:
+            with lock:
+                current -= 1
+        return result
+
+    check_batch(report, project, fetch=slow_fetch, tmp_dir=tmp_path, limit=count, workers=6)
+
+    assert max_current == 1
+
+
+def test_check_batch_archive_rate_limited_skips_remaining_archive_requests(tmp_path: Path) -> None:
+    rows: dict[int, SourceRow] = {}
+    widths: dict[int, float] = {}
+    fetch_map: dict[str, FetchResult] = {}
+    urls = {}
+    archive_urls = {}
+    for i in (1, 2):
+        url = f"http://host{i}.example/doc"
+        swapped = f"https://host{i}.example/doc"
+        archive_url = wayback_copy_url(url, 2002)
+        urls[i] = url
+        archive_urls[i] = archive_url
+        rows[i] = make_row(i, urls=(url,))
+        widths[i] = float(3 - i)
+        fetch_map[url] = error_result(url, "http_404")
+        fetch_map[swapped] = error_result(swapped, "http_404")
+        fetch_map[archive_url] = (
+            error_result(archive_url, "rate_limited") if i == 1 else ok_result(archive_url)
+        )
+    report = make_report(rows, highlight_width=widths)
+    states = {i: make_state(i) for i in rows}
+    project = make_project(states, year=2002)
+
+    calls: list[str] = []
+
+    def fetch(url: str, *, tmp_dir: Path) -> FetchResult:
+        calls.append(url)
+        return fetch_map.get(url, error_result(url, "network_error"))
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path, limit=2, workers=1)
+
+    assert archive_urls[1] in calls
+    assert archive_urls[2] not in calls
+    assert project.states[2].check.error == "http_404"
+
+
+def test_from_json_style_check_fields_have_archive_defaults(tmp_path: Path) -> None:
+    """Дефолти нових полів `SourceCheck` — PLAN_PLAG_FILTER_V2.md, §8.1 етап 6."""
+    url = "https://a.example/plain"
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch({url: ok_result(url, pages=["Харків – 2000."])})
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert project.states[1].check.archive_used is False
+    assert project.states[1].check.archive_first_capture is None
+
+
+# ---------------------------------------------------------------------------
 # Паралельна перевірка — PLAN_PLAG_FILTER_V2.md, §9.2, етап 3
 # ---------------------------------------------------------------------------
 
@@ -531,7 +761,12 @@ class _RecordingFetch:
     def __call__(self, url: str, *, tmp_dir: Path) -> FetchResult:
         with self.lock:
             self.calls.append(url)
-        number = int(url.rsplit("doc", 1)[1])
+        # Число видобувається регуляркою, а не `rsplit`, щоб коректно
+        # працювати й для адрес заміни схеми та Web Archive
+        # (PLAN_PLAG_FILTER_V2.md, §9.2 етап 6), де за "doc<N>" ідуть інші
+        # символи запиту чи кодування.
+        match = re.search(r"doc(\d+)", url)
+        number = int(match.group(1))
         return _fake_result_for(number, url)
 
 
@@ -580,7 +815,9 @@ def test_check_batch_limits_concurrent_requests_per_host(tmp_path: Path) -> None
             current_total += 1
             max_total = max(max_total, current_total)
         time.sleep(0.05)
-        number = int(url.rsplit("doc", 1)[1])
+        # Регулярка замість `rsplit` — щоб коректно розбирати й адреси заміни
+        # схеми та Web Archive (PLAN_PLAG_FILTER_V2.md, §9.2 етап 6).
+        number = int(re.search(r"doc(\d+)", url).group(1))
         result = _fake_result_for(number, url)
         with lock:
             current_per_host[host] -= 1

@@ -16,7 +16,13 @@ import fitz
 import pytest
 
 from plag_filter import fetch as fetch_module
-from plag_filter.fetch import fetch_document
+from plag_filter.fetch import (
+    WAYBACK_BASE,
+    fetch_document,
+    parse_cdx_first_capture,
+    wayback_copy_url,
+    wayback_cdx_url,
+)
 
 
 DEFAULT_PDF_TEXT = (
@@ -336,6 +342,23 @@ def test_fetch_timeout(tmp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_tmp_dir_empty(tmp_dir)
 
 
+def test_fetch_remote_disconnected_returns_network_error(
+    tmp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import http.client
+
+    def raise_remote_disconnected(request, timeout=None):
+        raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+    monkeypatch.setattr(fetch_module._OPENER, "open", raise_remote_disconnected)
+
+    result = fetch_document("http://127.0.0.1:1/page", tmp_dir=tmp_dir, allow_private=True)
+
+    assert result.ok is False
+    assert result.error == "network_error"
+    _assert_tmp_dir_empty(tmp_dir)
+
+
 def test_fetch_blocked_address_without_allow_private(tmp_dir: Path) -> None:
     calls = []
 
@@ -410,6 +433,33 @@ def test_fetch_html_time_inside_first_article_captured(tmp_dir: Path) -> None:
     assert result.ok is True
     assert result.meta.get("time:article") == "2019-05-03"
     _assert_tmp_dir_empty(tmp_dir)
+
+
+# ---------------------------------------------------------------------------
+# Web Archive — PLAN_PLAG_FILTER_V2.md, §8.4, §9.2 етап 6
+# ---------------------------------------------------------------------------
+
+
+def test_wayback_copy_url_exact_format() -> None:
+    url = wayback_copy_url("https://a.example/doc.pdf", 2002)
+    assert url == f"{WAYBACK_BASE}/web/20030101000000id_/https://a.example/doc.pdf"
+
+
+def test_wayback_cdx_url_exact_format() -> None:
+    url = wayback_cdx_url("https://a.example/doc.pdf")
+    assert url == f"{WAYBACK_BASE}/cdx/search/cdx?url=https%3A%2F%2Fa.example%2Fdoc.pdf&limit=1&fl=timestamp"
+
+
+def test_parse_cdx_first_capture_parses_timestamp() -> None:
+    assert parse_cdx_first_capture("20010601123456\n") == "2001-06-01"
+
+
+def test_parse_cdx_first_capture_none_on_empty_text() -> None:
+    assert parse_cdx_first_capture("") is None
+
+
+def test_parse_cdx_first_capture_none_on_malformed_line() -> None:
+    assert parse_cdx_first_capture("not a timestamp") is None
 
 
 def test_no_new_dependencies_in_requirements() -> None:

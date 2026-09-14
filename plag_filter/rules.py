@@ -1,8 +1,8 @@
 """Правила режиму очищення звіту Plag: автор, дати, рішення.
 
 Контракт узятий з `PLAN_PLAG_FILTER.md`, §3, §4, §5, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.2, §9.2 (етапи 1–2). Числа й порядок правил не
-змінюються без правки плану.
+`PLAN_PLAG_FILTER_V2.md`, §8.2, §9.2 (етапи 1–2, 5–6). Числа й порядок правил
+не змінюються без правки плану.
 """
 
 from __future__ import annotations
@@ -509,7 +509,21 @@ def decide(row: SourceRow, state: SourceState, project: PlagProject) -> tuple[De
         if len(later_years) >= MIN_LATER_CITATIONS:
             return "exclude", "later"
 
+        first_capture = _parse_archive_date(check.archive_first_capture)
+        if first_capture is not None and first_capture <= date(year, 12, 31):
+            return "keep", "earlier"
+
     return "disputed", "date_unknown"
+
+
+def _parse_archive_date(value: str | None) -> date | None:
+    """Розібрати дату першого знімка архіву — PLAN_PLAG_FILTER_V2.md, §8.2 етап 6."""
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def date_evidence(check: SourceCheck, year: int | None) -> str:
@@ -518,7 +532,9 @@ def date_evidence(check: SourceCheck, year: int | None) -> str:
 
     При встановленій даті документа — інтервал і підстава; коли дати немає,
     але серед цитувань є пізніші за рік дисертації — кількість і найбільший
-    рік; архівна гілка додається на етапі 6; інакше — порожній рядок.
+    рік; коли й цього немає, але відомий перший знімок архіву не пізніше
+    року дисертації — дата знімка (PLAN_PLAG_FILTER_V2.md, §8.2 етап 6);
+    інакше — порожній рядок.
     """
     if check.doc_date is not None:
         basis = check.date_basis or "—"
@@ -528,6 +544,10 @@ def date_evidence(check: SourceCheck, year: int | None) -> str:
         later_years = [y for y in check.citation_years if y > year]
         if len(later_years) >= MIN_LATER_CITATIONS:
             return f"цитує праці {max(later_years)} р. ({len(later_years)} записів)"
+
+        first_capture = _parse_archive_date(check.archive_first_capture)
+        if first_capture is not None and first_capture <= date(year, 12, 31):
+            return f"архів: перший знімок {check.archive_first_capture}"
 
     return ""
 
