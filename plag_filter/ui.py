@@ -47,12 +47,14 @@ _REPORT_KEY = "plag_report"
 _DATA_KEY = "plag_data"
 _PROJECT_KEY = "plag_project"
 _PAGE_KEY = "plag_page"
+_CLEANED_PDF_KEY = "plag_cleaned_pdf"
 
 _RESETTABLE_KEYS = (
     _PROJECT_KEY,
     _REPORT_KEY,
     _DATA_KEY,
     _PAGE_KEY,
+    _CLEANED_PDF_KEY,
     "plag_surname",
     "plag_given_name",
     "plag_patronymic",
@@ -295,6 +297,21 @@ def _render_counters(report: PlagReport, project: PlagProject) -> None:
     )
 
 
+def _cleaned_pdf_with_protocol(
+    data: bytes, report: PlagReport, project: PlagProject, excluded: set[int]
+) -> bytes:
+    """Очищений PDF з протоколом, побудований раз на набір виключень — §9.2, етап 7."""
+    key = frozenset(excluded)
+    cache: dict[frozenset[int], bytes] = st.session_state.setdefault(_CLEANED_PDF_KEY, {})
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    cleaned = filter_pdf(data, report, excluded)
+    with_protocol = append_protocol(cleaned, protocol_paragraphs(project, report))
+    cache[key] = with_protocol
+    return with_protocol
+
+
 def _render_actions(data: bytes, report: PlagReport, project: PlagProject, filename: str) -> None:
     action_cols = st.columns(3)
     with action_cols[0]:
@@ -323,8 +340,7 @@ def _render_actions(data: bytes, report: PlagReport, project: PlagProject, filen
         excluded = {
             number for number, state in project.states.items() if state.decision == "exclude"
         }
-        cleaned = filter_pdf(data, report, excluded)
-        with_protocol = append_protocol(cleaned, protocol_paragraphs(project, report))
+        with_protocol = _cleaned_pdf_with_protocol(data, report, project, excluded)
         st.download_button(
             "Завантажити очищений PDF",
             data=with_protocol,

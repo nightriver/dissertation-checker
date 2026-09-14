@@ -114,6 +114,19 @@ class AuthorHit:
 
 
 @dataclass(frozen=True)
+class OverlayItem:
+    """Одна фігура наведення на сторінку — PLAN_PLAG_FILTER_V2.md, §8.1, §9.2 етап 7."""
+
+    number: int
+    kind: Literal["marker", "highlight"]
+    color: Literal["pink", "yellow", "marker"]
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+@dataclass(frozen=True)
 class AuthorGuess:
     """Автор, розпізнаний із тексту титулу — PLAN_PLAG_FILTER_V2.md, §8.1."""
 

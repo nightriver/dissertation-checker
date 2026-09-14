@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import OrderedDict
 from urllib.parse import urlparse
 
 import fitz
 
-from plag_filter.types import BodyEvent, PlagReport, SourceRow
+from plag_filter.types import BodyEvent, OverlayItem, PlagReport, SourceRow
 
 # Кольори заливок Plag (RGB, округлення до 3 знаків) — PLAN_PLAG_FILTER.md, §7.
 GREEN = (0.2, 0.373, 0.373)
@@ -333,12 +334,101 @@ def filter_pdf(data: bytes, report: PlagReport, excluded: set[int]) -> bytes:
 def render_page_png(
     data: bytes, report: PlagReport, page: int, excluded: set[int], dpi: int = 110
 ) -> bytes:
-    """Растеризувати аркуш PDF з урахуванням поточних виключень — PLAN_PLAG_FILTER.md, §8, §9."""
-    source = filter_pdf(data, report, excluded) if excluded else data
-    doc = fitz.open(stream=source, filetype="pdf")
+    """Растеризувати аркуш PDF з урахуванням поточних виключень — PLAN_PLAG_FILTER.md, §8, §9.
+
+    Ріжеться лише потік запитаної сторінки — PLAN_PLAG_FILTER_V2.md, §9.2, етап 7,
+    на відміну від `filter_pdf`, який обробляє весь документ.
+    """
+    doc = fitz.open(stream=data, filetype="pdf")
     try:
+        if excluded:
+            cuts: list[tuple[int, int]] = []
+            for event in report.events:
+                if event.page == page and event.number in excluded:
+                    cuts.extend(event.cuts)
+            for row in report.rows.values():
+                if row.list_page == page and row.number in excluded:
+                    cuts.extend(row.row_cuts)
+            if cuts:
+                _apply_cuts(doc[page], cuts)
         pixmap = doc[page].get_pixmap(dpi=dpi)
         return pixmap.tobytes("png")
+    finally:
+        doc.close()
+
+
+# Кеш "чистих" сторінок — PLAN_PLAG_FILTER_V2.md, §9.2, етап 7: не більше
+# `_CLEAN_PAGE_CACHE_LIMIT` записів, витіснення найстарішого.
+_CLEAN_PAGE_CACHE_LIMIT = 64
+_clean_page_cache: OrderedDict[tuple[str, int, int], bytes] = OrderedDict()
+
+
+def render_clean_page_png(
+    data: bytes, report: PlagReport, page: int, dpi: int = 110
+) -> bytes:
+    """Аркуш без жодних номерів джерел — PLAN_PLAG_FILTER_V2.md, §8.5, §9.2, етап 7."""
+    key = (report.sha256, page, dpi)
+    cached = _clean_page_cache.get(key)
+    if cached is not None:
+        _clean_page_cache.move_to_end(key)
+        return cached
+
+    excluded = set(report.numbers_by_page.get(page, ()))
+    result = render_page_png(data, report, page, excluded, dpi)
+
+    _clean_page_cache[key] = result
+    _clean_page_cache.move_to_end(key)
+    if len(_clean_page_cache) > _CLEAN_PAGE_CACHE_LIMIT:
+        _clean_page_cache.popitem(last=False)
+    return result
+
+
+# Відповідність кольору заливки та виду наведення — PLAN_PLAG_FILTER_V2.md, §9.2, етап 7.
+_OVERLAY_COLORS: dict[tuple[float, float, float], tuple[str, str]] = {
+    PINK: ("highlight", "pink"),
+    YELLOW: ("highlight", "yellow"),
+    GREEN: ("marker", "marker"),
+}
+
+
+def page_overlay(data: bytes, report: PlagReport, page: int) -> list[OverlayItem]:
+    """Фігури наведення сторінки, зіставлені з подіями `report.events` — §8.5, §9.2, етап 7."""
+    doc = fitz.open(stream=data, filetype="pdf")
+    try:
+        pdf_page = doc[page]
+        width = pdf_page.rect.width
+        height = pdf_page.rect.height
+
+        drawings: list[tuple[str, str, fitz.Rect]] = []
+        for drawing in pdf_page.get_drawings():
+            fill = drawing.get("fill")
+            if fill is None:
+                continue
+            kind_color = _OVERLAY_COLORS.get(_rgb(fill))
+            if kind_color is None:
+                continue
+            drawings.append((kind_color[0], kind_color[1], drawing["rect"]))
+
+        events = [event for event in report.events if event.page == page]
+        if len(drawings) != len(events):
+            raise UnsupportedReportError("overlay_mismatch")
+
+        items: list[OverlayItem] = []
+        for (draw_kind, color, rect), event in zip(drawings, events):
+            if draw_kind != event.kind:
+                raise UnsupportedReportError("overlay_mismatch")
+            items.append(
+                OverlayItem(
+                    number=event.number,
+                    kind=event.kind,
+                    color=color,
+                    x0=rect.x0 / width,
+                    y0=rect.y0 / height,
+                    x1=rect.x1 / width,
+                    y1=rect.y1 / height,
+                )
+            )
+        return items
     finally:
         doc.close()
 
