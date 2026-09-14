@@ -18,7 +18,12 @@ from pathlib import Path
 
 import pytest
 
-from plag_filter.checker import check_batch, pending_count, recheck_source
+from plag_filter.checker import (
+    MAX_ARCHIVE_PARALLEL,
+    check_batch,
+    pending_count,
+    recheck_source,
+)
 from plag_filter.fetch import FetchResult, wayback_copy_url, wayback_cdx_url
 from plag_filter.rules import author_key
 from plag_filter.types import (
@@ -634,7 +639,52 @@ def test_check_batch_archive_first_capture_after_year_marks_date_unknown(tmp_pat
     assert project.states[1].reason == "date_unknown"
 
 
-def test_check_batch_archive_requests_serialized_with_workers(tmp_path: Path) -> None:
+def test_check_batch_skips_cdx_when_author_hit_decides(tmp_path: Path) -> None:
+    """Правило 5 у `decide` стоїть перед 8в — знімок архіву нічого не змінює."""
+    url = "https://a.example/own"
+    cdx_url = wayback_cdx_url(url)
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch(
+        {
+            url: ok_result(url, pages=["УДК 343. Петренко О. А. Текст без дати."]),
+            cdx_url: ok_result(cdx_url, pages=["20010601123456\n"]),
+        }
+    )
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert cdx_url not in fetch.calls
+    assert project.states[1].check.archive_first_capture is None
+    assert project.states[1].decision == "exclude"
+
+
+def test_check_batch_skips_cdx_when_later_citations_decide(tmp_path: Path) -> None:
+    """Правило 8б стоїть перед 8в — знімок архіву вже нічого не вирішує."""
+    url = "https://a.example/cites-later"
+    cdx_url = wayback_cdx_url(url)
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    pages = [
+        "Текст без власної дати.",
+        "Список: Автор А. Назва. – К., 2008. – 200 с. Інший Б. Праця. – Л., 2010. – 150 с.",
+    ]
+    fetch = FakeFetch(
+        {
+            url: ok_result(url, pages=pages),
+            cdx_url: ok_result(cdx_url, pages=["20010601123456\n"]),
+        }
+    )
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert cdx_url not in fetch.calls
+    assert project.states[1].reason == "later"
+
+
+def test_check_batch_limits_parallel_archive_requests(tmp_path: Path) -> None:
     count = 6
     rows: dict[int, SourceRow] = {}
     widths: dict[int, float] = {}
@@ -672,7 +722,7 @@ def test_check_batch_archive_requests_serialized_with_workers(tmp_path: Path) ->
 
     check_batch(report, project, fetch=slow_fetch, tmp_dir=tmp_path, limit=count, workers=6)
 
-    assert max_current == 1
+    assert max_current <= MAX_ARCHIVE_PARALLEL
 
 
 def test_check_batch_archive_rate_limited_skips_remaining_archive_requests(tmp_path: Path) -> None:

@@ -174,20 +174,23 @@ def _render_author_card(data: bytes, report: PlagReport, project: PlagProject) -
                 "Рік дисертації", min_value=1900, max_value=2099, step=1, key="plag_year"
             )
 
-        can_confirm = (
-            bool(surname.strip()) and bool(given_name.strip()) and 1900 <= int(year) <= 2099
-        )
-        if st.button(
-            "Все вірно — перевірити джерела", key="plag_confirm", disabled=not can_confirm
-        ):
-            project.surname = surname
-            project.given_name = given_name
-            project.patronymic = patronymic
-            project.year = int(year)
-            project.initials = derive_initials(given_name, patronymic)
-            project.confirmed = True
-            recompute(project, report)
-            st.rerun()
+    # Кнопка — поза «Виправити автора»: коли автора з титулу розпізнано вірно,
+    # експерт натискає її одразу, не розкриваючи поля.
+    can_confirm = bool(surname.strip()) and bool(given_name.strip()) and 1900 <= int(year) <= 2099
+    if st.button(
+        "Все вірно — перевірити джерела",
+        key="plag_confirm",
+        disabled=not can_confirm,
+        type="primary",
+    ):
+        project.surname = surname
+        project.given_name = given_name
+        project.patronymic = patronymic
+        project.year = int(year)
+        project.initials = derive_initials(given_name, patronymic)
+        project.confirmed = True
+        recompute(project, report)
+        st.rerun()
 
     if project.confirmed and (
         surname != project.surname

@@ -23,6 +23,7 @@ from plag_filter.fetch import (
     wayback_cdx_url,
 )
 from plag_filter.rules import (
+    MIN_LATER_CITATIONS,
     author_key,
     citation_years,
     date_from_court_text,
@@ -44,6 +45,14 @@ CHUNK_SIZE = 12
 # Помилки, після яких пробуємо іншу схему і Web Archive —
 # PLAN_PLAG_FILTER_V2.md, §8.3, §9.2 (етап 6).
 RETRY_ERRORS = frozenset({"http_404", "http_403", "network_error", "timeout"})
+
+# Скільки звернень до Web Archive виконується одночасно — PLAN_PLAG_FILTER_V2.md,
+# §11 запис 13. Саме 1: замір 14.09.2026 на звіті 2020 показав, що при 2
+# одночасних запитах CDX API archive.org починає відмовляти — успішних
+# відповідей 1 із 29 (3 %) проти 30 із 66 (45 %) при строго послідовних.
+# Втрачені відповіді CDX — це втрачені дати, джерела падають у `date_unknown`
+# замість `earlier`. Прискорення шукати не тут, а в кількості запитів.
+MAX_ARCHIVE_PARALLEL = 1
 
 
 def _candidate_numbers(report: PlagReport, project: PlagProject, checked_for: str) -> list[int]:
@@ -165,6 +174,24 @@ def _cached_fetch(
     return result
 
 
+def _archive_date_can_matter(check: SourceCheck, year: int | None) -> bool:
+    """Чи здатна дата першого знімка архіву змінити рішення — §8.2, `decide`.
+
+    Правило 5 (підпис або цитування автора) і правило 8б («цитує пізніші
+    праці») стоять у `decide` перед 8в, тож для таких джерел знімок архіву
+    нічого не вирішує, а запит до `WAYBACK_BASE` — чиста витрата часу
+    (PLAN_PLAG_FILTER_V2.md, §11 запис 13).
+    """
+    if check.author_hit is not None:
+        return False
+    if check.doc_date is not None or check.date_conflict:
+        return False
+    if year is None:
+        return False
+    later_years = [candidate for candidate in check.citation_years if candidate > year]
+    return len(later_years) < MIN_LATER_CITATIONS
+
+
 def _fetch_with_fallback(
     url: str,
     year: int | None,
@@ -172,7 +199,7 @@ def _fetch_with_fallback(
     tmp_dir: Path,
     cache: dict[str, FetchResult],
     cache_lock: threading.Lock,
-    archive_lock: threading.Lock,
+    archive_slots: threading.Semaphore,
     archive_state: dict[str, bool],
 ) -> tuple[FetchResult, bool, str | None]:
     """Ланцюжок `fetch(url)` → заміна схеми → архівна копія —
@@ -182,8 +209,9 @@ def _fetch_with_fallback(
     використовується, лише якщо і пряма, і схемозамінна спроба з помилкою з
     `RETRY_ERRORS`; успіх архіву позначається `archive_used` і зберігає
     вихідну помилку `r.error` для підказки `hints["original_error"]`. Усі
-    звернення до `WAYBACK_BASE` — під `archive_lock`; після `rate_limited`
-    від архіву подальші архівні спроби в цій партії пропускаються.
+    звернення до `WAYBACK_BASE` проходять крізь `archive_slots` — не більше
+    `MAX_ARCHIVE_PARALLEL` одночасно; після `rate_limited` від архіву
+    подальші архівні спроби в цій партії пропускаються.
     """
     result = _cached_fetch(url, fetch, tmp_dir, cache, cache_lock)
     if result.ok or result.error not in RETRY_ERRORS:
@@ -197,7 +225,7 @@ def _fetch_with_fallback(
     if year is None:
         return result, False, None
 
-    with archive_lock:
+    with archive_slots:
         if archive_state["blocked"]:
             return result, False, None
         archive_result = fetch(wayback_copy_url(url, year), tmp_dir=tmp_dir)
@@ -213,12 +241,12 @@ def _fetch_archive_first_capture(
     url: str,
     fetch: FetchFn,
     tmp_dir: Path,
-    archive_lock: threading.Lock,
+    archive_slots: threading.Semaphore,
     archive_state: dict[str, bool],
 ) -> str | None:
     """Дата першого знімка адреси в архіві — PLAN_PLAG_FILTER_V2.md, §8.4,
     §9.2 (етап 6). Лише для успішно завантажених недатованих документів."""
-    with archive_lock:
+    with archive_slots:
         if archive_state["blocked"]:
             return None
         result = fetch(wayback_cdx_url(url), tmp_dir=tmp_dir)
@@ -277,7 +305,9 @@ def check_batch(
     blocked_hosts: set[str] = set()
     blocked_lock = threading.Lock()
     host_locks: dict[str, threading.Lock] = {host: threading.Lock() for host in set(hosts.values())}
-    archive_lock = threading.Lock()
+    # Прапорець `blocked` — звичайний bool: гонка за ним нешкідлива, найгірше
+    # коштує одного зайвого запиту до архіву.
+    archive_slots = threading.Semaphore(MAX_ARCHIVE_PARALLEL)
     archive_state: dict[str, bool] = {"blocked": False}
 
     def fetch_for(number: int) -> SourceCheck:
@@ -290,7 +320,14 @@ def check_batch(
                 result, archive_used, original_error = _rate_limited_result(url), False, None
             else:
                 result, archive_used, original_error = _fetch_with_fallback(
-                    url, project.year, fetch, tmp_dir, cache, cache_lock, archive_lock, archive_state
+                    url,
+                    project.year,
+                    fetch,
+                    tmp_dir,
+                    cache,
+                    cache_lock,
+                    archive_slots,
+                    archive_state,
                 )
                 if not result.ok and result.error == "rate_limited":
                     with blocked_lock:
@@ -302,9 +339,9 @@ def check_batch(
             check.hints["original_error"] = original_error
             if check.date_basis is not None:
                 check.date_basis = f"archive:{check.date_basis}"
-        if result.ok and check.doc_date is None and not check.date_conflict:
+        if result.ok and _archive_date_can_matter(check, project.year):
             check.archive_first_capture = _fetch_archive_first_capture(
-                url, fetch, tmp_dir, archive_lock, archive_state
+                url, fetch, tmp_dir, archive_slots, archive_state
             )
         return check
 
