@@ -193,6 +193,70 @@ def test_to_json_from_json_roundtrip_preserves_given_name_and_patronymic() -> No
     assert restored.patronymic == "Андріївна"
 
 
+def test_to_json_from_json_roundtrip_preserves_author_hit_kind() -> None:
+    report = make_report({1: make_row(1, 5.0)})
+    check = SourceCheck(
+        checked_for="петренко|о.а.",
+        url="https://example.org/doc",
+        final_url=None,
+        error=None,
+        author_hit=AuthorHit(page=0, snippet="як зазначає петренко о. а.", kind="mention"),
+        doc_date=None,
+        date_basis=None,
+        date_conflict=False,
+        url_year_hint=None,
+        hints={},
+    )
+    project = make_project(states={1: make_state(1, check=check, decision="exclude", reason="cites_author")})
+
+    restored = from_json(to_json(project), report)
+
+    assert restored == project
+    assert restored.states[1].check.author_hit.kind == "mention"
+
+
+def test_from_json_defaults_author_hit_kind_to_byline_without_field() -> None:
+    report = make_report({1: make_row(1, 5.0)})
+    payload = {
+        "schema_version": 2,
+        "report_sha256": report.sha256,
+        "report_name": "report.pdf",
+        "surname": SURNAME,
+        "initials": INITIALS,
+        "given_name": "",
+        "patronymic": "",
+        "year": 2020,
+        "confirmed": True,
+        "states": {
+            "1": {
+                "number": 1,
+                "source_id": "src1",
+                "manual": None,
+                "alt_url": None,
+                "decision": "exclude",
+                "reason": "own_work",
+                "check": {
+                    "checked_for": "петренко|о.а.",
+                    "url": "https://example.org/doc",
+                    "final_url": None,
+                    "error": None,
+                    "author_hit": {"page": 0, "snippet": "петренко о. а."},
+                    "doc_date": None,
+                    "date_basis": None,
+                    "date_conflict": False,
+                    "url_year_hint": None,
+                    "hints": {},
+                },
+            }
+        },
+    }
+    text = json.dumps(payload, ensure_ascii=False)
+
+    restored = from_json(text, report)
+
+    assert restored.states[1].check.author_hit.kind == "byline"
+
+
 def test_from_json_rejects_mismatched_source_id() -> None:
     report = make_report({1: make_row(1, 5.0)})
     project = make_project(states={1: make_state(1)})
@@ -274,6 +338,32 @@ def test_protocol_paragraphs_own_work_fragment_trimmed_to_120_chars() -> None:
     assert len(matches) == 1
     assert "а" * 120 in matches[0]
     assert "а" * 121 not in matches[0]
+
+
+def test_protocol_paragraphs_cites_author_fragment_trimmed_to_120_chars() -> None:
+    long_snippet = "б" * 200
+    check = SourceCheck(
+        checked_for="петренко|о.а.",
+        url="https://example.org/doc",
+        final_url=None,
+        error=None,
+        author_hit=AuthorHit(page=0, snippet=long_snippet, kind="mention"),
+        doc_date=None,
+        date_basis=None,
+        date_conflict=False,
+        url_year_hint=None,
+        hints={},
+    )
+    report = make_report({1: make_row(1, 5.0)})
+    states = {1: make_state(1, check=check, decision="exclude", reason="cites_author")}
+    project = make_project(states=states)
+
+    paragraphs = protocol_paragraphs(project, report)
+
+    matches = [paragraph for paragraph in paragraphs if "№1" in paragraph and "цитує автора" in paragraph]
+    assert len(matches) == 1
+    assert "б" * 120 in matches[0]
+    assert "б" * 121 not in matches[0]
 
 
 def test_protocol_paragraphs_list_disputed_with_reason_labels() -> None:

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import sys
 import tempfile
@@ -120,6 +121,39 @@ def _pick_demo_page(report: PlagReport, excluded: set[int]) -> int | None:
     return None
 
 
+def _label_check(project: PlagProject, report: PlagReport, label_path: Path) -> None:
+    """Звірити `author_hit.kind` із розміткою §9.2 етап 2 — PLAN_PLAG_FILTER_V2.md."""
+    data = json.loads(label_path.read_text(encoding="utf-8"))
+    record = data.get(report.sha256)
+    if record is None:
+        print(f"У {label_path} немає розмітки для звіту {report.sha256}")
+        return
+
+    for expected_kind in ("byline", "mention"):
+        numbers = record.get(expected_kind, [])
+        matches = 0
+        mismatches: list[int] = []
+        missing: list[int] = []
+        for number in numbers:
+            state = project.states.get(number)
+            hit = state.check.author_hit if state is not None and state.check is not None else None
+            if hit is None:
+                missing.append(number)
+                continue
+            if hit.kind == "byline":
+                matches += 1
+                if expected_kind != "byline":
+                    mismatches.append(number)
+            else:
+                if expected_kind == "byline":
+                    mismatches.append(number)
+        print(f"{expected_kind} → byline: {matches} з {len(numbers)}")
+        if mismatches:
+            print(f"  розбіжності: {', '.join(str(n) for n in sorted(mismatches))}")
+        if missing:
+            print(f"  без author_hit: {', '.join(str(n) for n in sorted(missing))}")
+
+
 def _print_counters(project: PlagProject, report: PlagReport) -> None:
     counted = sum(
         1
@@ -160,6 +194,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--year", required=True, type=int)
     parser.add_argument("--out", required=True, type=Path, help="каталог поза репозиторієм")
+    parser.add_argument(
+        "--label-check",
+        type=Path,
+        default=None,
+        help="звірити author_hit.kind із JSON-розміткою — PLAN_PLAG_FILTER_V2.md, §9.2 етап 2",
+    )
     args = parser.parse_args(argv)
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -242,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Не знайдено аркуша із сумішшю виключених і залишених джерел для PNG")
 
     _print_counters(project, report)
+    if args.label_check is not None:
+        _label_check(project, report, args.label_check)
     print(f"Проєкт: {project_path}")
     print(f"Очищений PDF: {out_pdf}")
     return 0

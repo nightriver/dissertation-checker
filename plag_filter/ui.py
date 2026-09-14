@@ -96,7 +96,11 @@ def _evidence_text(state) -> str:
     parts: list[str] = []
     if state.reason == "own_work" and check.author_hit is not None:
         parts.append(
-            f"Фрагмент: «{check.author_hit.snippet}» (стор. документа {check.author_hit.page})"
+            f"Підпис автора: «{check.author_hit.snippet}» (стор. документа {check.author_hit.page})"
+        )
+    elif state.reason == "cites_author" and check.author_hit is not None:
+        parts.append(
+            f"Цитування автора: «{check.author_hit.snippet}» (стор. документа {check.author_hit.page})"
         )
     elif state.reason == "unavailable":
         parts.append(f"Помилка: {check.error}")

@@ -1,7 +1,7 @@
 """Проєкт очищення звіту Plag як дані: серіалізація та протокол.
 
 Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §8, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.1, §9.2 (етап 1).
+`PLAN_PLAG_FILTER_V2.md`, §8.1, §9.2 (етапи 1–2).
 """
 
 from __future__ import annotations
@@ -62,13 +62,13 @@ def new_project(report: PlagReport, report_name: str) -> PlagProject:
 def _author_hit_to_dict(hit: AuthorHit | None) -> dict | None:
     if hit is None:
         return None
-    return {"page": hit.page, "snippet": hit.snippet}
+    return {"page": hit.page, "snippet": hit.snippet, "kind": hit.kind}
 
 
 def _author_hit_from_dict(data: dict | None) -> AuthorHit | None:
     if data is None:
         return None
-    return AuthorHit(page=data["page"], snippet=data["snippet"])
+    return AuthorHit(page=data["page"], snippet=data["snippet"], kind=data.get("kind", "byline"))
 
 
 def _date_interval_to_dict(interval: DateInterval | None) -> dict | None:
@@ -270,6 +270,14 @@ def protocol_paragraphs(project: PlagProject, report: PlagReport) -> list[str]:
             snippet = state.check.author_hit.snippet
         fragment = snippet[:120]
         paragraphs.append(f"№{number}: власна робота, фрагмент: «{fragment}».")
+
+    for number in numbers_by_reason.get("cites_author", []):
+        state = project.states[number]
+        snippet = ""
+        if state.check is not None and state.check.author_hit is not None:
+            snippet = state.check.author_hit.snippet
+        fragment = snippet[:120]
+        paragraphs.append(f"№{number}: цитує автора, фрагмент: «{fragment}».")
 
     for number in numbers_by_reason.get("later", []):
         state = project.states[number]

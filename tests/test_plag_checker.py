@@ -307,7 +307,7 @@ def test_check_batch_marks_own_work_when_author_found(tmp_path: Path) -> None:
     row = make_row(1, urls=(url,))
     report = make_report({1: row}, highlight_width={1: 1.0})
     project = make_project({1: make_state(1)})
-    fetch = FakeFetch({url: ok_result(url, pages=["У статті Петренко О. А. розглянуто питання."])})
+    fetch = FakeFetch({url: ok_result(url, pages=["УДК 004.9. Петренко О. А. розглянуто питання."])})
 
     check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
 
@@ -405,7 +405,9 @@ def test_recheck_source_updates_check_and_recomputes_decision(tmp_path: Path) ->
     row = make_row(1, urls=(url,))
     report = make_report({1: row}, highlight_width={1: 1.0})
     project = make_project({1: make_state(1)})
-    fetch = FakeFetch({alt_url: ok_result(alt_url, pages=["Петренко О. А. авторський текст."])})
+    fetch = FakeFetch(
+        {alt_url: ok_result(alt_url, pages=["УДК 004.9. Петренко О. А. авторський текст."])}
+    )
 
     recheck_source(report, project, 1, alt_url, fetch=fetch, tmp_dir=tmp_path)
 

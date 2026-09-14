@@ -1,7 +1,7 @@
 """Правила режиму очищення звіту Plag: автор, дати, рішення.
 
 Контракт узятий з `PLAN_PLAG_FILTER.md`, §3, §4, §5, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.2, §9.2 (етап 1). Числа й порядок правил не
+`PLAN_PLAG_FILTER_V2.md`, §8.2, §9.2 (етапи 1–2). Числа й порядок правил не
 змінюються без правки плану.
 """
 
@@ -106,22 +106,65 @@ def _author_patterns(surname_norm: str, letters: list[str]) -> re.Pattern[str] |
     return re.compile("(?:" + ")|(?:".join(parts) + ")")
 
 
-def find_author(pages: list[str], surname: str, initials: str) -> AuthorHit | None:
-    """Знайти перший збіг прізвища й ініціалів автора — PLAN_PLAG_FILTER.md, §3."""
+# PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 2 — межі розпізнавання підпису.
+BYLINE_COPYRIGHT_BEFORE = 15
+BYLINE_DEGREE_WINDOW = 40
+BYLINE_UDC_WINDOW = 80
+BYLINE_LIST_BEFORE = 60
+MAX_AUTHOR_HITS = 20
+
+_DEGREE_RE = re.compile(r"(?:кандидат|доктор|д-р|канд\.)\S*\s+\S*\s*наук")
+
+
+def classify_hit(normalized: str, start: int, end: int) -> Literal["byline", "mention"]:
+    """Розрізнити підпис і цитування автора — PLAN_PLAG_FILTER_V2.md, §8.2 етап 2."""
+    before_copyright = normalized[max(0, start - BYLINE_COPYRIGHT_BEFORE) : start]
+    if "©" in before_copyright:
+        return "byline"
+
+    after_degree = normalized[end : end + BYLINE_DEGREE_WINDOW]
+    before_degree = normalized[max(0, start - BYLINE_DEGREE_WINDOW) : start]
+    if _DEGREE_RE.search(after_degree) or _DEGREE_RE.search(before_degree):
+        return "byline"
+
+    around_udc = normalized[max(0, start - BYLINE_UDC_WINDOW) : end + BYLINE_UDC_WINDOW]
+    if "удк" in around_udc or "doi" in around_udc:
+        return "byline"
+
+    before_list = normalized[max(0, start - BYLINE_LIST_BEFORE) : start]
+    if "список опублікованих праць" in before_list or "автор:" in before_list:
+        return "byline"
+
+    return "mention"
+
+
+def find_author_hits(pages: list[str], surname: str, initials: str) -> list[AuthorHit]:
+    """Знайти всі непересічні збіги автора — PLAN_PLAG_FILTER_V2.md, §8.2 етап 2."""
     letters = _initials_letters(initials)
     surname_norm = normalize_for_author(surname)
     pattern = _author_patterns(surname_norm, letters)
     if pattern is None:
-        return None
+        return []
+    hits: list[AuthorHit] = []
     for page_index, page_text in enumerate(pages):
         normalized = normalize_for_author(page_text)
-        match = pattern.search(normalized)
-        if match is None:
-            continue
-        start = max(0, match.start() - 60)
-        end = min(len(normalized), match.end() + 60)
-        return AuthorHit(page=page_index, snippet=normalized[start:end])
-    return None
+        for match in pattern.finditer(normalized):
+            if len(hits) >= MAX_AUTHOR_HITS:
+                return hits
+            start = max(0, match.start() - 60)
+            end = min(len(normalized), match.end() + 60)
+            kind = classify_hit(normalized, match.start(), match.end())
+            hits.append(AuthorHit(page=page_index, snippet=normalized[start:end], kind=kind))
+    return hits
+
+
+def find_author(pages: list[str], surname: str, initials: str) -> AuthorHit | None:
+    """Знайти перше `byline`, інакше перше `mention` — PLAN_PLAG_FILTER_V2.md, §8.2."""
+    hits = find_author_hits(pages, surname, initials)
+    for hit in hits:
+        if hit.kind == "byline":
+            return hit
+    return hits[0] if hits else None
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +402,9 @@ def decide(row: SourceRow, state: SourceState, project: PlagProject) -> tuple[De
         return "disputed", "unconfirmed"
 
     if check.author_hit is not None:
-        return "exclude", "own_work"
+        if check.author_hit.kind == "byline":
+            return "exclude", "own_work"
+        return "exclude", "cites_author"
 
     if check.error is not None:
         return "disputed", "unavailable"

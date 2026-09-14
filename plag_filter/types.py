@@ -19,6 +19,7 @@ Reason = Literal[
     "unchecked",
     "unconfirmed",
     "own_work",
+    "cites_author",
     "unavailable",
     "date_conflict",
     "date_unknown",
@@ -27,7 +28,8 @@ Reason = Literal[
     "same_year",
 ]
 
-# Підписи причин для інтерфейсу — PLAN_PLAG_FILTER.md, §4.
+# Підписи причин для інтерфейсу — PLAN_PLAG_FILTER.md, §4, доповнено
+# PLAN_PLAG_FILTER_V2.md, §8.1.
 REASON_LABELS: dict[Reason, str] = {
     "manual_keep": "Залишено вручну",
     "manual_exclude": "Виключено вручну",
@@ -35,6 +37,7 @@ REASON_LABELS: dict[Reason, str] = {
     "unchecked": "Ще не перевірено",
     "unconfirmed": "Автора і рік не підтверджено",
     "own_work": "Власна робота",
+    "cites_author": "Цитує автора",
     "unavailable": "Документ недоступний — перевірити",
     "date_conflict": "Суперечливі дати — перевірити",
     "date_unknown": "Дату не встановлено — перевірити",
@@ -99,10 +102,15 @@ class DateInterval:
 
 @dataclass(frozen=True)
 class AuthorHit:
-    """Знайдений збіг прізвища та ініціалів автора в тексті документа."""
+    """Знайдений збіг прізвища та ініціалів автора в тексті документа.
+
+    `kind` — PLAN_PLAG_FILTER_V2.md, §8.1, §9.2 етап 2: `byline` — підпис
+    автора (документ належить автору), `mention` — автора лише цитують.
+    """
 
     page: int
     snippet: str
+    kind: Literal["byline", "mention"] = "byline"
 
 
 @dataclass(frozen=True)

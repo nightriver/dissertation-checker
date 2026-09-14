@@ -10,11 +10,14 @@ from datetime import date
 import pytest
 
 from plag_filter.rules import (
+    MAX_AUTHOR_HITS,
     author_key,
+    classify_hit,
     date_from_meta,
     date_from_pdf_pages,
     decide,
     find_author,
+    find_author_hits,
     order_numbers,
     parse_date_value,
     recompute,
@@ -163,6 +166,85 @@ def test_find_author_returns_page_and_snippet_of_first_match() -> None:
     assert hit is not None
     assert hit.page == 1
     assert "петренко о. а." in hit.snippet
+
+
+# ---------------------------------------------------------------------------
+# classify_hit — PLAN_PLAG_FILTER_V2.md, §8.2 етап 2
+# ---------------------------------------------------------------------------
+
+
+def _single_kind(text: str) -> str:
+    hits = find_author_hits([text], SURNAME, INITIALS)
+    assert len(hits) == 1, text
+    return hits[0].kind
+
+
+def test_classify_hit_copyright_sign_before_is_byline() -> None:
+    assert _single_kind("© Петренко О. А.") == "byline"
+
+
+def test_classify_hit_degree_before_is_byline() -> None:
+    assert _single_kind("кандидат педагогічних наук Петренко О. А.") == "byline"
+
+
+def test_classify_hit_degree_after_is_byline() -> None:
+    assert _single_kind("Петренко О. А., кандидат історичних наук") == "byline"
+
+
+def test_classify_hit_udc_nearby_is_byline() -> None:
+    assert _single_kind("УДК 371.132 Петренко О. А.") == "byline"
+
+
+def test_classify_hit_doi_nearby_is_byline() -> None:
+    assert _single_kind("doi:10.1000/xyz Петренко О. А.") == "byline"
+
+
+def test_classify_hit_publication_list_before_is_byline() -> None:
+    assert _single_kind("Список опублікованих праць Петренко О. А.") == "byline"
+
+
+def test_classify_hit_author_colon_before_is_byline() -> None:
+    assert _single_kind("Автор: Петренко О. А.") == "byline"
+
+
+def test_classify_hit_plain_mention_is_mention() -> None:
+    assert _single_kind("Як зазначає Петренко О. А. у своїй роботі.") == "mention"
+
+
+# ---------------------------------------------------------------------------
+# find_author_hits, find_author — PLAN_PLAG_FILTER_V2.md, §8.2 етап 2
+# ---------------------------------------------------------------------------
+
+
+def test_find_author_hits_finds_all_matches_on_two_pages() -> None:
+    pages = [
+        "Петренко О. А. пише. Далі згадується О. А. Петренко ще раз.",
+        "На другій сторінці — Петренко О. А.",
+    ]
+    hits = find_author_hits(pages, SURNAME, INITIALS)
+    assert len(hits) == 3
+    assert [hit.page for hit in hits] == [0, 0, 1]
+
+
+def test_find_author_hits_respects_max_limit() -> None:
+    page = " Петренко О. А. " * 25
+    hits = find_author_hits([page], SURNAME, INITIALS)
+    assert len(hits) == MAX_AUTHOR_HITS
+
+
+def test_find_author_prefers_byline_that_comes_after_mention() -> None:
+    pages = [
+        "Як зазначає Петренко О. А. у роботі. Пізніше © Петренко О. А., 2020."
+    ]
+    hit = find_author(pages, SURNAME, INITIALS)
+    assert hit is not None
+    assert hit.kind == "byline"
+
+
+def test_find_author_falls_back_to_mention_when_no_byline() -> None:
+    hit = find_author(["Як зазначає Петренко О. А. у роботі."], SURNAME, INITIALS)
+    assert hit is not None
+    assert hit.kind == "mention"
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +482,26 @@ def test_decide_rule5_own_work_wins_over_unavailable() -> None:
     assert decide(row, state, project) == ("exclude", "own_work")
 
 
+def test_decide_rule5b_cites_author() -> None:
+    row = make_row(percent=5.0)
+    check = make_check(
+        author_hit=AuthorHit(page=2, snippet="як зазначає петренко о. а.", kind="mention")
+    )
+    state = make_state(check=check)
+    project = make_project()
+    assert decide(row, state, project) == ("exclude", "cites_author")
+
+
+def test_decide_rule0_manual_wins_over_cites_author() -> None:
+    row = make_row(percent=5.0)
+    check = make_check(
+        author_hit=AuthorHit(page=2, snippet="як зазначає петренко о. а.", kind="mention")
+    )
+    state = make_state(check=check, manual="keep")
+    project = make_project()
+    assert decide(row, state, project) == ("keep", "manual_keep")
+
+
 def test_decide_rule6_unavailable() -> None:
     row = make_row(percent=5.0)
     check = make_check(error="http_404")
@@ -549,3 +651,22 @@ def test_top20_share_uses_top_twenty_of_remaining_sources() -> None:
     expected = sum(top20) / sum(remaining)
     assert share == pytest.approx(expected)
     assert share < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Фікстура ручної розмітки §2.3 — PLAN_PLAG_FILTER_V2.md, §9.2 етап 2
+# ---------------------------------------------------------------------------
+
+
+def test_author_hits_fixture_has_expected_counts() -> None:
+    import json
+    from pathlib import Path
+
+    fixture_path = Path(__file__).parent / "fixtures" / "plag_author_hits.json"
+    data = json.loads(fixture_path.read_text(encoding="utf-8"))
+    reports = [key for key in data if key != "_comment"]
+    assert len(reports) == 2
+    total_byline = sum(len(data[report]["byline"]) for report in reports)
+    total_mention = sum(len(data[report]["mention"]) for report in reports)
+    assert total_byline == 27
+    assert total_mention == 25
