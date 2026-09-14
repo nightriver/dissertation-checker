@@ -281,6 +281,62 @@ def _walk_body(
     return tuple(events), numbers_by_page_t, pages_by_number_t, highlight_width, longest_run
 
 
+def _apply_cuts(page: fitz.Page, cuts: list[tuple[int, int]]) -> None:
+    """Вирізати байтові діапазони `cuts` з потоку сторінки, з кінця потоку — §7."""
+    if not cuts:
+        return
+    buf = bytearray(page.read_contents())
+    for start, end in sorted(set(cuts), reverse=True):
+        del buf[start:end]
+    page.parent.update_stream(page.get_contents()[0], bytes(buf))
+
+
+def filter_pdf(data: bytes, report: PlagReport, excluded: set[int]) -> bytes:
+    """Прибрати розмітку виключених джерел — PLAN_PLAG_FILTER.md, §7, §9."""
+    doc = fitz.open(stream=data, filetype="pdf")
+    try:
+        cuts_by_page: dict[int, list[tuple[int, int]]] = {}
+        for event in report.events:
+            if event.number in excluded:
+                cuts_by_page.setdefault(event.page, []).extend(event.cuts)
+        for row in report.rows.values():
+            if row.number in excluded:
+                cuts_by_page.setdefault(row.list_page, []).extend(row.row_cuts)
+
+        for page_index, cuts in cuts_by_page.items():
+            _apply_cuts(doc[page_index], cuts)
+
+        for row in report.rows.values():
+            if row.number not in excluded:
+                continue
+            page = doc[row.list_page]
+            targets = set(row.link_rects)
+            for link in list(page.get_links()):
+                rect = link.get("from")
+                if rect is None:
+                    continue
+                key = (rect.x0, rect.y0, rect.x1, rect.y1)
+                if key in targets:
+                    page.delete_link(link)
+
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
+def render_page_png(
+    data: bytes, report: PlagReport, page: int, excluded: set[int], dpi: int = 110
+) -> bytes:
+    """Растеризувати аркуш PDF з урахуванням поточних виключень — PLAN_PLAG_FILTER.md, §8, §9."""
+    source = filter_pdf(data, report, excluded) if excluded else data
+    doc = fitz.open(stream=source, filetype="pdf")
+    try:
+        pixmap = doc[page].get_pixmap(dpi=dpi)
+        return pixmap.tobytes("png")
+    finally:
+        doc.close()
+
+
 def parse_report(data: bytes) -> PlagReport:
     """Розібрати звіт Plag у структуру `PlagReport` — PLAN_PLAG_FILTER.md, §9."""
     doc = fitz.open(stream=data, filetype="pdf")
