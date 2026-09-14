@@ -10,15 +10,16 @@ def _main_navigation(app):
     return next(item.value for item in app.markdown if 'class="app-main-nav"' in item.value)
 
 
-def test_default_page_offers_all_four_sections():
+def test_default_page_offers_all_five_sections():
     app = AppTest.from_file(APP_PATH).run(timeout=30)
     assert not app.exception
     navigation = _main_navigation(app)
-    assert navigation.count('class="app-main-nav__item') == 4
+    assert navigation.count('class="app-main-nav__item') == 5
     assert 'href="?"' in navigation
     assert 'href="?mode=search"' in navigation
     assert 'href="?mode=compare"' in navigation
     assert 'href="?mode=table-highlight"' in navigation
+    assert 'href="?mode=plag-filter"' in navigation
 
 
 def test_search_query_opens_only_search_screen():

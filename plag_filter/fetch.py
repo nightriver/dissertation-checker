@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import fitz
 
@@ -116,6 +116,21 @@ class _HTMLExtractor(HTMLParser):
             self._text_parts.append(data)
 
 
+def _ascii_safe_url(url: str) -> str:
+    """Перекодувати нелатинські символи адреси у відсоткове кодування.
+
+    Знайдений дефект §10.2, етап 9: деякі сервери повертають `Location`
+    неекранованим (інколи це неправильно декодований UTF-8), а
+    `http.client` вимагає ASCII в рядку запиту — інакше `UnicodeEncodeError`.
+    Уже закодовані послідовності `%XX` лишаються як є.
+    """
+    try:
+        url.encode("ascii")
+        return url
+    except UnicodeEncodeError:
+        return quote(url, safe=":/?&=%#@+,;'()*!$~")
+
+
 def _error_result(url: str, error: str) -> FetchResult:
     return FetchResult(
         ok=False,
@@ -156,7 +171,7 @@ def _fetch_once(
     url: str, *, tmp_dir: Path, allow_private: bool
 ) -> tuple[FetchResult, str | None]:
     """Одна спроба завантаження з проходженням перенаправлень — §6."""
-    current_url = url
+    current_url = _ascii_safe_url(url)
     redirects = 0
     while True:
         parsed = urlparse(current_url)
@@ -180,7 +195,7 @@ def _fetch_once(
                 redirects += 1
                 if redirects > MAX_REDIRECTS:
                     return _error_result(url, "too_many_redirects"), None
-                current_url = urljoin(current_url, location)
+                current_url = _ascii_safe_url(urljoin(current_url, location))
                 continue
             exc.close()
             if code == 429:
