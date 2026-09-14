@@ -505,3 +505,55 @@ def test_protocol_paragraphs_list_disputed_with_reason_labels() -> None:
     joined = "\n".join(paragraphs)
     assert "№1" in joined and "Документ недоступний — перевірити" in joined
     assert "№2" in joined and "Той самий рік — перевірити" in joined
+
+
+# ---------------------------------------------------------------------------
+# Протокол двома блоками — PLAN_PLAG_FILTER_V2.md, §9.2 етап 9
+# ---------------------------------------------------------------------------
+
+
+def test_protocol_paragraphs_counters_split_into_two_blocks() -> None:
+    rows = {number: make_row(number, 5.0) for number in range(1, 4)}
+    rows[4] = make_row(4, None)
+    report = make_report(rows)
+    states = {
+        1: make_state(1, decision="exclude", reason="own_work"),
+        2: make_state(2, decision="keep", reason="earlier"),
+        3: make_state(3, decision="disputed", reason="unchecked"),
+        4: make_state(4, decision="disputed", reason="unconfirmed"),
+    }
+    project = make_project(states=states)
+
+    paragraphs = protocol_paragraphs(project, report)
+
+    excluded_line = next(p for p in paragraphs if p.startswith("Виключено з PDF"))
+    kept_line = next(p for p in paragraphs if p.startswith("Залишено в PDF"))
+    assert "Власна робота: 1" in excluded_line
+    assert "Раніша за дисертацію: 1" in kept_line
+    assert "Ще не перевірено: 2" in kept_line
+
+
+def _counters_total(line: str) -> int:
+    """Сума лічильників у рядку виду «Заголовок: A: 1; B: 2.»."""
+    body = line.rstrip(".").split(": ", 1)[1]
+    return sum(int(part.rsplit(": ", 1)[1]) for part in body.split("; "))
+
+
+def test_protocol_paragraphs_two_blocks_sum_equals_rows_count() -> None:
+    rows = {number: make_row(number, 5.0) for number in range(1, 6)}
+    report = make_report(rows)
+    states = {
+        1: make_state(1, decision="exclude", reason="own_work"),
+        2: make_state(2, decision="exclude", reason="cites_author"),
+        3: make_state(3, decision="keep", reason="earlier"),
+        4: make_state(4, decision="disputed", reason="date_unknown"),
+        5: make_state(5, decision="disputed", reason="unchecked"),
+    }
+    project = make_project(states=states)
+
+    paragraphs = protocol_paragraphs(project, report)
+
+    excluded_line = next(p for p in paragraphs if p.startswith("Виключено з PDF"))
+    kept_line = next(p for p in paragraphs if p.startswith("Залишено в PDF"))
+
+    assert _counters_total(excluded_line) + _counters_total(kept_line) == len(report.rows)

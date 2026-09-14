@@ -1,10 +1,13 @@
 """Екран режиму очищення звіту Plag — PLAN_PLAG_FILTER.md, §8, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 5–6, 8).
+`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 3, 5–6, 8–9).
 
-Постраничний перегляд «варіант б»: заголовок і завантажувач, картка автора,
-лічильники, дії з проєктом, перегляд аркуша компонентом `plag_filter.viewer`
-з панеллю джерел, згорнута таблиця всіх джерел. Завантаження очищеного PDF
-додає протокол у кінець файлу — §10.2, етап 8 плану 1.
+Порядок екрана — §9.2 етап 9: заголовок і завантажувач → картка автора →
+перевірка або підсумок двома блоками з кнопкою завантаження → перегляд
+аркуша компонентом `plag_filter.viewer` з панеллю джерел → згорнута таблиця
+всіх джерел → згорнутий блок «Проєкт» унизу (рідко потрібні дії). Кожна
+причина названа своїм ім'ям, без узагальненого слова для непевних рішень.
+Завантаження очищеного PDF додає протокол у кінець файлу — §10.2, етап 8
+плану 1.
 """
 
 from __future__ import annotations
@@ -197,34 +200,78 @@ def _render_author_card(data: bytes, report: PlagReport, project: PlagProject) -
         st.warning("Автора змінено — підтвердіть ще раз")
 
 
-def _render_counters(report: PlagReport, project: PlagProject) -> None:
-    ge_01 = sum(
-        1 for row in report.rows.values() if row.percent is None or row.percent >= 0.1
-    )
-    reason_counts: dict[str, int] = {}
+# Поділ причин на два блоки підсумку — PLAN_PLAG_FILTER_V2.md, §9.2 етап 9.
+# Сума обох блоків = кількості рядків переліку джерел.
+_EXCLUDED_REASONS = ("own_work", "cites_author", "later", "below_threshold", "manual_exclude")
+_KEPT_REASONS = (
+    "earlier",
+    "date_unknown",
+    "unavailable",
+    "date_conflict",
+    "same_year",
+    "manual_keep",
+)
+
+
+def _reason_counts(project: PlagProject) -> dict[str, int]:
+    counts: dict[str, int] = {}
     for state in project.states.values():
-        reason_counts[state.reason] = reason_counts.get(state.reason, 0) + 1
-    checked = sum(1 for state in project.states.values() if state.check is not None)
-    disputed = sum(1 for state in project.states.values() if state.decision == "disputed")
+        counts[state.reason] = counts.get(state.reason, 0) + 1
+    return counts
+
+
+def _render_summary(data: bytes, report: PlagReport, project: PlagProject, filename: str) -> None:
+    """Підсумок двома блоками з кнопкою завантаження — PLAN_PLAG_FILTER_V2.md,
+    §9.2 етап 9."""
+    counts = _reason_counts(project)
+
+    st.markdown("**Виключено з PDF**")
+    excluded_cols = st.columns(len(_EXCLUDED_REASONS))
+    excluded_labels = {
+        "own_work": "Власні роботи",
+        "cites_author": "Цитують автора",
+        "later": "Пізніші за дисертацію",
+        "below_threshold": "Нижче 0,1 %",
+        "manual_exclude": "Виключено вручну",
+    }
+    for col, reason in zip(excluded_cols, _EXCLUDED_REASONS):
+        col.metric(excluded_labels[reason], counts.get(reason, 0))
+
+    st.markdown("**Залишено в PDF**")
+    kept_labels = {
+        "earlier": "Раніші за дисертацію",
+        "date_unknown": "Дату не встановлено",
+        "unavailable": "Документ недоступний",
+        "date_conflict": "Суперечливі дати",
+        "same_year": "Той самий рік",
+        "manual_keep": "Залишено вручну",
+    }
+    not_checked = counts.get("unchecked", 0) + counts.get("unconfirmed", 0)
+    kept_cols = st.columns(len(_KEPT_REASONS) + 1)
+    for col, reason in zip(kept_cols, _KEPT_REASONS):
+        col.metric(kept_labels[reason], counts.get(reason, 0))
+    kept_cols[-1].metric("Ще не перевірено", not_checked)
+
     unknown_pct = sum(1 for row in report.rows.values() if row.percent is None)
-    share = top20_share(project, report)
-    share_text = f"{share:.0%}" if share is not None else "немає виділень"
+    checked = sum(1 for state in project.states.values() if state.check is not None)
+    total = _visible_source_count(report)
+    st.caption(f"Відсоток не розпізнано: {unknown_pct}")
+    st.caption(
+        f"Перевірено {checked} з {total}; не вдалося завантажити "
+        f"{counts.get('unavailable', 0)}; дату не встановлено — "
+        f"{counts.get('date_unknown', 0)}"
+    )
 
-    row1 = st.columns(5)
-    row1[0].metric("Джерел ≥ 0,1 %", ge_01)
-    row1[1].metric("Перевірено", checked)
-    row1[2].metric("Власні роботи", reason_counts.get("own_work", 0))
-    row1[3].metric("Пізніші", reason_counts.get("later", 0))
-    row1[4].metric("Раніші", reason_counts.get("earlier", 0))
-
-    row2 = st.columns(4)
-    row2[0].metric("Спірні", disputed)
-    row2[1].metric("Недоступні", reason_counts.get("unavailable", 0))
-    row2[2].metric("Нижче 0,1 %", reason_counts.get("below_threshold", 0))
-    row2[3].metric("Відсоток не розпізнано", unknown_pct)
-
-    st.metric(
-        "Частка довжини виділень у топ-20 серед джерел, що залишилися", share_text
+    excluded = {
+        number for number, state in project.states.items() if state.decision == "exclude"
+    }
+    with_protocol = _cleaned_pdf_with_protocol(data, report, project, excluded)
+    st.download_button(
+        "Завантажити очищений PDF",
+        data=with_protocol,
+        file_name=_filtered_pdf_name(filename),
+        mime="application/pdf",
+        key="plag_download_cleaned",
     )
 
 
@@ -243,44 +290,36 @@ def _cleaned_pdf_with_protocol(
     return with_protocol
 
 
-def _render_actions(data: bytes, report: PlagReport, project: PlagProject, filename: str) -> None:
-    action_cols = st.columns(3)
-    with action_cols[0]:
-        st.download_button(
-            "Зберегти проєкт (JSON)",
-            data=to_json(project),
-            file_name=f"{Path(filename).stem}.plag-project.json",
-            mime="application/json",
-            key="plag_save_project",
-        )
+def _render_project_expander(report: PlagReport, project: PlagProject, filename: str) -> None:
+    """Дії з проєктом — рідко потрібні, тому в кінці екрана —
+    PLAN_PLAG_FILTER_V2.md, §9.2 етап 9."""
+    with st.expander("Проєкт", expanded=False):
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            st.download_button(
+                "Зберегти проєкт (JSON)",
+                data=to_json(project),
+                file_name=f"{Path(filename).stem}.plag-project.json",
+                mime="application/json",
+                key="plag_save_project",
+            )
 
-    with action_cols[1]:
-        restore_upload = st.file_uploader(
-            "Відновити проєкт", type=["json"], key="plag_restore_upload"
-        )
-        if restore_upload is not None and st.button("Застосувати відновлений проєкт", key="plag_restore_apply"):
-            try:
-                restored = from_json(restore_upload.getvalue().decode("utf-8"), report)
-            except ValueError as exc:
-                st.error(str(exc))
-            else:
-                st.session_state[_PROJECT_KEY] = restored
-                st.rerun()
+        with action_cols[1]:
+            restore_upload = st.file_uploader(
+                "Відновити проєкт", type=["json"], key="plag_restore_upload"
+            )
+            if restore_upload is not None and st.button(
+                "Застосувати відновлений проєкт", key="plag_restore_apply"
+            ):
+                try:
+                    restored = from_json(restore_upload.getvalue().decode("utf-8"), report)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state[_PROJECT_KEY] = restored
+                    st.rerun()
 
-    with action_cols[2]:
-        excluded = {
-            number for number, state in project.states.items() if state.decision == "exclude"
-        }
-        with_protocol = _cleaned_pdf_with_protocol(data, report, project, excluded)
-        st.download_button(
-            "Завантажити очищений PDF",
-            data=with_protocol,
-            file_name=_filtered_pdf_name(filename),
-            mime="application/pdf",
-            key="plag_download_cleaned",
-        )
-
-    st.caption("Збережіть проєкт, щоб не втратити рішення")
+        st.caption("Потрібно лише, щоб продовжити роботу в іншій сесії")
 
 
 def _visible_source_count(report: PlagReport) -> int:
@@ -325,6 +364,19 @@ def _render_autocheck(report: PlagReport, project: PlagProject) -> None:
     st.rerun()
 
 
+def _render_check_or_summary(
+    data: bytes, report: PlagReport, project: PlagProject, filename: str
+) -> None:
+    """Перевірка, поки не завершиться, або підсумок двома блоками —
+    PLAN_PLAG_FILTER_V2.md, §9.2 етап 9."""
+    if not project.confirmed:
+        return
+    if pending_count(report, project) > 0:
+        _render_autocheck(report, project)
+    else:
+        _render_summary(data, report, project, filename)
+
+
 @st.fragment
 def _render_page_view(data: bytes, report: PlagReport, project: PlagProject) -> None:
     """Перегляд аркуша компонентом — PLAN_PLAG_FILTER_V2.md, §9.2 етап 8.
@@ -353,7 +405,13 @@ def _render_page_view(data: bytes, report: PlagReport, project: PlagProject) -> 
 
 
 def _render_all_sources(report: PlagReport, project: PlagProject) -> None:
-    with st.expander("Всі джерела", expanded=False):
+    with st.expander("Усі джерела", expanded=False):
+        share = top20_share(project, report)
+        share_text = f"{share:.0%}" if share is not None else "немає виділень"
+        st.metric(
+            "Частка довжини виділень у топ-20 серед джерел, що залишилися", share_text
+        )
+
         sort_label = st.selectbox(
             "Сортування", list(_SORT_OPTIONS), key="plag_sort"
         )
@@ -461,16 +519,13 @@ def render_plag_filter_page() -> None:
     _render_author_card(data, report, project)
 
     st.divider()
-    _render_autocheck(report, project)
-
-    st.divider()
-    _render_counters(report, project)
-
-    st.divider()
-    _render_actions(data, report, project, filename)
+    _render_check_or_summary(data, report, project, filename)
 
     st.divider()
     _render_page_view(data, report, project)
 
     st.divider()
     _render_all_sources(report, project)
+
+    st.divider()
+    _render_project_expander(report, project, filename)

@@ -28,6 +28,24 @@ REQUIRED_PROTOCOL_PHRASE = (
     "та не перераховувалися."
 )
 
+# Поділ причин на два блоки протоколу й підсумку екрана —
+# PLAN_PLAG_FILTER_V2.md, §9.2 етап 9.
+_EXCLUDED_REASONS: tuple[Reason, ...] = (
+    "own_work",
+    "cites_author",
+    "later",
+    "below_threshold",
+    "manual_exclude",
+)
+_KEPT_REASONS: tuple[Reason, ...] = (
+    "earlier",
+    "date_unknown",
+    "unavailable",
+    "date_conflict",
+    "same_year",
+    "manual_keep",
+)
+
 
 def new_project(report: PlagReport, report_name: str) -> PlagProject:
     """Створити новий проєкт для звіту й одразу порахувати рішення — §9."""
@@ -251,12 +269,21 @@ def protocol_paragraphs(project: PlagProject, report: PlagReport) -> list[str]:
     for number, state in sorted(project.states.items()):
         numbers_by_reason[state.reason].append(number)
 
-    counters = "; ".join(
-        f"{REASON_LABELS[reason]}: {len(numbers)}"
-        for reason, numbers in numbers_by_reason.items()
+    excluded_counters = "; ".join(
+        f"{REASON_LABELS[reason]}: {len(numbers_by_reason.get(reason, []))}"
+        for reason in _EXCLUDED_REASONS
     )
-    if counters:
-        paragraphs.append(f"Кількість джерел за причинами: {counters}.")
+    paragraphs.append(f"Виключено з PDF: {excluded_counters}.")
+
+    not_checked = len(numbers_by_reason.get("unchecked", [])) + len(
+        numbers_by_reason.get("unconfirmed", [])
+    )
+    kept_counters = "; ".join(
+        f"{REASON_LABELS[reason]}: {len(numbers_by_reason.get(reason, []))}"
+        for reason in _KEPT_REASONS
+    )
+    kept_counters = f"{kept_counters}; Ще не перевірено: {not_checked}"
+    paragraphs.append(f"Залишено в PDF: {kept_counters}.")
 
     for reason, numbers in numbers_by_reason.items():
         excluded_numbers = [

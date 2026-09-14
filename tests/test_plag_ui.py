@@ -1,5 +1,5 @@
 """Тести екрана режиму очищення звіту Plag — PLAN_PLAG_FILTER.md, §10.2, етап 7,
-доповнено `PLAN_PLAG_FILTER_V2.md`, §9.2 (етапи 1, 3)."""
+доповнено `PLAN_PLAG_FILTER_V2.md`, §9.2 (етапи 1, 3, 9)."""
 
 from __future__ import annotations
 
@@ -223,3 +223,164 @@ def test_autocheck_stopped_shows_resume_button(monkeypatch: pytest.MonkeyPatch) 
 
     labels = [b.label for b in app.get("button")]
     assert "Продовжити перевірку" in labels
+
+
+# ---------------------------------------------------------------------------
+# Порядок екрана й підсумок двома блоками — PLAN_PLAG_FILTER_V2.md, §9.2, етап 9
+# ---------------------------------------------------------------------------
+
+
+def test_ui_module_source_has_no_disputed_word() -> None:
+    """На екрані немає узагальненого слова «спірні» — §9.2 етап 9."""
+    source_path = Path(__file__).resolve().parents[1] / "plag_filter" / "ui.py"
+    text = source_path.read_text(encoding="utf-8").casefold()
+    assert "спірн" not in text
+
+
+@pytest.mark.corpus
+def test_summary_blocks_sum_to_all_rows_after_fake_check() -> None:
+    """Сума обох блоків підсумку дорівнює кількості рядків переліку —
+    §9.2 етап 9."""
+    import tempfile
+
+    from plag_filter.checker import check_batch, pending_count
+    from plag_filter.pdf import parse_report
+    from plag_filter.project import new_project
+
+    report = parse_report(REPORT_2002.read_bytes())
+    project = new_project(report, "report.pdf")
+    project.surname = "Вигаданко"
+    project.given_name = "Ганна"
+    project.patronymic = "Іванівна"
+    project.initials = "Г.І."
+    project.year = 2002
+    project.confirmed = True
+
+    with tempfile.TemporaryDirectory() as tmp:
+        while pending_count(report, project) > 0:
+            check_batch(
+                report, project, fetch=_fake_fetch_404, tmp_dir=Path(tmp), limit=50, workers=6
+            )
+
+    reason_counts: dict[str, int] = {}
+    for state in project.states.values():
+        reason_counts[state.reason] = reason_counts.get(state.reason, 0) + 1
+
+    excluded_total = sum(
+        reason_counts.get(reason, 0)
+        for reason in ("own_work", "cites_author", "later", "below_threshold", "manual_exclude")
+    )
+    kept_total = sum(
+        reason_counts.get(reason, 0)
+        for reason in (
+            "earlier",
+            "date_unknown",
+            "unavailable",
+            "date_conflict",
+            "same_year",
+            "manual_keep",
+            "unchecked",
+            "unconfirmed",
+        )
+    )
+
+    assert excluded_total + kept_total == len(report.rows)
+
+
+@pytest.mark.corpus
+def test_summary_shows_own_work_and_later_with_download_and_project_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Наскрізний сценарій: власна робота, пізніше джерело, кнопка
+    завантаження і «Проєкт» останнім — §9.2 етап 9."""
+    from plag_filter.pdf import parse_report
+    from plag_filter.rules import extract_author
+
+    report = parse_report(REPORT_2002.read_bytes())
+    guess = extract_author(report.title_text)
+    assert guess is not None
+
+    visible_numbers = sorted(
+        number
+        for number, row in report.rows.items()
+        if row.percent is None or row.percent >= 0.1
+    )
+    own_work_number, later_number, *_rest = visible_numbers
+    own_work_url = report.rows[own_work_number].urls[0]
+    later_url = report.rows[later_number].urls[0]
+    byline_text = f"© {guess.surname} {guess.initials} канд. наук"
+
+    def fake_fetch(url: str, *, tmp_dir) -> FetchResult:
+        if url == own_work_url:
+            return FetchResult(
+                ok=True,
+                error=None,
+                url=url,
+                final_url=url,
+                kind="html",
+                pages=[byline_text],
+                meta={},
+                jsonld=[],
+                repository_meta={},
+                hints={},
+            )
+        if url == later_url:
+            return FetchResult(
+                ok=True,
+                error=None,
+                url=url,
+                final_url=url,
+                kind="html",
+                pages=["Київ – 2010. Матеріали конференції без автора."],
+                meta={},
+                jsonld=[],
+                repository_meta={},
+                hints={},
+            )
+        return _fake_fetch_404(url, tmp_dir=tmp_dir)
+
+    monkeypatch.setattr("plag_filter.fetch.fetch_document", fake_fetch)
+
+    app = AppTest.from_file(APP_PATH)
+    app.query_params["mode"] = "plag-filter"
+    app.run(timeout=60)
+
+    app.get("file_uploader")[0].upload(
+        "report.pdf", REPORT_2002.read_bytes(), "application/pdf"
+    )
+    app.run(timeout=120)
+    assert not app.exception
+
+    app.button(key="plag_confirm").click()
+
+    from plag_filter.checker import pending_count
+
+    for _ in range(20):
+        app.run(timeout=120)
+        assert not app.exception
+        project = app.session_state["plag_project"]
+        report = app.session_state["plag_report"]
+        if pending_count(report, project) == 0:
+            break
+
+    project = app.session_state["plag_project"]
+    report = app.session_state["plag_report"]
+    assert pending_count(report, project) == 0
+
+    reason_counts: dict[str, int] = {}
+    for state in project.states.values():
+        reason_counts[state.reason] = reason_counts.get(state.reason, 0) + 1
+    assert reason_counts.get("own_work", 0) >= 1
+    assert reason_counts.get("later", 0) >= 1
+
+    download_labels = [b.label for b in app.get("download_button")]
+    assert "Завантажити очищений PDF" in download_labels
+
+    expander_labels = [e.label for e in app.get("expander")]
+    assert expander_labels[-1] == "Проєкт"
+
+    from plag_filter.project import protocol_paragraphs
+
+    joined = "\n".join(protocol_paragraphs(project, report))
+    assert "Виключено з PDF" in joined
+    assert "Залишено в PDF" in joined
