@@ -216,6 +216,17 @@ function render(root, payload, send) {
       actions.appendChild(link);
     }
 
+    // Календар знімків — лише там, де він може зарадити: документ не
+    // завантажився або дату не встановлено (PLAN_PLAG_FILTER_V2.md, §11 запис 14).
+    if (source.archive_url) {
+      const archive = el("a", "pv-open", "Архів");
+      archive.href = source.archive_url;
+      archive.target = "_blank";
+      archive.rel = "noopener noreferrer";
+      archive.title = "Усі знімки цієї адреси у Web Archive";
+      actions.appendChild(archive);
+    }
+
     row.appendChild(actions);
     row.onmouseenter = () => setActive(number, true);
     row.onmouseleave = () => setActive(number, false);

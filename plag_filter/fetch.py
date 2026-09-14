@@ -380,6 +380,17 @@ def wayback_cdx_url(url: str) -> str:
     return f"{WAYBACK_BASE}/cdx/search/cdx?url={quote(url, safe='')}&limit=1&fl=timestamp"
 
 
+def wayback_calendar_url(url: str) -> str:
+    """Календар усіх знімків адреси — PLAN_PLAG_FILTER_V2.md, §11 запис 14.
+
+    Не для завантаження, а щоб експерт відкрив архів руками: автоперевірка
+    часто не отримує копію не тому, що знімка немає, а тому, що archive.org
+    відмовив. На відміну від `wayback_copy_url`, тут не один знімок за датою,
+    а перелік усіх — експерт обирає сам.
+    """
+    return f"{WAYBACK_BASE}/web/*/{url}"
+
+
 def parse_cdx_first_capture(text: str) -> str | None:
     """Дата першого знімка з відповіді CDX API — PLAN_PLAG_FILTER_V2.md, §8.4."""
     first_line = text.splitlines()[0].strip() if text.splitlines() else ""

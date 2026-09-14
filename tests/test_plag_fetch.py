@@ -20,6 +20,7 @@ from plag_filter.fetch import (
     WAYBACK_BASE,
     fetch_document,
     parse_cdx_first_capture,
+    wayback_calendar_url,
     wayback_copy_url,
     wayback_cdx_url,
 )
@@ -448,6 +449,11 @@ def test_wayback_copy_url_exact_format() -> None:
 def test_wayback_cdx_url_exact_format() -> None:
     url = wayback_cdx_url("https://a.example/doc.pdf")
     assert url == f"{WAYBACK_BASE}/cdx/search/cdx?url=https%3A%2F%2Fa.example%2Fdoc.pdf&limit=1&fl=timestamp"
+
+
+def test_wayback_calendar_url_exact_format() -> None:
+    url = wayback_calendar_url("https://a.example/doc.pdf")
+    assert url == f"{WAYBACK_BASE}/web/*/https://a.example/doc.pdf"
 
 
 def test_parse_cdx_first_capture_parses_timestamp() -> None:

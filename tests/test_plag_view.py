@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import streamlit as st
 
+from plag_filter.fetch import wayback_calendar_url
 from plag_filter.project import new_project
 from plag_filter.rules import recompute
 from plag_filter.types import (
@@ -237,3 +238,38 @@ def test_viewer_payload_matches_events_and_sources_of_page(
     assert first["url"] == report_2002.rows[visible[0]].urls[0]
     assert first["label"] == report_2002.rows[visible[0]].label
     assert first["reason_label"] == "Виключено вручну"
+
+
+@pytest.mark.corpus
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("unavailable", True),
+        ("date_unknown", True),
+        ("own_work", False),
+        ("later", False),
+        ("earlier", False),
+    ],
+)
+def test_viewer_payload_offers_archive_calendar_only_where_it_helps(
+    data_2002: bytes, report_2002: PlagReport, reason: str, expected: bool
+) -> None:
+    """Календар архіву — лише для недоступних і недатованих джерел —
+    PLAN_PLAG_FILTER_V2.md, §11 запис 14."""
+    project = new_project(report_2002, "report.pdf")
+    page = 4
+    number = sorted(
+        candidate
+        for candidate in report_2002.numbers_by_page.get(page - 1, ())
+        if report_2002.rows[candidate].percent is None
+        or report_2002.rows[candidate].percent >= 0.1
+    )[0]
+    project.states[number].reason = reason
+
+    payload = viewer_payload(data_2002, report_2002, project, page, show_excluded=True)
+    source = next(item for item in payload["sources"] if item["number"] == number)
+
+    if expected:
+        assert source["archive_url"] == wayback_calendar_url(source["url"])
+    else:
+        assert source["archive_url"] == ""

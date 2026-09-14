@@ -12,6 +12,7 @@ import base64
 
 import streamlit as st
 
+from plag_filter.fetch import wayback_calendar_url
 from plag_filter.pdf import UnsupportedReportError, page_overlay, render_clean_page_png
 from plag_filter.rules import date_evidence, recompute
 from plag_filter.types import (
@@ -27,6 +28,12 @@ from plag_filter.types import (
 _PAGE_KEY = "plag_page"
 
 _MANUAL_VALUES = ("keep", "exclude")
+
+# Причини, за яких експертові пропонується календар Web Archive —
+# PLAN_PLAG_FILTER_V2.md, §11 запис 14. `unavailable`: автоперевірка копії не
+# дістала, але часто через відмову archive.org, а не через брак знімка.
+# `date_unknown`: знімок — саме те свідчення дати, якого забракло.
+_ARCHIVE_LINK_REASONS = ("unavailable", "date_unknown")
 
 
 def _evidence_text(state: SourceState, project: PlagProject) -> str:
@@ -139,6 +146,12 @@ def viewer_payload(
     for number in visible:
         row = report.rows[number]
         state = project.states[number]
+        url = row.urls[0] if row.urls else ""
+        archive_url = (
+            wayback_calendar_url(url)
+            if url and state.reason in _ARCHIVE_LINK_REASONS
+            else ""
+        )
         sources.append(
             {
                 "number": number,
@@ -148,7 +161,8 @@ def viewer_payload(
                 "evidence": _evidence_text(state, project),
                 "decision": state.decision,
                 "manual": state.manual,
-                "url": row.urls[0] if row.urls else "",
+                "url": url,
+                "archive_url": archive_url,
             }
         )
 
