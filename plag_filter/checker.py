@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 from plag_filter.fetch import FetchResult, fetch_document
 from plag_filter.rules import (
     author_key,
+    date_from_court_text,
+    date_from_html_head,
     date_from_meta,
     date_from_pdf_pages,
     find_author,
@@ -74,6 +76,18 @@ def _build_check(url: str, checked_for: str, result: FetchResult, surname: str, 
         meta_hit = date_from_meta(result.meta, result.jsonld)
         if meta_hit is not None:
             doc_date, date_basis = meta_hit
+        else:
+            page_text = result.pages[0] if result.pages else ""
+            host = (urlparse(result.final_url or url).hostname or "").casefold()
+            if host.endswith("reyestr.court.gov.ua"):
+                court_date = date_from_court_text(page_text)
+                if court_date is not None:
+                    doc_date, date_basis = court_date, "court:дата ухвалення рішення"
+            if doc_date is None:
+                head_date, head_basis, head_conflict = date_from_html_head(page_text)
+                if head_date is not None:
+                    doc_date, date_basis = head_date, head_basis
+                date_conflict = date_conflict or head_conflict
 
     if result.repository_meta:
         repo_hit = date_from_meta(result.repository_meta, [])

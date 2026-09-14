@@ -1,0 +1,43 @@
+{
+  "_comment": "Ручна розмітка оркестратора, PLAN_PLAG_FILTER_V2.md §9.2 етап 4. Без ПІБ і текстів документів.",
+  "917c15374402d1c9f9b0ca52509b2364c25b442e4cb691ad31a94560c95e6c70": {
+    "year": 2020,
+    "items": {
+      "21": {"date_year": 2022, "later_proof": true, "note": "стаття журналу Law. State. Technology, вип. 1, 2022, DOI 2022"},
+      "26": {"date_year": 2023, "later_proof": true, "note": "монографія, Riga: Baltija Publishing, 2023"},
+      "27": {"date_year": 2022, "later_proof": true, "note": "збірник матеріалів конференції НТУ «ДП», Дніпро, 2022"},
+      "28": {"date_year": 2022, "later_proof": true, "note": "наукові праці МАУП, випуск 1 (61), 2022"},
+      "31": {"date_year": 2013, "later_proof": false, "note": "журнал «Право і суспільство» № 6/2013 — раніше за дисертацію"},
+      "34": {"date_year": 2020, "later_proof": false, "note": "титул іншої дисертації, Львів – 2020 — той самий рік"},
+      "39": {"date_year": 2020, "later_proof": false, "note": "збірник матеріалів конференції, м. Київ, 4 вересня 2020 — той самий рік"},
+      "40": {"date_year": null, "later_proof": false, "note": "сторінка не завантажилась (заглушка переглядача docs.com)"},
+      "43": {"date_year": 2019, "later_proof": false, "note": "Visegrad Journal on Human Rights № 6 (vol. 1), dec 2019 — раніше за дисертацію"},
+      "45": {"date_year": null, "later_proof": false, "note": "текст не завантажився (заглушка переглядача)"},
+      "46": {"date_year": 2020, "later_proof": false, "note": "матеріали міжнародної конференції ЗНУ, 24–25 січня 2020 — той самий рік"},
+      "49": {"date_year": 2015, "later_proof": false, "note": "монографія, Херсон, 2015 — раніше за дисертацію"},
+      "51": {"date_year": 2015, "later_proof": false, "note": "Вісник Запорізького національного університету № 1 (I), 2015 — раніше за дисертацію"},
+      "56": {"date_year": 2022, "later_proof": true, "note": "особиста сторінка викладача, meta article:published_time 2022 (дату вже встановлено алгоритмом)"},
+      "57": {"date_year": 2012, "later_proof": false, "note": "стаття журналу, архівний шлях /archives/2012/3/ — раніше за дисертацію"}
+    }
+  },
+  "45d3ac8cde3fe5b80780f27c4f821b03fff0e2691b940b7642cdb072fbef0e51": {
+    "year": 2002,
+    "items": {
+      "2": {"date_year": 2002, "later_proof": false, "note": "текст не завантажився, дату визначено алгоритмом за якорем «Дніпропетровськ 2002» — той самий рік"},
+      "3": {"date_year": null, "later_proof": false, "note": "сторінка LIGA:ZAKON, текст не завантажився"},
+      "4": {"date_year": 2007, "later_proof": true, "note": "науково-практичний коментар Тертишника В.М., К.: А.С.К., 2007 — пізніше за дисертацію"},
+      "5": {"date_year": null, "later_proof": false, "note": "studfile.net, текст не завантажився"},
+      "9": {"date_year": null, "later_proof": false, "note": "studfile.net, текст не завантажився"},
+      "10": {"date_year": null, "later_proof": false, "note": "файл .doc, бінарний вміст не декодувався"},
+      "12": {"date_year": null, "later_proof": false, "note": "сторінка «Завершення проєкту Чтиво» — оригінальний документ недоступний"},
+      "17": {"date_year": null, "later_proof": true, "note": "збірник цитує події й публікації 2010 року (Голос України, Юрид. вісник України) — доказ написання пізніше 2002, точний рік видання збірника в тексті не видно"},
+      "19": {"date_year": null, "later_proof": false, "note": "сторінка перенаправляє на сторонній ресурс (сайт прогнозів), оригінальний документ втрачено"},
+      "22": {"date_year": null, "later_proof": false, "note": "сторінка lex-line.com.ua, текст не завантажився (кодування)"},
+      "24": {"date_year": null, "later_proof": false, "note": "studfile.net, текст не завантажився"},
+      "27": {"date_year": null, "later_proof": true, "note": "підручник «Кримінальне право» (Дудоров О.О., Хавронюк М.І.), 851 збіг цитування пізніше року дисертації, останні видимі джерела — 2014; точний рік видання підручника в завантаженому фрагменті не видно"},
+      "28": {"date_year": null, "later_proof": false, "note": "стаття підручника на веб-сторінці, рік видання в тексті не вказано"},
+      "31": {"date_year": 2004, "later_proof": true, "note": "автореферат дисертації, lawtheses.com, meta citation_publication_date 2004 (дату вже встановлено алгоритмом)"},
+      "41": {"date_year": null, "later_proof": false, "note": "сторінка-скорочувач посилань (surl.li), оригінальний документ недоступний"}
+    }
+  }
+}

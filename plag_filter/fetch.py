@@ -73,6 +73,11 @@ class _HTMLExtractor(HTMLParser):
         self._skip_depth = 0
         self._in_jsonld = False
         self._jsonld_buffer: list[str] = []
+        # PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 4 — datetime першого <time>
+        # усередині першого <article>.
+        self._article_depth = 0
+        self._article_seen = False
+        self._in_first_article = False
 
     def text(self) -> str:
         return "".join(self._text_parts)
@@ -80,7 +85,7 @@ class _HTMLExtractor(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_dict = dict(attrs)
         if tag == "meta":
-            name = attrs_dict.get("name")
+            name = attrs_dict.get("name") or attrs_dict.get("property")
             content = attrs_dict.get("content")
             if name and content is not None:
                 self.meta[name.casefold()] = content
@@ -98,6 +103,16 @@ class _HTMLExtractor(HTMLParser):
             self._skip_depth += 1
         elif tag in ("style", "noscript"):
             self._skip_depth += 1
+        elif tag == "article":
+            self._article_depth += 1
+            if self._article_depth == 1 and not self._article_seen:
+                self._article_seen = True
+                self._in_first_article = True
+        elif tag == "time":
+            if self._in_first_article and "time:article" not in self.meta:
+                datetime_value = attrs_dict.get("datetime")
+                if datetime_value:
+                    self.meta["time:article"] = datetime_value
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "script":
@@ -107,6 +122,10 @@ class _HTMLExtractor(HTMLParser):
             self._skip_depth = max(0, self._skip_depth - 1)
         elif tag in ("style", "noscript"):
             self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag == "article":
+            self._article_depth = max(0, self._article_depth - 1)
+            if self._article_depth == 0:
+                self._in_first_article = False
 
     def handle_data(self, data: str) -> None:
         if self._in_jsonld:

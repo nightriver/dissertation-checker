@@ -359,6 +359,59 @@ def test_fetch_blocked_address_without_allow_private(tmp_dir: Path) -> None:
     _assert_tmp_dir_empty(tmp_dir)
 
 
+def test_fetch_html_meta_property_saved_like_name(tmp_dir: Path) -> None:
+    html = (
+        "<html><head>"
+        '<meta property="og:published_time" content="2021-03-04">'
+        "</head><body><p>Стаття про дослідження.</p></body></html>"
+    ).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
+
+        def log_message(self, format, *args):
+            pass
+
+    for server in _run_server(Handler):
+        result = fetch_document(f"{server.url}/page.html", tmp_dir=tmp_dir, allow_private=True)
+
+    assert result.ok is True
+    assert result.meta.get("og:published_time") == "2021-03-04"
+    _assert_tmp_dir_empty(tmp_dir)
+
+
+def test_fetch_html_time_inside_first_article_captured(tmp_dir: Path) -> None:
+    html = (
+        "<html><body>"
+        "<article><p>Текст</p><time datetime='2019-05-03'>3 травня</time></article>"
+        "<article><time datetime='2020-01-01'>1 січня</time></article>"
+        "</body></html>"
+    ).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
+
+        def log_message(self, format, *args):
+            pass
+
+    for server in _run_server(Handler):
+        result = fetch_document(f"{server.url}/page.html", tmp_dir=tmp_dir, allow_private=True)
+
+    assert result.ok is True
+    assert result.meta.get("time:article") == "2019-05-03"
+    _assert_tmp_dir_empty(tmp_dir)
+
+
 def test_no_new_dependencies_in_requirements() -> None:
     root = Path(__file__).resolve().parents[1]
     requirements = (root / "requirements.txt").read_text(encoding="utf-8")

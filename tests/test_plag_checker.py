@@ -120,6 +120,21 @@ def ok_result(url: str, pages: list[str] | None = None) -> FetchResult:
     )
 
 
+def ok_html_result(url: str, pages: list[str] | None = None, meta: dict[str, str] | None = None) -> FetchResult:
+    return FetchResult(
+        ok=True,
+        error=None,
+        url=url,
+        final_url=url,
+        kind="html",
+        pages=pages if pages is not None else ["Звичайний текст сторінки без прізвища автора."],
+        meta=meta or {},
+        jsonld=[],
+        repository_meta={},
+        hints={},
+    )
+
+
 def error_result(url: str, error: str) -> FetchResult:
     return FetchResult(
         ok=False,
@@ -346,6 +361,43 @@ def test_check_batch_marks_unavailable_on_fetch_error(tmp_path: Path) -> None:
     assert project.states[1].decision == "disputed"
     assert project.states[1].reason == "unavailable"
     assert project.states[1].check.error == "http_404"
+
+
+def test_check_batch_html_without_meta_uses_html_head_anchor(tmp_path: Path) -> None:
+    url = "https://a.example/reader"
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2005)
+    fetch = FakeFetch({url: ok_html_result(url, pages=["Харків, 2011. Далі текст сторінки."])})
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    check = project.states[1].check
+    assert check.doc_date is not None
+    assert check.doc_date.start.year == 2011
+    assert check.date_basis is not None
+    assert check.date_basis.startswith("html:")
+    assert project.states[1].decision == "exclude"
+    assert project.states[1].reason == "later"
+
+
+def test_check_batch_html_court_registry_uses_court_date(tmp_path: Path) -> None:
+    url = "https://reyestr.court.gov.ua/Review/12345"
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2020)
+    fetch = FakeFetch(
+        {url: ok_html_result(url, pages=["Справа № 1. Дата ухвалення рішення: 05.03.2015. Суддя."])}
+    )
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    check = project.states[1].check
+    assert check.doc_date is not None
+    assert check.doc_date.start.year == 2015
+    assert check.doc_date.precision == "day"
+    assert project.states[1].decision == "keep"
+    assert project.states[1].reason == "earlier"
 
 
 def test_check_batch_uses_alt_url_instead_of_first_url(tmp_path: Path) -> None:

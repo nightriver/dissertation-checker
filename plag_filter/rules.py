@@ -287,7 +287,16 @@ def parse_date_value(value: str) -> DateInterval | None:
     return None
 
 
-_META_FIELDS = ("citation_publication_date", "citation_date", "dc.date.issued")
+# PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 4 — розширений порядок метаполів.
+_META_FIELDS = (
+    "citation_publication_date",
+    "citation_date",
+    "dc.date.issued",
+    "article:published_time",
+    "og:published_time",
+    "dc.date",
+    "time:article",
+)
 
 
 def date_from_meta(meta: dict[str, str], jsonld: list[str]) -> tuple[DateInterval, str] | None:
@@ -334,13 +343,18 @@ _PDF_ANCHORS: tuple[re.Pattern[str], ...] = (
     re.compile(rf"(?:{_CITIES})\s*[,:–—-]\s*((?:19|20)\d\d)"),
 )
 
+# PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 4 — п'ятий якір, лише перша сторінка.
+_PDF_ANCHOR_FIFTH = re.compile(rf"(?:{_CITIES})\s{{1,3}}((?:19|20)\d\d)(?!\d)")
+
 
 def date_from_pdf_pages(pages: list[str]) -> tuple[DateInterval | None, str | None, bool]:
-    """Дата з перших двох сторінок PDF-документа — PLAN_PLAG_FILTER.md, §5."""
+    """Дата з перших двох сторінок PDF-документа — PLAN_PLAG_FILTER.md, §5,
+    доповнено `PLAN_PLAG_FILTER_V2.md`, §8.2, §9.2 етап 4 — п'ятий якір."""
     found: list[tuple[int, str, int]] = []
     for index, text in enumerate(pages[:2]):
         normalized = text.casefold()
-        for pattern in _PDF_ANCHORS:
+        patterns = _PDF_ANCHORS if index != 0 else _PDF_ANCHORS + (_PDF_ANCHOR_FIFTH,)
+        for pattern in patterns:
             for match in pattern.finditer(normalized):
                 year = int(match.group(1))
                 found.append((year, match.group(0), index + 1))
@@ -354,6 +368,66 @@ def date_from_pdf_pages(pages: list[str]) -> tuple[DateInterval | None, str | No
     interval = DateInterval(date(year, 1, 1), date(year, 12, 31), "year")
     basis = f"pdf:{fragment} (стор. {page_number})"
     return interval, basis, False
+
+
+# PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 4 — реєстр суду, «шапка» HTML.
+HTML_HEAD_CHARS = 5000
+
+_COURT_DATE_RE = re.compile(r"дата ухвалення рішення:\s*(\d\d)\.(\d\d)\.(\d{4})")
+
+
+def date_from_court_text(text: str) -> DateInterval | None:
+    """Дата ухвалення рішення з тексту сторінки реєстру суду —
+    PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 4."""
+    match = _COURT_DATE_RE.search(text.casefold())
+    if match is None:
+        return None
+    day, month, year = (int(part) for part in match.groups())
+    try:
+        d = date(year, month, day)
+    except ValueError:
+        return None
+    return DateInterval(d, d, "day")
+
+
+def date_from_html_head(text: str) -> tuple[DateInterval | None, str | None, bool]:
+    """Дата з «шапки» HTML-сторінки за логікою `date_from_pdf_pages` —
+    PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 4."""
+    interval, basis, conflict = date_from_pdf_pages([text[:HTML_HEAD_CHARS]])
+    if basis is not None:
+        fragment = basis.split(":", 1)[1]
+        fragment = re.sub(r"\s*\(стор\.\s*\d+\)$", "", fragment)
+        basis = f"html:{fragment}"
+    return interval, basis, conflict
+
+
+# PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 4 — роки цитування у списку літератури.
+MAX_CITATION_YEARS = 1000
+
+_CITATION_YEAR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"[,.]\s*((?:19|20)\d\d)\.?\s*[–—-]\s*\d+\s*с\."),
+    re.compile(r"[–—-]\s*((?:19|20)\d\d)\.?\s*[–—-]\s*(?:№|вип|т\.|с\.)"),
+    _PDF_ANCHORS[0],
+    _PDF_ANCHORS[1],
+)
+
+
+def citation_years(pages: list[str]) -> list[int]:
+    """Роки цитування у порядку позицій, не більше `MAX_CITATION_YEARS` —
+    PLAN_PLAG_FILTER_V2.md, §8.2, §9.2 етап 4. У рішення етап 4 не підключає."""
+    years: list[int] = []
+    for text in pages:
+        normalized = text.casefold()
+        page_matches: list[tuple[int, int]] = []
+        for pattern in _CITATION_YEAR_PATTERNS:
+            for match in pattern.finditer(normalized):
+                page_matches.append((match.start(), int(match.group(1))))
+        page_matches.sort(key=lambda item: item[0])
+        for _position, year in page_matches:
+            years.append(year)
+            if len(years) >= MAX_CITATION_YEARS:
+                return years
+    return years
 
 
 _TITLE_YEAR_RE = re.compile(rf"(?:{_CITIES})\s*[–—-]\s*((?:19|20)\d\d)")

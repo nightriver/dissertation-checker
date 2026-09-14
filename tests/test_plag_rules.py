@@ -10,9 +10,14 @@ from datetime import date
 import pytest
 
 from plag_filter.rules import (
+    HTML_HEAD_CHARS,
     MAX_AUTHOR_HITS,
+    MAX_CITATION_YEARS,
     author_key,
+    citation_years,
     classify_hit,
+    date_from_court_text,
+    date_from_html_head,
     date_from_meta,
     date_from_pdf_pages,
     decide,
@@ -354,6 +359,105 @@ def test_date_from_meta_none_when_nothing_found() -> None:
 
 
 # ---------------------------------------------------------------------------
+# date_from_meta — нові поля, PLAN_PLAG_FILTER_V2.md, §8.2 етап 4
+# ---------------------------------------------------------------------------
+
+
+def test_date_from_meta_prefers_dc_date_issued_over_article_published_time() -> None:
+    meta = {"dc.date.issued": "2018", "article:published_time": "2017-01-01"}
+    interval, basis = date_from_meta(meta, [])
+    assert interval == DateInterval(date(2018, 1, 1), date(2018, 12, 31), "year")
+    assert basis == "meta:dc.date.issued"
+
+
+def test_date_from_meta_falls_back_to_article_published_time() -> None:
+    meta = {"article:published_time": "2017-01-01", "og:published_time": "2016-01-01"}
+    interval, basis = date_from_meta(meta, [])
+    assert interval == DateInterval(date(2017, 1, 1), date(2017, 1, 1), "day")
+    assert basis == "meta:article:published_time"
+
+
+def test_date_from_meta_falls_back_to_og_published_time() -> None:
+    meta = {"og:published_time": "2016-02-02", "dc.date": "2015"}
+    interval, basis = date_from_meta(meta, [])
+    assert interval == DateInterval(date(2016, 2, 2), date(2016, 2, 2), "day")
+    assert basis == "meta:og:published_time"
+
+
+def test_date_from_meta_falls_back_to_dc_date() -> None:
+    meta = {"dc.date": "2015", "time:article": "2014-01-01"}
+    interval, basis = date_from_meta(meta, [])
+    assert interval == DateInterval(date(2015, 1, 1), date(2015, 12, 31), "year")
+    assert basis == "meta:dc.date"
+
+
+def test_date_from_meta_falls_back_to_time_article() -> None:
+    meta = {"time:article": "2014-06-01"}
+    interval, basis = date_from_meta(meta, [])
+    assert interval == DateInterval(date(2014, 6, 1), date(2014, 6, 1), "day")
+    assert basis == "meta:time:article"
+
+
+# ---------------------------------------------------------------------------
+# date_from_court_text — PLAN_PLAG_FILTER_V2.md, §8.2 етап 4
+# ---------------------------------------------------------------------------
+
+
+def test_date_from_court_text_finds_day_precision_date() -> None:
+    text = "Справа № 123. Дата ухвалення рішення: 05.03.2015. Суддя ..."
+    interval = date_from_court_text(text)
+    assert interval == DateInterval(date(2015, 3, 5), date(2015, 3, 5), "day")
+
+
+def test_date_from_court_text_none_when_no_match() -> None:
+    assert date_from_court_text("Текст без реквізитів рішення суду.") is None
+
+
+# ---------------------------------------------------------------------------
+# date_from_html_head — PLAN_PLAG_FILTER_V2.md, §8.2 етап 4
+# ---------------------------------------------------------------------------
+
+
+def test_date_from_html_head_finds_city_year_anchor_at_start() -> None:
+    interval, basis, conflict = date_from_html_head("Київ – 2008. Далі текст сторінки.")
+    assert interval == DateInterval(date(2008, 1, 1), date(2008, 12, 31), "year")
+    assert basis is not None
+    assert basis.startswith("html:")
+    assert "стор." not in basis
+    assert conflict is False
+
+
+def test_date_from_html_head_ignores_anchor_after_head_chars() -> None:
+    text = "x" * HTML_HEAD_CHARS + "Київ – 2008."
+    interval, basis, conflict = date_from_html_head(text)
+    assert interval is None
+    assert basis is None
+    assert conflict is False
+
+
+# ---------------------------------------------------------------------------
+# citation_years — PLAN_PLAG_FILTER_V2.md, §8.2 етап 4
+# ---------------------------------------------------------------------------
+
+
+def test_citation_years_finds_all_three_patterns() -> None:
+    text = (
+        "Іванов І. І. Назва праці. Київ, 2010. – 200 с. "
+        "Петров П. П. Стаття. – 2012 – №3. "
+        "Матеріали конференції. Вип. 5, 2015."
+    )
+    years = citation_years([text])
+    assert years == [2010, 2012, 2015]
+
+
+def test_citation_years_respects_max_limit() -> None:
+    fragment = "Автор. Праця. Київ, 1999. – 1 с. "
+    text = fragment * (MAX_CITATION_YEARS + 5)
+    years = citation_years([text])
+    assert len(years) == MAX_CITATION_YEARS
+
+
+# ---------------------------------------------------------------------------
 # date_from_pdf_pages — §5
 # ---------------------------------------------------------------------------
 
@@ -392,6 +496,24 @@ def test_date_from_pdf_pages_two_different_years_conflict() -> None:
 
 def test_date_from_pdf_pages_ignores_third_page() -> None:
     interval, basis, conflict = date_from_pdf_pages(["plain text", "plain text", "№ 3, 2020"])
+    assert interval is None
+    assert basis is None
+    assert conflict is False
+
+
+# ---------------------------------------------------------------------------
+# date_from_pdf_pages — п'ятий якір, PLAN_PLAG_FILTER_V2.md, §8.2 етап 4
+# ---------------------------------------------------------------------------
+
+
+def test_date_from_pdf_pages_fifth_anchor_on_first_page() -> None:
+    interval, basis, conflict = date_from_pdf_pages(["Дисертація. Київ 2008 рік.", ""])
+    assert interval == DateInterval(date(2008, 1, 1), date(2008, 12, 31), "year")
+    assert conflict is False
+
+
+def test_date_from_pdf_pages_fifth_anchor_ignored_on_second_page() -> None:
+    interval, basis, conflict = date_from_pdf_pages(["plain text", "Дисертація. Київ 2008 рік."])
     assert interval is None
     assert basis is None
     assert conflict is False
