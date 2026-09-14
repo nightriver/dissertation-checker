@@ -49,6 +49,7 @@ from ui_helpers import (
     validate_search_upload,
     reset_search_scoped_state,
     is_table_highlight_mode,
+    is_plag_filter_mode,
 )
 from compare.matcher import compare_documents, count_off_alignment
 from compare.prepare import prepare_document_for_comparison
@@ -191,6 +192,7 @@ APP_SECTIONS = (
     ("search", "Пошук джерел вручну", "?mode=search"),
     ("compare", "Порівняння двох робіт", "?mode=compare"),
     ("table-highlight", "Підсвічування таблиці", "?mode=table-highlight"),
+    ("plag-filter", "Очищення звіту Plag", "?mode=plag-filter"),
 )
 
 
@@ -1520,6 +1522,8 @@ elif is_search_mode(st.query_params):
     active_section = "search"
 elif is_table_highlight_mode(st.query_params):
     active_section = "table-highlight"
+elif is_plag_filter_mode(st.query_params):
+    active_section = "plag-filter"
 
 render_main_navigation(active_section)
 
@@ -1535,6 +1539,12 @@ if active_section == "table-highlight":
     from table_highlighter.ui import render_table_highlight_page
 
     render_table_highlight_page()
+    st.stop()
+
+if active_section == "plag-filter":
+    from plag_filter.ui import render_plag_filter_page
+
+    render_plag_filter_page()
     st.stop()
 
 st.title("📚 Перевірка джерел дисертації")

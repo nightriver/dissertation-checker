@@ -38,6 +38,14 @@ def is_table_highlight_mode(query_params: MutableMapping[str, Any]) -> bool:
     return value == "table-highlight"
 
 
+def is_plag_filter_mode(query_params: MutableMapping[str, Any]) -> bool:
+    """Повертає True лише для режиму очищення звіту Plag."""
+    value = query_params.get("mode")
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    return value == "plag-filter"
+
+
 # ---------------------------------------------------------------------------
 # Ключі стану, прив'язані до конкретного завантаженого файлу
 # ---------------------------------------------------------------------------
