@@ -1,14 +1,15 @@
 """Екран режиму очищення звіту Plag — PLAN_PLAG_FILTER.md, §8, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 5–6).
+`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 5–6, 8).
 
 Постраничний перегляд «варіант б»: заголовок і завантажувач, картка автора,
-лічильники, дії з проєктом, перегляд аркуша з панеллю джерел, згорнута
-таблиця всіх джерел. Завантаження очищеного PDF додає протокол у кінець
-файлу — §10.2, етап 8.
+лічильники, дії з проєктом, перегляд аркуша компонентом `plag_filter.viewer`
+з панеллю джерел, згорнута таблиця всіх джерел. Завантаження очищеного PDF
+додає протокол у кінець файлу — §10.2, етап 8 плану 1.
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -24,11 +25,9 @@ from plag_filter.pdf import (
     append_protocol,
     filter_pdf,
     parse_report,
-    render_page_png,
 )
 from plag_filter.project import from_json, new_project, protocol_paragraphs, to_json
 from plag_filter.rules import (
-    date_evidence,
     derive_initials,
     extract_author,
     extract_title_year,
@@ -37,6 +36,8 @@ from plag_filter.rules import (
     top20_share,
 )
 from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
+from plag_filter.view import apply_viewer_event, viewer_payload
+from plag_filter.viewer import render_viewer
 from ui_helpers import file_sha256
 
 # Ліміт завантажуваного звіту — PLAN_PLAG_FILTER.md, §8, пункт 1.
@@ -48,6 +49,10 @@ _DATA_KEY = "plag_data"
 _PROJECT_KEY = "plag_project"
 _PAGE_KEY = "plag_page"
 _CLEANED_PDF_KEY = "plag_cleaned_pdf"
+
+# Режим показу для браузера — PLAN_PLAG_FILTER_V2.md, §8.6.
+_DEMO_PDF_ENV = "PLAG_FILTER_DEMO_PDF"
+_DEMO_PROJECT_ENV = "PLAG_FILTER_DEMO_PROJECT"
 
 _RESETTABLE_KEYS = (
     _PROJECT_KEY,
@@ -96,97 +101,23 @@ def _year_hint_lines(data: bytes) -> list[dict]:
         doc.close()
 
 
-def _format_percent(row) -> str:
-    return row.percent_text if row.percent_text else "?"
-
-
-def _evidence_text(state, project: PlagProject) -> str:
-    check = state.check
-    if check is None:
-        return ""
-    parts: list[str] = []
-    if state.reason == "own_work" and check.author_hit is not None:
-        parts.append(
-            f"Підпис автора: «{check.author_hit.snippet}» (стор. документа {check.author_hit.page})"
-        )
-    elif state.reason == "cites_author" and check.author_hit is not None:
-        parts.append(
-            f"Цитування автора: «{check.author_hit.snippet}» (стор. документа {check.author_hit.page})"
-        )
-    elif state.reason == "unavailable":
-        parts.append(f"Помилка: {check.error}")
-    else:
-        evidence = date_evidence(check, project.year)
-        if evidence:
-            parts.append(f"Дата документа: {evidence}")
-        elif check.date_conflict:
-            parts.append("Суперечливі дати в документі")
-    if check.archive_used:
-        parts.append("Архівна копія")
-    if check.url_year_hint is not None:
-        parts.append(f"рік в адресі: {check.url_year_hint}")
-    return " · ".join(parts)
-
-
-def _pages_with_disputed(report: PlagReport, project: PlagProject) -> list[int]:
-    pages: set[int] = set()
-    for number, state in project.states.items():
-        if state.decision == "disputed":
-            pages.update(report.pages_by_number.get(number, ()))
-    return sorted(pages)
-
-
-def _next_disputed_page(report: PlagReport, project: PlagProject, current_index: int) -> int:
-    disputed_pages = _pages_with_disputed(report, project)
-    if not disputed_pages:
-        return current_index
-    for page in disputed_pages:
-        if page > current_index:
-            return page
-    return disputed_pages[0]
-
-
-def _render_source_row(
+def _render_unavailable_form(
     number: int, row, state, report: PlagReport, project: PlagProject
 ) -> None:
+    """Інша адреса й перепроверка недоступного джерела — §9.2 етап 8.
+
+    Ці два віджети лишаються на боці Streamlit під компонентом перегляду.
+    """
     with st.container(border=True):
-        st.markdown(f"**№ {number} · {row.label} · {_format_percent(row)}**")
-        st.caption(REASON_LABELS[state.reason])
-        evidence = _evidence_text(state, project)
-        if evidence:
-            st.caption(evidence)
-
-        button_cols = st.columns(3)
-        with button_cols[0]:
-            st.link_button("Відкрити", row.urls[0], key=f"plag_open_{number}")
-        with button_cols[1]:
-            if st.button("Залишити", key=f"plag_keep_{number}"):
-                state.manual = "keep"
-                recompute(project, report)
-                st.rerun()
-        with button_cols[2]:
-            if st.button("Виключити", key=f"plag_exclude_{number}"):
-                state.manual = "exclude"
-                recompute(project, report)
-                st.rerun()
-
-        if state.manual is not None:
-            if st.button("Скасувати ручне рішення", key=f"plag_cancel_manual_{number}"):
-                state.manual = None
-                recompute(project, report)
-                st.rerun()
-
-        if state.reason == "unavailable":
-            alt = st.text_input(
-                "Інша адреса", value=state.alt_url or "", key=f"plag_alt_{number}"
-            )
-            if st.button("Перевірити за цією адресою", key=f"plag_recheck_{number}"):
-                state.alt_url = alt or None
-                with tempfile.TemporaryDirectory() as tmp:
-                    recheck_source(
-                        report, project, number, alt or row.urls[0], tmp_dir=Path(tmp)
-                    )
-                st.rerun()
+        st.caption(f"№ {number} · {row.label} · {REASON_LABELS[state.reason]}")
+        alt = st.text_input("Інша адреса", value=state.alt_url or "", key=f"plag_alt_{number}")
+        if st.button("Перевірити за цією адресою", key=f"plag_recheck_{number}"):
+            state.alt_url = alt or None
+            with tempfile.TemporaryDirectory() as tmp:
+                recheck_source(
+                    report, project, number, alt or row.urls[0], tmp_dir=Path(tmp)
+                )
+            st.rerun()
 
 
 def _seed_author_fields(data: bytes, report: PlagReport, project: PlagProject) -> None:
@@ -394,50 +325,31 @@ def _render_autocheck(report: PlagReport, project: PlagProject) -> None:
     st.rerun()
 
 
+@st.fragment
 def _render_page_view(data: bytes, report: PlagReport, project: PlagProject) -> None:
-    max_page = report.page_count
+    """Перегляд аркуша компонентом — PLAN_PLAG_FILTER_V2.md, §9.2 етап 8.
+
+    Панель джерел і наведення малює компонент; подія від нього йде в
+    `apply_viewer_event`, після чого сторінка та лічильники перемальовуються.
+    """
     if _PAGE_KEY not in st.session_state:
         st.session_state[_PAGE_KEY] = report.body_first + 1
 
-    left_col, right_col = st.columns([3, 2])
-    with left_col:
-        nav_cols = st.columns(3)
-        with nav_cols[0]:
-            if st.button("◀ Попередня"):
-                st.session_state[_PAGE_KEY] = max(1, st.session_state[_PAGE_KEY] - 1)
-        with nav_cols[1]:
-            if st.button("Наступна ▶"):
-                st.session_state[_PAGE_KEY] = min(max_page, st.session_state[_PAGE_KEY] + 1)
-        with nav_cols[2]:
-            if st.button("Наступна зі спірним ▶"):
-                target = _next_disputed_page(
-                    report, project, st.session_state[_PAGE_KEY] - 1
-                )
-                st.session_state[_PAGE_KEY] = target + 1
+    show_excluded = st.checkbox("Показувати виключені", key="plag_show_excluded")
+    page = int(st.session_state[_PAGE_KEY])
+    payload = viewer_payload(data, report, project, page, show_excluded)
+    st.markdown(f"#### Джерела на аркуші {payload['page']}")
 
-        page_number = st.number_input(
-            "Аркуш PDF", min_value=1, max_value=max_page, step=1, key=_PAGE_KEY
-        )
-        page_index = int(page_number) - 1
+    event = render_viewer(payload, key="plag_viewer")
+    if event is not None and apply_viewer_event(project, report, event):
+        st.rerun()
 
-        excluded = {
-            number for number, state in project.states.items() if state.decision == "exclude"
-        }
-        png = render_page_png(data, report, page_index, excluded)
-        st.image(png, use_container_width=True)
-
-    with right_col:
-        st.markdown(f"#### Джерела на аркуші {page_index + 1}")
-        numbers_on_page = report.numbers_by_page.get(page_index, ())
-        visible_numbers = sorted(
-            number
-            for number in numbers_on_page
-            if report.rows[number].percent is None or report.rows[number].percent >= 0.1
-        )
-        below_count = len(numbers_on_page) - len(visible_numbers)
-        for number in visible_numbers:
-            _render_source_row(number, report.rows[number], project.states[number], report, project)
-        st.caption(f"Ще {below_count} джерел нижче 0,1 % прибрано.")
+    page_index = payload["page"] - 1
+    for number in sorted(report.numbers_by_page.get(page_index, ())):
+        row = report.rows[number]
+        state = project.states[number]
+        if state.reason == "unavailable" and (row.percent is None or row.percent >= 0.1):
+            _render_unavailable_form(number, row, state, report, project)
 
 
 def _render_all_sources(report: PlagReport, project: PlagProject) -> None:
@@ -480,16 +392,50 @@ def _render_all_sources(report: PlagReport, project: PlagProject) -> None:
                     st.rerun()
 
 
+def _demo_source() -> tuple[bytes, str] | None:
+    """Звіт із змінної оточення для показу в браузері — PLAN_PLAG_FILTER_V2.md, §8.6."""
+    demo_pdf = os.environ.get(_DEMO_PDF_ENV)
+    if not demo_pdf:
+        return None
+    path = Path(demo_pdf)
+    if not path.is_file():
+        st.error(f"Файл показу не знайдено: {demo_pdf}")
+        return None
+    return path.read_bytes(), path.name
+
+
+def _apply_demo_project(report: PlagReport) -> None:
+    """Проєкт із змінної оточення — PLAN_PLAG_FILTER_V2.md, §8.6."""
+    demo_project = os.environ.get(_DEMO_PROJECT_ENV)
+    if not demo_project:
+        return
+    path = Path(demo_project)
+    if not path.is_file():
+        st.error(f"Проєкт показу не знайдено: {demo_project}")
+        return
+    try:
+        st.session_state[_PROJECT_KEY] = from_json(path.read_text(encoding="utf-8"), report)
+    except ValueError as exc:
+        st.error(str(exc))
+
+
 def render_plag_filter_page() -> None:
     """Головна точка входу режиму `?mode=plag-filter` — PLAN_PLAG_FILTER.md, §8."""
     st.title("Очищення звіту Plag")
-    uploaded = st.file_uploader(
-        "Звіт Plag (PDF)", type=["pdf"], key="plag_upload", help="Один PDF до 30 МБ."
-    )
-    if uploaded is None:
-        return
 
-    data = uploaded.getvalue()
+    demo = _demo_source()
+    if demo is None:
+        uploaded = st.file_uploader(
+            "Звіт Plag (PDF)", type=["pdf"], key="plag_upload", help="Один PDF до 30 МБ."
+        )
+        if uploaded is None:
+            return
+        data = uploaded.getvalue()
+        filename = uploaded.name
+    else:
+        data, filename = demo
+        st.caption(f"Показ: {filename}")
+
     if len(data) > MAX_PLAG_PDF_BYTES:
         st.error("Файл більший за 30 МБ.")
         return
@@ -504,7 +450,9 @@ def render_plag_filter_page() -> None:
             return
         st.session_state[_REPORT_KEY] = report
         st.session_state[_DATA_KEY] = data
-        st.session_state[_PROJECT_KEY] = new_project(report, uploaded.name)
+        st.session_state[_PROJECT_KEY] = new_project(report, filename)
+        if demo is not None:
+            _apply_demo_project(report)
 
     report: PlagReport = st.session_state[_REPORT_KEY]
     data = st.session_state[_DATA_KEY]
@@ -519,7 +467,7 @@ def render_plag_filter_page() -> None:
     _render_counters(report, project)
 
     st.divider()
-    _render_actions(data, report, project, uploaded.name)
+    _render_actions(data, report, project, filename)
 
     st.divider()
     _render_page_view(data, report, project)

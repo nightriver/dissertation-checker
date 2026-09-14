@@ -1,0 +1,163 @@
+/* Стилі компонента перегляду аркуша — PLAN_PLAG_FILTER_V2.md, §9.2 етап 8. */
+
+.pv-root {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  font-family: var(--st-font, sans-serif);
+  color: var(--st-text-color, #262730);
+}
+
+.pv-left {
+  flex: 3 1 0;
+  min-width: 0;
+}
+
+.pv-panel {
+  flex: 2 1 0;
+  min-width: 0;
+  max-height: 900px;
+  overflow-y: auto;
+}
+
+.pv-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.pv-nav button,
+.pv-source button {
+  cursor: pointer;
+  border: 1px solid var(--st-border-color, #d6d6d8);
+  border-radius: 6px;
+  background: var(--st-background-color, #fff);
+  color: inherit;
+  padding: 4px 10px;
+  font-size: 0.9em;
+}
+
+.pv-nav button:hover,
+.pv-source button:hover {
+  border-color: var(--st-primary-color, #1f6f6f);
+}
+
+.pv-page-input {
+  width: 72px;
+  padding: 4px 6px;
+  border: 1px solid var(--st-border-color, #d6d6d8);
+  border-radius: 6px;
+  background: var(--st-background-color, #fff);
+  color: inherit;
+}
+
+.pv-canvas {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.pv-image {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.pv-shape {
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.pv-highlight {
+  mix-blend-mode: multiply;
+}
+
+.pv-pink {
+  background: rgb(255, 214, 214);
+}
+
+.pv-yellow {
+  background: rgb(255, 246, 194);
+}
+
+.pv-marker {
+  background: rgb(51, 95, 95);
+  color: #fff;
+  font-size: 7px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.pv-faded {
+  opacity: 0.25;
+}
+
+.pv-shape.pv-active {
+  outline: 2px solid var(--st-primary-color, #1f6f6f);
+}
+
+.pv-source {
+  border: 1px solid var(--st-border-color, #d6d6d8);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.pv-source.pv-active {
+  border-color: var(--st-primary-color, #1f6f6f);
+  box-shadow: 0 0 0 1px var(--st-primary-color, #1f6f6f);
+}
+
+.pv-source.pv-excluded {
+  opacity: 0.6;
+}
+
+.pv-source-title {
+  font-weight: 600;
+}
+
+.pv-source-reason,
+.pv-source-evidence,
+.pv-below {
+  font-size: 0.85em;
+  color: var(--st-secondary-text-color, #6b6b70);
+  word-break: break-word;
+}
+
+.pv-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  align-items: center;
+}
+
+.pv-toggle button.pv-on {
+  background: var(--st-primary-color, #1f6f6f);
+  border-color: var(--st-primary-color, #1f6f6f);
+  color: #fff;
+}
+
+.pv-toggle {
+  display: inline-flex;
+  gap: 0;
+}
+
+.pv-toggle button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.pv-toggle button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.pv-open {
+  font-size: 0.9em;
+  color: var(--st-link-color, #1f6f6f);
+}

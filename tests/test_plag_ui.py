@@ -109,14 +109,19 @@ def test_full_screen_scenario_without_manual_decisions(monkeypatch: pytest.Monke
     markdown = "\n".join(item.value for item in app.markdown)
     assert "Джерела на аркуші" in markdown
 
-    before_page = app.session_state["plag_page"]
-    next_button = next(b for b in app.get("button") if b.label == "Наступна ▶")
-    next_button.click()
-    app.run(timeout=120)
-    assert not app.exception
+    # Аркуші гортає компонент перегляду: подія `page` → `apply_viewer_event`
+    # → `session_state["plag_page"]` — PLAN_PLAG_FILTER_V2.md, §9.2 етап 8.
+    import streamlit as st
 
-    after_page = app.session_state["plag_page"]
-    assert after_page == before_page + 1
+    from plag_filter.view import apply_viewer_event
+
+    report = app.session_state["plag_report"]
+    before_page = app.session_state["plag_page"]
+    st.session_state["plag_page"] = before_page
+    assert apply_viewer_event(
+        project, report, {"type": "page", "page": before_page + 1}
+    )
+    assert st.session_state["plag_page"] == before_page + 1
 
     app.text_input(key="plag_given_name").set_value("Змінено")
     app.run(timeout=120)
@@ -170,6 +175,25 @@ def test_autocheck_runs_to_completion_without_next20_button(
         state.reason for state in project.states.values() if state.check is not None
     }
     assert "unavailable" in checked_reasons
+
+
+@pytest.mark.corpus
+def test_demo_environment_variable_opens_report_without_uploader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Режим показу для браузера — PLAN_PLAG_FILTER_V2.md, §8.6, §9.2 етап 8."""
+    monkeypatch.setattr("plag_filter.fetch.fetch_document", _fake_fetch_404)
+    monkeypatch.setenv("PLAG_FILTER_DEMO_PDF", str(REPORT_2002))
+
+    app = AppTest.from_file(APP_PATH)
+    app.query_params["mode"] = "plag-filter"
+    app.run(timeout=120)
+
+    assert not app.exception
+    uploader_labels = [item.label for item in app.get("file_uploader")]
+    assert "Звіт Plag (PDF)" not in uploader_labels
+    assert app.session_state["plag_report"].page_count > 0
+    assert app.text_input(key="plag_surname").value.strip() != ""
 
 
 @pytest.mark.corpus
