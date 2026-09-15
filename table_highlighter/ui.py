@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from table_highlighter.processor import DocumentValidationError, inspect_tables, process_document
-from table_highlighter.types import HighlightOptions
+from table_highlighter.types import FONT_CHOICES, FONT_SIZE_RANGE, HighlightOptions
 from ui_helpers import file_sha256
 
 
@@ -77,8 +77,8 @@ def render_table_highlight_page() -> None:
             "Для коротких слів застосовувати поріг 70%", value=True,
             help="За 100% ця опція автоматично не впливає на результат.", key="table_highlight_relax_short",
         )
-        font_name = st.selectbox("Шрифт", ["Calibri", "Times New Roman", "Arial"], key="table_highlight_font")
-        font_size = st.number_input("Розмір шрифту (pt)", 8, 16, 14, step=1, key="table_highlight_font_size")
+        font_name = st.selectbox("Шрифт", list(FONT_CHOICES), key="table_highlight_font")
+        font_size = st.number_input("Розмір шрифту (pt)", *FONT_SIZE_RANGE, 14, step=1, key="table_highlight_font_size")
         st.caption("У всьому документі буде обраний шрифт і розмір, чорний текст без жирності, курсиву й підкреслення. URL залишаться активними. Кольором виділяються лише результати порівняння.")
         st.info("Вирівнювання маркерів сторінок увімкнено завжди: воно потрібне для зіставлення фрагментів експертом.")
 

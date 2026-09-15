@@ -1,4 +1,11 @@
-"""Вивантаження таблиці текстових збігів у документ MS Word (.docx)."""
+"""
+Вивантаження таблиці текстових збігів у документ MS Word (.docx).
+
+Таблиця оформлюється так само, як результат режиму ``?mode=table-highlight``:
+експерт збирає обидві таблиці в одному висновку, тому шрифт, геометрія,
+маркер «С. N» і кольори підсвічування мають збігатися. Оформлення не
+дублюється, а береться з функцій ``table_highlighter``.
+"""
 
 from __future__ import annotations
 
@@ -6,69 +13,93 @@ from collections.abc import Sequence
 from io import BytesIO
 
 from docx import Document
-from docx.enum.section import WD_ORIENT
-from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_UNDERLINE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt
+from docx.shared import Twips
 
 from compare.presentation import (
-    DIFF_COLOR,
     LINE_BREAK,
-    MATCH_COLOR,
     SIDE_A_TITLE,
     SIDE_B_TITLE,
-    finding_meta,
     fragment_pieces,
 )
 from compare.types import CompareToken, TextSegment
 from parser.types import LineItem
+from table_highlighter.formatting import normalize_document, set_run_font
+from table_highlighter.layout import LogicalRow, align_page_markers
+from table_highlighter.types import HighlightOptions
+from table_highlighter.writer import HIGHLIGHT
+from table_highlighter.zones import CellZones, ParagraphZone
 
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 DOCUMENT_TITLE = "Порівняння двох робіт: текстові збіги"
-META_FILL = "E7E7E7"
-HEAD_FILL = "D0D0D0"
-FONT_SIZE_PT = 10
+EMPTY_TEXT = "Знахідок немає."
+MISSING_PAGE_MARKER = "С. —"
+# Геометрія таблиці порівняння, яку експерт обробляє в table-highlight:
+# A4 книжкова, поля 2,54 см, дві колонки фіксованої ширини (twips).
+PAGE_WIDTH = 11906
+PAGE_HEIGHT = 16838
+PAGE_MARGIN = 1440
+COLUMN_WIDTHS = (4673, 4678)
+# Інтервали абзаців поза таблицею — як у стандартному документі Word.
+SPACING_AFTER = 160
+LINE_SPACING = 259
+
+_STATUS = {"equal": "match", "fuzzy": "match", "replace": "diff", "insert": "diff", "delete": "diff"}
 
 
-def _hex(color: str) -> str:
-    return color.lstrip("#").upper()
+def page_marker(tokens: Sequence[CompareToken], start: int, end: int) -> str:
+    """Лише перший аркуш PDF фрагмента; назву документа експерт допише сам."""
+    for token in tokens[start:end]:
+        for page in token.physical_pages:
+            if page is not None:
+                return f"С. {page}"
+    return MISSING_PAGE_MARKER
 
 
-def _shade(element, fill: str) -> None:
-    """Заливка комірки (tcPr) або тексту run (rPr) — однаковий w:shd."""
-    shading = OxmlElement("w:shd")
-    shading.set(qn("w:val"), "clear")
-    shading.set(qn("w:color"), "auto")
-    shading.set(qn("w:fill"), fill)
-    element.append(shading)
+def _set_paragraph_defaults(document) -> None:
+    defaults = document.styles.element.find(qn("w:docDefaults"))
+    spacing = defaults.find(qn("w:pPrDefault")).find(qn("w:pPr")).find(qn("w:spacing"))
+    spacing.set(qn("w:after"), str(SPACING_AFTER))
+    spacing.set(qn("w:line"), str(LINE_SPACING))
+    spacing.set(qn("w:lineRule"), "auto")
 
 
-def _mark_header_row(row) -> None:
-    """Шапка таблиці повторюється на кожній сторінці Word."""
-    header = OxmlElement("w:tblHeader")
-    header.set(qn("w:val"), "true")
-    row._tr.get_or_add_trPr().append(header)
+def _prepare_table(document):
+    table = document.add_table(rows=0, cols=2)
+    table.style = "Table Grid"
+    properties = table._tbl.tblPr
+    width = properties.find(qn("w:tblW"))
+    width.set(qn("w:w"), str(sum(COLUMN_WIDTHS)))
+    width.set(qn("w:type"), "dxa")
+    layout = OxmlElement("w:tblLayout")
+    layout.set(qn("w:type"), "fixed")
+    width.addnext(layout)
+    for column, value in zip(table._tbl.tblGrid.gridCol_lst, COLUMN_WIDTHS):
+        column.w = Twips(value)
+    return table
 
 
-def _fill_fragment(paragraph, pieces: Sequence[tuple[str, str | None]]) -> None:
+def _fill_cell(cell, marker: str, pieces, highlighted: list) -> CellZones:
+    """Абзац «С. N», під ним фрагмент; розрив рядка стає новим абзацом."""
+    cell.paragraphs[0].add_run(marker)
+    paragraph = cell.add_paragraph()
     for text, operation in pieces:
         if operation == LINE_BREAK:
-            paragraph.add_run().add_break()
+            paragraph = cell.add_paragraph()
             continue
         if not text:
             continue
         run = paragraph.add_run(text)
-        if operation is None:
-            continue
-        if operation in {"equal", "fuzzy"}:
-            _shade(run._r.get_or_add_rPr(), _hex(MATCH_COLOR))
-            if operation == "fuzzy":
-                run.font.underline = WD_UNDERLINE.DASH
-        else:
-            _shade(run._r.get_or_add_rPr(), _hex(DIFF_COLOR))
+        status = _STATUS.get(operation)
+        if status is not None:
+            highlighted.append((run._r, status))
+    zones = tuple(
+        ParagraphZone(item, index, "plain" if index == 0 else "text")
+        for index, item in enumerate(cell.paragraphs)
+    )
+    return CellZones(zones, marker_index=0)
 
 
 def build_comparison_docx(
@@ -79,64 +110,58 @@ def build_comparison_docx(
     name_a: str,
     name_b: str,
     summary: Sequence[str] = (),
+    font_name: str = HighlightOptions.font_name,
+    font_size: int = HighlightOptions.font_size,
 ) -> bytes:
     """
     Будує .docx з тими самими знахідками, що й таблиця на екрані.
 
-    Довгі фрагменти не згортаються: у документі немає «розгорнути», тому
-    текст іде повністю разом із контекстом. Підсвічування — заливкою тексту
-    тими самими кольорами, що й на екрані; близька словоформа ще й
-    підкреслена штрихом.
+    Кожна знахідка — один рядок таблиці з двох комірок. У комірці лише
+    маркер «С. N» і сам фрагмент без контексту, повністю, без згортання.
+    Збіг (точний і близька словоформа) підсвічено жовтим маркером Word,
+    відмінність — бірюзовим, як у table-highlight.
     """
     document = Document()
     section = document.sections[0]
-    section.orientation = WD_ORIENT.LANDSCAPE
-    section.page_width, section.page_height = section.page_height, section.page_width
+    section.page_width, section.page_height = Twips(PAGE_WIDTH), Twips(PAGE_HEIGHT)
     for side in ("left_margin", "right_margin", "top_margin", "bottom_margin"):
-        setattr(section, side, Cm(1.5))
-    document.styles["Normal"].font.size = Pt(FONT_SIZE_PT)
+        setattr(section, side, Twips(PAGE_MARGIN))
+    _set_paragraph_defaults(document)
 
-    document.add_heading(DOCUMENT_TITLE, level=1)
+    document.add_paragraph(DOCUMENT_TITLE)
     document.add_paragraph(f"{SIDE_A_TITLE}: {name_a}")
     document.add_paragraph(f"{SIDE_B_TITLE}: {name_b}")
     for line in summary:
         document.add_paragraph(line)
-    legend = document.add_paragraph("Позначення: ")
-    _fill_fragment(legend, [
-        ("збігається", "equal"), (" · ", None),
-        ("близька словоформа", "fuzzy"), (" · ", None),
-        ("відрізняється", "replace"),
-    ])
-
-    table = document.add_table(rows=1, cols=2)
-    table.style = "Table Grid"
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    head = table.rows[0]
-    _mark_header_row(head)
-    for cell, title in zip(head.cells, (SIDE_A_TITLE, SIDE_B_TITLE)):
-        cell.text = ""
-        cell.paragraphs[0].add_run(title).bold = True
-        _shade(cell._tc.get_or_add_tcPr(), HEAD_FILL)
-
-    for number, segment in enumerate(segments, 1):
-        meta = finding_meta(segment, tokens_a, tokens_b)
-        meta_cell = table.add_row().cells[0].merge(table.rows[-1].cells[1])
-        paragraph = meta_cell.paragraphs[0]
-        paragraph.add_run(f"{number}").bold = True
-        parts = [meta.place, meta.kind, meta.indicators, *meta.labels]
-        paragraph.add_run("   " + " · ".join(parts))
-        _shade(meta_cell._tc.get_or_add_tcPr(), META_FILL)
-
-        pair = table.add_row().cells
-        _fill_fragment(pair[0].paragraphs[0], fragment_pieces(
-            lines_a, tokens_a, segment.a_start, segment.a_end, segment.a_spans
-        ))
-        _fill_fragment(pair[1].paragraphs[0], fragment_pieces(
-            lines_b, tokens_b, segment.b_start, segment.b_end, segment.b_spans
-        ))
 
     if not segments:
-        document.add_paragraph("Знахідок немає.")
+        document.add_paragraph(EMPTY_TEXT)
+    highlighted: list = []
+    rows = []
+    table = _prepare_table(document) if segments else None
+    for segment in segments:
+        row = table.add_row()
+        for cell, value in zip(row.cells, COLUMN_WIDTHS):
+            cell.width = Twips(value)
+        left = _fill_cell(
+            row.cells[0], page_marker(tokens_a, segment.a_start, segment.a_end),
+            fragment_pieces(lines_a, tokens_a, segment.a_start, segment.a_end, segment.a_spans, 0),
+            highlighted,
+        )
+        right = _fill_cell(
+            row.cells[1], page_marker(tokens_b, segment.b_start, segment.b_end),
+            fragment_pieces(lines_b, tokens_b, segment.b_start, segment.b_end, segment.b_spans, 0),
+            highlighted,
+        )
+        rows.append((row, left, right))
+
+    # Той самий порядок, що в table_highlighter.processor: спершу єдиний
+    # шрифт на весь документ, потім підсвічування, потім вирівнювання маркерів.
+    normalize_document(document, font_name, font_size)
+    for run, status in highlighted:
+        set_run_font(run, font_name, font_size, HIGHLIGHT[status])
+    for row, left, right in rows:
+        align_page_markers(LogicalRow(row), left, right, font_name, font_size)
 
     buffer = BytesIO()
     document.save(buffer)

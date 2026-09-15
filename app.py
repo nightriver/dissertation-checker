@@ -52,6 +52,7 @@ from ui_helpers import (
     is_plag_filter_mode,
 )
 from compare.docx_export import DOCX_MIME, build_comparison_docx
+from table_highlighter.types import FONT_CHOICES, FONT_SIZE_RANGE, HighlightOptions
 from compare.matcher import compare_documents, count_off_alignment
 from compare.prepare import prepare_document_for_comparison
 from compare.presentation import format_physical_pages, render_comparison_table
@@ -1018,15 +1019,28 @@ def render_two_file_compare_page() -> None:
             f"Аналіз обмежено: оброблено {result.candidates_processed} із "
             f"{result.candidates_total} областей-кандидатів; відсотки — нижня оцінка."
         )
+    font_column, size_column = st.columns(2)
+    with font_column:
+        docx_font = st.selectbox(
+            "Шрифт у Word", list(FONT_CHOICES), key="compare_docx_font",
+            help="Той самий вибір, що в режимі підсвічування таблиці: обидві таблиці "
+            "мають виглядати однаково у висновку.",
+        )
+    with size_column:
+        docx_font_size = int(st.number_input(
+            "Розмір шрифту (pt)", *FONT_SIZE_RANGE, HighlightOptions.font_size, step=1,
+            key="compare_docx_font_size",
+        ))
     # Збірка сотень знахідок триває секунди, тому файл не перебудовується на
-    # кожен rerun — лише коли змінився результат або фільтри.
-    docx_key = (id(result), pair_key, type_filter, sort_mode, show_normative)
+    # кожен rerun — лише коли змінився результат, фільтри або шрифт.
+    docx_key = (id(result), pair_key, type_filter, sort_mode, show_normative, docx_font, docx_font_size)
     cached_docx = st.session_state.get("compare_docx_cache")
     if cached_docx is None or cached_docx[0] != docx_key:
         with st.spinner("Підготовка документа Word…"):
             cached_docx = (docx_key, build_comparison_docx(
                 visible, lines_a, prepared_a.tokens, lines_b, prepared_b.tokens,
                 name_a=uploaded_a.name, name_b=uploaded_b.name, summary=summary,
+                font_name=docx_font, font_size=docx_font_size,
             ))
         st.session_state.compare_docx_cache = cached_docx
     docx_bytes = cached_docx[1]

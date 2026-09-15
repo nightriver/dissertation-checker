@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+# Спільний вибір шрифту для table-highlight і Word-вивантаження compare.
+FONT_CHOICES = ("Calibri", "Times New Roman", "Arial")
+FONT_SIZE_RANGE = (8, 16)
+
+
 @dataclass(frozen=True)
 class HighlightOptions:
     """Явні налаштування одного запуску обробки."""
