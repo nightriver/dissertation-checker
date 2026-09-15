@@ -195,8 +195,8 @@ def test_docx_merges_same_status_words_into_one_run():
         segments, lines, tokens, lines, tokens, name_a="a", name_b="b",
     )).tables[0].rows[0].cells[0]
     text_paragraphs = cell.paragraphs[1:]
-    # Рядок дає не більше двох runs (жовтий текст і кома), а не по run на слово.
-    assert sum(len(paragraph.runs) for paragraph in text_paragraphs) <= 2 * len(lines)
+    # Коми на межах рядків теж жовті, тож увесь абзац — один run.
+    assert [len(paragraph.runs) for paragraph in text_paragraphs] == [1]
     assert _highlight(text_paragraphs[0].runs[0]) == "yellow"
 
 
@@ -207,6 +207,27 @@ def test_paragraph_runs_paint_space_only_between_same_status():
         ("а", "equal"), (" ", None), (" ", None), ("б", "fuzzy"),
         (" ", None), ("в", "replace"), ("", LINE_BREAK), ("г", None),
     ]) == [[["а  б", "match"], [" ", None], ["в", "diff"]], [["г", None]]]
+
+
+def test_paragraph_runs_paint_punctuation_gaps_like_neighbours():
+    """Розділові знаки між збігами не розривають підсвічування."""
+    from compare.docx_export import _paragraph_runs
+
+    gaps = ["». ", "»; ", "; ", " (", ") ", ".)", "]. ", "], ", " [", ".: ", ";  − ", " «", ", ", ". ", " – ", ": ", "», «"]
+    for gap in gaps:
+        assert _paragraph_runs([("а", "equal"), (gap, None), ("б", "fuzzy")]) == [[["а" + gap + "б", "match"]]]
+        assert _paragraph_runs([("а", "replace"), (gap, None), ("б", "delete")]) == [[["а" + gap + "б", "diff"]]]
+    # Край абзацу бере колір єдиного сусіда.
+    assert _paragraph_runs([("«", None), ("а", "equal"), ("».", None), ("", LINE_BREAK), ("(", None)]) == [
+        [["«а».", "match"]], [["(", None]],
+    ]
+    # Між різними статусами і поруч зі словом без кольору знак лишається без кольору.
+    assert _paragraph_runs([("а", "equal"), (", ", None), ("б", "replace")]) == [
+        [["а", "match"], [", ", None], ["б", "diff"]],
+    ]
+    assert _paragraph_runs([("а", "equal"), (", ", None), ("б", None)]) == [
+        [["а", "match"], [", б", None]],
+    ]
 
 
 def test_page_marker_without_pages_leaves_placeholder():

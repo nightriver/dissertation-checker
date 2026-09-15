@@ -97,8 +97,12 @@ def _paragraph_runs(pieces) -> list[list[list]]:
 
     Сусідні шматки одного статусу стають одним run: кожен run у Word несе
     повний набір властивостей шрифту, і пословні runs для фрагмента на
-    десятки тисяч слів займали гігабайти пам'яті. Пробіл між двома
-    фрагментами однакового статусу фарбується, як у table-highlight.
+    десятки тисяч слів займали гігабайти пам'яті.
+
+    Шматок без літер і цифр (пробіли, розділові знаки, лапки, дужки, тире)
+    бере статус сусідів, якщо вони однакові, а на краю абзацу — статус
+    єдиного сусіда. Розриви підсвічування на «», » (» лише створюють
+    візуальний шум. Між збігом і відмінністю такий шматок лишається без кольору.
     """
     paragraphs: list[list[list]] = [[]]
     for text, operation in pieces:
@@ -109,11 +113,16 @@ def _paragraph_runs(pieces) -> list[list[list]]:
     result = []
     for groups in paragraphs:
         groups = _merge_same_status(groups)
-        for index in range(1, len(groups) - 1):
-            text, status = groups[index]
-            before, after = groups[index - 1][1], groups[index + 1][1]
-            if status is None and text.isspace() and before is not None and before == after:
-                groups[index][1] = before
+        for index, (text, status) in enumerate(groups):
+            if status is not None or any(char.isalnum() for char in text):
+                continue
+            neighbours = {
+                groups[position][1]
+                for position in (index - 1, index + 1)
+                if 0 <= position < len(groups)
+            }
+            if len(neighbours) == 1 and None not in neighbours:
+                groups[index][1] = neighbours.pop()
         result.append(_merge_same_status(groups))
     return result
 
