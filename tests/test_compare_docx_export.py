@@ -182,6 +182,33 @@ def test_docx_line_break_becomes_new_paragraph_and_marker_uses_first_sheet():
     assert next(cell._tc.iter(qn("w:br")), None) is None
 
 
+def test_docx_merges_same_status_words_into_one_run():
+    """Пословні runs для довгої знахідки вичерпували пам'ять Streamlit Cloud."""
+    words = [f"слово{i}" for i in range(300)]
+    lines = [
+        {"line": " ".join(words[start:start + 10]) + ",", "page": 1}
+        for start in range(0, 300, 10)
+    ]
+    tokens = tokenize_lines(lines)
+    segments = compare_tokens(tokens, tokens).segments
+    cell = _open(build_comparison_docx(
+        segments, lines, tokens, lines, tokens, name_a="a", name_b="b",
+    )).tables[0].rows[0].cells[0]
+    text_paragraphs = cell.paragraphs[1:]
+    # Рядок дає не більше двох runs (жовтий текст і кома), а не по run на слово.
+    assert sum(len(paragraph.runs) for paragraph in text_paragraphs) <= 2 * len(lines)
+    assert _highlight(text_paragraphs[0].runs[0]) == "yellow"
+
+
+def test_paragraph_runs_paint_space_only_between_same_status():
+    from compare.docx_export import _paragraph_runs
+
+    assert _paragraph_runs([
+        ("а", "equal"), (" ", None), (" ", None), ("б", "fuzzy"),
+        (" ", None), ("в", "replace"), ("", LINE_BREAK), ("г", None),
+    ]) == [[["а  б", "match"], [" ", None], ["в", "diff"]], [["г", None]]]
+
+
 def test_page_marker_without_pages_leaves_placeholder():
     tokens = tokenize_lines(_lines("одне два три"))
     assert page_marker(tokens, 0, len(tokens)) == MISSING_PAGE_MARKER

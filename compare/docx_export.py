@@ -81,20 +81,52 @@ def _prepare_table(document):
     return table
 
 
+def _merge_same_status(groups: list[list]) -> list[list]:
+    merged: list[list] = []
+    for text, status in groups:
+        if merged and merged[-1][1] == status:
+            merged[-1][0] += text
+        else:
+            merged.append([text, status])
+    return merged
+
+
+def _paragraph_runs(pieces) -> list[list[list]]:
+    """
+    Розкладає фрагмент на абзаци з мінімальною кількістю runs.
+
+    Сусідні шматки одного статусу стають одним run: кожен run у Word несе
+    повний набір властивостей шрифту, і пословні runs для фрагмента на
+    десятки тисяч слів займали гігабайти пам'яті. Пробіл між двома
+    фрагментами однакового статусу фарбується, як у table-highlight.
+    """
+    paragraphs: list[list[list]] = [[]]
+    for text, operation in pieces:
+        if operation == LINE_BREAK:
+            paragraphs.append([])
+        elif text:
+            paragraphs[-1].append([text, _STATUS.get(operation)])
+    result = []
+    for groups in paragraphs:
+        groups = _merge_same_status(groups)
+        for index in range(1, len(groups) - 1):
+            text, status = groups[index]
+            before, after = groups[index - 1][1], groups[index + 1][1]
+            if status is None and text.isspace() and before is not None and before == after:
+                groups[index][1] = before
+        result.append(_merge_same_status(groups))
+    return result
+
+
 def _fill_cell(cell, marker: str, pieces, highlighted: list) -> CellZones:
     """Абзац «С. N», під ним фрагмент; розрив рядка стає новим абзацом."""
     cell.paragraphs[0].add_run(marker)
-    paragraph = cell.add_paragraph()
-    for text, operation in pieces:
-        if operation == LINE_BREAK:
-            paragraph = cell.add_paragraph()
-            continue
-        if not text:
-            continue
-        run = paragraph.add_run(text)
-        status = _STATUS.get(operation)
-        if status is not None:
-            highlighted.append((run._r, status))
+    for groups in _paragraph_runs(pieces):
+        paragraph = cell.add_paragraph()
+        for text, status in groups:
+            run = paragraph.add_run(text)
+            if status is not None:
+                highlighted.append((run._r, status))
     zones = tuple(
         ParagraphZone(item, index, "plain" if index == 0 else "text")
         for index, item in enumerate(cell.paragraphs)
