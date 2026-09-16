@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import streamlit as st
 
-from plag_filter.fetch import wayback_calendar_url
+from plag_filter.fetch import wayback_calendar_url, wayback_copy_url
 from plag_filter.project import new_project
 from plag_filter.rules import recompute
 from plag_filter.types import (
@@ -20,7 +20,7 @@ from plag_filter.types import (
     SourceRow,
     SourceState,
 )
-from plag_filter.view import apply_viewer_event, viewer_payload
+from plag_filter.view import apply_viewer_event, archive_links, viewer_payload
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORT_2002 = ROOT / "examples" / "plag" / "Plag_Originality_Report_2026-09-09_16-36-02.pdf"
@@ -361,3 +361,72 @@ def test_document_url_empty_when_final_url_equals_original(
     source = next(item for item in payload["sources"] if item["number"] == number)
 
     assert source["document_url"] == ""
+
+
+# ---------------------------------------------------------------------------
+# archive_links — посилання на архів у таблиці всіх джерел
+# ---------------------------------------------------------------------------
+
+
+def _state_with_check(number: int, check: SourceCheck | None, reason: str) -> SourceState:
+    return SourceState(
+        number=number,
+        source_id=f"src{number}",
+        check=check,
+        manual=None,
+        alt_url=None,
+        decision="disputed",
+        reason=reason,
+    )
+
+
+def test_archive_links_gives_copy_when_document_came_from_archive() -> None:
+    """Архів віддав документ — таблиця веде прямо на копію, календар зайвий."""
+    row = make_row(1)
+    url = row.urls[0]
+    copy = wayback_copy_url(url, 2002)
+    check = _make_check(url, final_url=copy)
+    check.archive_used = True
+
+    assert archive_links(_state_with_check(1, check, "same_year"), row) == (copy, "")
+
+
+def test_archive_links_gives_calendar_when_document_is_unavailable() -> None:
+    """Документа немає ніде — копії немає, лишається перелік знімків."""
+    row = make_row(1)
+    url = row.urls[0]
+    check = _make_check(url, final_url=None, error="http_404")
+
+    assert archive_links(_state_with_check(1, check, "unavailable"), row) == (
+        "",
+        wayback_calendar_url(url),
+    )
+
+
+def test_archive_links_gives_both_when_copy_found_but_date_unknown() -> None:
+    """Копія є, а дати в ній забракло: обидва посилання потрібні водночас."""
+    row = make_row(1)
+    url = row.urls[0]
+    copy = wayback_copy_url(url, 2002)
+    check = _make_check(url, final_url=copy)
+    check.archive_used = True
+
+    assert archive_links(_state_with_check(1, check, "date_unknown"), row) == (
+        copy,
+        wayback_calendar_url(url),
+    )
+
+
+def test_archive_links_ignores_plain_redirect_that_is_not_archive() -> None:
+    """Звичайне переадресування — не архівна копія, стовпець лишається порожнім."""
+    row = make_row(1)
+    check = _make_check(row.urls[0], final_url="https://example.org/inshyi-doc")
+
+    assert archive_links(_state_with_check(1, check, "same_year"), row) == ("", "")
+
+
+def test_archive_links_empty_without_check() -> None:
+    """Неперевірене джерело не пропонує ні копії, ні календаря."""
+    row = make_row(1)
+
+    assert archive_links(_state_with_check(1, None, "unchecked"), row) == ("", "")

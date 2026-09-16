@@ -41,7 +41,7 @@ from plag_filter.rules import (
     top20_share,
 )
 from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
-from plag_filter.view import apply_viewer_event, viewer_payload
+from plag_filter.view import apply_viewer_event, archive_links, viewer_payload
 from plag_filter.viewer import render_viewer
 from ui_helpers import file_sha256
 
@@ -441,18 +441,24 @@ def _render_all_sources(report: PlagReport, project: PlagProject) -> None:
             "Сортування", list(_SORT_OPTIONS), key="plag_sort"
         )
         ordered = order_numbers(project, report, _SORT_OPTIONS[sort_label])
-        rows_data = [
-            {
-                "№": number,
-                "Домен": report.rows[number].urls[0] if report.rows[number].urls else "",
-                "%": report.rows[number].percent_text or "?",
-                "W": round(report.highlight_width.get(number, 0.0), 1),
-                "Найдовший фрагмент": round(report.longest_run.get(number, 0.0), 1),
-                "Рішення": project.states[number].decision,
-                "Причина": REASON_LABELS[project.states[number].reason],
-            }
-            for number in ordered
-        ]
+        rows_data = []
+        for number in ordered:
+            row = report.rows[number]
+            state = project.states[number]
+            copy_url, calendar_url = archive_links(state, row)
+            rows_data.append(
+                {
+                    "№": number,
+                    "Домен": row.urls[0] if row.urls else "",
+                    "%": row.percent_text or "?",
+                    "W": round(report.highlight_width.get(number, 0.0), 1),
+                    "Найдовший фрагмент": round(report.longest_run.get(number, 0.0), 1),
+                    "Рішення": state.decision,
+                    "Причина": REASON_LABELS[state.reason],
+                    "Копія в архіві": copy_url,
+                    "Календар архіву": calendar_url,
+                }
+            )
         st.dataframe(
             pd.DataFrame(rows_data),
             use_container_width=True,
@@ -460,6 +466,12 @@ def _render_all_sources(report: PlagReport, project: PlagProject) -> None:
             column_config={
                 "Домен": st.column_config.LinkColumn(
                     "Домен", display_text=r"(?:https?://)?(?:www\.)?([^/]+)"
+                ),
+                "Копія в архіві": st.column_config.LinkColumn(
+                    "Копія в архіві", display_text="Відкрити"
+                ),
+                "Календар архіву": st.column_config.LinkColumn(
+                    "Календар архіву", display_text="Відкрити"
                 ),
             },
         )

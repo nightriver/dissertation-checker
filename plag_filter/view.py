@@ -79,6 +79,25 @@ def _document_url(state: SourceState, url: str) -> str:
     return final_url
 
 
+def archive_links(state: SourceState, row: SourceRow) -> tuple[str, str]:
+    """Копія з архіву й календар знімків для таблиці всіх джерел.
+
+    Повертає `(copy_url, calendar_url)`. Два випадки різні за вагою свідчення
+    й тому не зливаються в одне посилання: `copy_url` — сам документ, який
+    приложение дістало з архіву (`archive_used`), `calendar_url` — лише перелік
+    знімків, коли документа немає або не встановлено дату. Обидва можуть бути
+    непорожні водночас: копія є, а дати в ній забракло. Гейти ті самі, що й у
+    панелі джерел, — `_document_url` і `_ARCHIVE_LINK_REASONS`.
+    """
+    url = row.urls[0] if row.urls else ""
+    check = state.check
+    copy_url = _document_url(state, url) if check is not None and check.archive_used else ""
+    calendar_url = (
+        wayback_calendar_url(url) if url and state.reason in _ARCHIVE_LINK_REASONS else ""
+    )
+    return copy_url, calendar_url
+
+
 def _is_visible(row: SourceRow) -> bool:
     """Джерело ≥ 0,1 % або з нерозпізнаним відсотком — PLAN_PLAG_FILTER.md, §4."""
     return row.percent is None or row.percent >= 0.1
