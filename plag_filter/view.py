@@ -1,9 +1,10 @@
 """Дані для компонента перегляду аркуша й застосування його подій.
 
-Контракт — `PLAN_PLAG_FILTER_V2.md`, §8.5, §9.2 етап 8. Модуль не малює
-нічого сам: `viewer_payload` збирає все, що потрібно компонентові на одному
-аркуші, а `apply_viewer_event` приймає від нього рішення експерта та зміну
-аркуша.
+Контракт — `PLAN_PLAG_FILTER_V2.md`, §8.5, §9.2 етап 8, доповнено
+`PLAN_PLAG_FILTER_V3.md`, §7 етап 2 — адреса документа, який приложение
+реально отримало. Модуль не малює нічого сам: `viewer_payload` збирає все,
+що потрібно компонентові на одному аркуші, а `apply_viewer_event` приймає
+від нього рішення експерта та зміну аркуша.
 """
 
 from __future__ import annotations
@@ -63,6 +64,19 @@ def _evidence_text(state: SourceState, project: PlagProject) -> str:
     if check.url_year_hint is not None:
         parts.append(f"рік в адресі: {check.url_year_hint}")
     return " · ".join(parts)
+
+
+def _document_url(state: SourceState, url: str) -> str:
+    """Адреса документа, який приложение реально отримало — PLAN_PLAG_FILTER_V3.md,
+    §7 етап 2. Порожній рядок, якщо перевірки немає, вона з помилкою або
+    отримана адреса збігається з вихідною (нема сенсу дублювати посилання)."""
+    check = state.check
+    if check is None or check.error is not None:
+        return ""
+    final_url = check.final_url or ""
+    if not final_url or final_url == url:
+        return ""
+    return final_url
 
 
 def _is_visible(row: SourceRow) -> bool:
@@ -163,6 +177,7 @@ def viewer_payload(
                 "manual": state.manual,
                 "url": url,
                 "archive_url": archive_url,
+                "document_url": _document_url(state, url),
             }
         )
 

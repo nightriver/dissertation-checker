@@ -16,6 +16,7 @@ from plag_filter.rules import recompute
 from plag_filter.types import (
     PlagProject,
     PlagReport,
+    SourceCheck,
     SourceRow,
     SourceState,
 )
@@ -273,3 +274,90 @@ def test_viewer_payload_offers_archive_calendar_only_where_it_helps(
         assert source["archive_url"] == wayback_calendar_url(source["url"])
     else:
         assert source["archive_url"] == ""
+
+
+# ---------------------------------------------------------------------------
+# document_url — PLAN_PLAG_FILTER_V3.md, §7 етап 2
+# ---------------------------------------------------------------------------
+
+
+def _make_check(url: str, final_url: str | None, error: str | None = None) -> SourceCheck:
+    return SourceCheck(
+        checked_for="петренко|о.а.",
+        url=url,
+        final_url=final_url,
+        error=error,
+        author_hit=None,
+        doc_date=None,
+        date_basis=None,
+        date_conflict=False,
+        url_year_hint=None,
+        hints={},
+    )
+
+
+def _first_visible_number(report: PlagReport, page: int) -> int:
+    return sorted(
+        candidate
+        for candidate in report.numbers_by_page.get(page - 1, ())
+        if report.rows[candidate].percent is None or report.rows[candidate].percent >= 0.1
+    )[0]
+
+
+@pytest.mark.corpus
+def test_document_url_present_when_final_url_differs(data_2002: bytes, report_2002: PlagReport) -> None:
+    project = new_project(report_2002, "report.pdf")
+    page = 4
+    number = _first_visible_number(report_2002, page)
+    url = report_2002.rows[number].urls[0]
+    project.states[number].check = _make_check(url, final_url="https://web.archive.org/web/20200101/doc")
+    recompute(project, report_2002)
+
+    payload = viewer_payload(data_2002, report_2002, project, page, show_excluded=True)
+    source = next(item for item in payload["sources"] if item["number"] == number)
+
+    assert source["document_url"] == "https://web.archive.org/web/20200101/doc"
+
+
+@pytest.mark.corpus
+def test_document_url_empty_when_check_missing(data_2002: bytes, report_2002: PlagReport) -> None:
+    project = new_project(report_2002, "report.pdf")
+    page = 4
+    number = _first_visible_number(report_2002, page)
+
+    payload = viewer_payload(data_2002, report_2002, project, page, show_excluded=True)
+    source = next(item for item in payload["sources"] if item["number"] == number)
+
+    assert source["document_url"] == ""
+
+
+@pytest.mark.corpus
+def test_document_url_empty_when_check_has_error(data_2002: bytes, report_2002: PlagReport) -> None:
+    project = new_project(report_2002, "report.pdf")
+    page = 4
+    number = _first_visible_number(report_2002, page)
+    url = report_2002.rows[number].urls[0]
+    project.states[number].check = _make_check(url, final_url=None, error="http_404")
+    recompute(project, report_2002)
+
+    payload = viewer_payload(data_2002, report_2002, project, page, show_excluded=True)
+    source = next(item for item in payload["sources"] if item["number"] == number)
+
+    assert source["document_url"] == ""
+
+
+@pytest.mark.corpus
+def test_document_url_empty_when_final_url_equals_original(
+    data_2002: bytes, report_2002: PlagReport
+) -> None:
+    project = new_project(report_2002, "report.pdf")
+    page = 4
+    number = _first_visible_number(report_2002, page)
+    url = report_2002.rows[number].urls[0]
+    project.states[number].check = _make_check(url, final_url=url)
+    recompute(project, report_2002)
+
+    payload = viewer_payload(data_2002, report_2002, project, page, show_excluded=True)
+    source = next(item for item in payload["sources"] if item["number"] == number)
+
+    assert source["document_url"] == ""

@@ -24,12 +24,13 @@ from plag_filter.checker import (
     pending_count,
     recheck_source,
 )
-from plag_filter.fetch import FetchResult, wayback_copy_url, wayback_cdx_url
-from plag_filter.rules import author_key
+from plag_filter.fetch import FetchResult, wayback_copy_url
+from plag_filter.rules import author_key, recompute
 from plag_filter.types import (
     AuthorHit,
     PlagProject,
     PlagReport,
+    SourceCheck,
     SourceRow,
     SourceState,
 )
@@ -506,6 +507,20 @@ def test_recheck_source_updates_check_and_recomputes_decision(tmp_path: Path) ->
 # ---------------------------------------------------------------------------
 
 
+def test_check_batch_does_not_request_archive_date_for_successful_undated(tmp_path: Path) -> None:
+    """PLAN_PLAG_FILTER_V3.md, §7 етап 1 — дата знімка більше не запитується."""
+    url = "https://a.example/undated"
+    row = make_row(1, urls=(url,))
+    report = make_report({1: row}, highlight_width={1: 1.0})
+    project = make_project({1: make_state(1)}, year=2002)
+    fetch = FakeFetch({url: ok_result(url, pages=["Звичайний текст без прізвища і без дати."])})
+
+    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+
+    assert not any("/cdx/search/cdx" in call for call in fetch.calls)
+    assert project.states[1].check.archive_first_capture is None
+
+
 def test_check_batch_retries_https_then_archive_on_retry_error(tmp_path: Path) -> None:
     url = "http://a.example/doc"
     swapped = "https://a.example/doc"
@@ -555,8 +570,10 @@ def test_check_batch_keeps_original_error_when_all_three_attempts_fail(tmp_path:
     assert check.archive_used is False
 
 
-@pytest.mark.parametrize("error_code", ["http_500", "too_large"])
+@pytest.mark.parametrize("error_code", ["too_large", "no_text_layer"])
 def test_check_batch_does_not_retry_for_non_retry_errors(tmp_path: Path, error_code: str) -> None:
+    """Той самий файл в архіві не дасть іншого результату — PLAN_PLAG_FILTER_V3.md,
+    §7 етап 3."""
     url = f"http://a.example/{error_code}"
     row = make_row(1, urls=(url,))
     report = make_report({1: row}, highlight_width={1: 1.0})
@@ -569,119 +586,130 @@ def test_check_batch_does_not_retry_for_non_retry_errors(tmp_path: Path, error_c
     assert project.states[1].check.error == error_code
 
 
-def test_check_batch_requests_cdx_only_for_successful_undated(tmp_path: Path) -> None:
-    url = "https://a.example/undated"
-    cdx_url = wayback_cdx_url(url)
+@pytest.mark.parametrize(
+    "error_code", ["http_500", "http_502", "http_503", "http_504", "http_410", "http_526"]
+)
+def test_check_batch_tries_archive_without_scheme_swap_for_server_errors(
+    tmp_path: Path, error_code: str
+) -> None:
+    """Помилка відповіді сервера — PLAN_PLAG_FILTER_V3.md, §7 етап 3: заміна
+    схеми безглузда, але архівна копія ще може існувати."""
+    url = f"http://a.example/{error_code}"
+    swapped = f"https://a.example/{error_code}"
+    archive_url = wayback_copy_url(url, 2002)
     row = make_row(1, urls=(url,))
     report = make_report({1: row}, highlight_width={1: 1.0})
     project = make_project({1: make_state(1)}, year=2002)
     fetch = FakeFetch(
         {
-            url: ok_result(url, pages=["Звичайний текст без прізвища і без дати."]),
-            cdx_url: ok_result(cdx_url, pages=["20010601123456\n"]),
+            url: error_result(url, error_code),
+            swapped: error_result(swapped, "http_404"),
+            archive_url: ok_result(archive_url, pages=["Харків – 2000."]),
         }
     )
 
     check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
 
-    assert cdx_url in fetch.calls
-    assert project.states[1].check.archive_first_capture == "2001-06-01"
+    assert fetch.calls == [url, archive_url]
+    check = project.states[1].check
+    assert check.error is None
+    assert check.archive_used is True
+    assert check.hints["original_error"] == error_code
 
 
-def test_check_batch_does_not_request_cdx_when_doc_date_known(tmp_path: Path) -> None:
-    url = "https://a.example/dated"
-    cdx_url = wayback_cdx_url(url)
+def test_check_batch_tries_archive_for_rate_limited_from_ordinary_site(tmp_path: Path) -> None:
+    """`rate_limited` від звичайного сайту не заважає звернутися до архіву за
+    тим самим джерелом — PLAN_PLAG_FILTER_V3.md, §7 етап 3."""
+    url = "http://a.example/busy"
+    swapped = "https://a.example/busy"
+    archive_url = wayback_copy_url(url, 2002)
     row = make_row(1, urls=(url,))
     report = make_report({1: row}, highlight_width={1: 1.0})
     project = make_project({1: make_state(1)}, year=2002)
-    fetch = FakeFetch({url: ok_result(url, pages=["Харків – 2000. Інший текст."])})
+    fetch = FakeFetch(
+        {
+            url: error_result(url, "rate_limited"),
+            swapped: error_result(swapped, "http_404"),
+            archive_url: ok_result(archive_url, pages=["Харків – 2000."]),
+        }
+    )
 
     check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
 
-    assert cdx_url not in fetch.calls
+    assert fetch.calls == [url, archive_url]
+    check = project.states[1].check
+    assert check.error is None
+    assert check.archive_used is True
 
 
-def test_check_batch_archive_first_capture_before_year_marks_earlier(tmp_path: Path) -> None:
+def _make_check(url: str, **overrides: object) -> SourceCheck:
+    """`SourceCheck` для тестів рівня правил — PLAN_PLAG_FILTER_V3.md, §7 етап 1.
+
+    `check_batch` більше не запитує дату першого знімка архіву сам, але поле
+    `archive_first_capture` і правило в `decide` лишаються для проєктів, де
+    воно вже збережене в JSON.
+    """
+    fields: dict[str, object] = dict(
+        checked_for=author_key(SURNAME, INITIALS),
+        url=url,
+        final_url=url,
+        error=None,
+        author_hit=None,
+        doc_date=None,
+        date_basis=None,
+        date_conflict=False,
+        url_year_hint=None,
+        hints={},
+    )
+    fields.update(overrides)
+    return SourceCheck(**fields)
+
+
+def test_archive_first_capture_before_year_marks_earlier() -> None:
+    """Дата знімка, збережена раніше (без нового запиту), досі дає `earlier`."""
     url = "https://a.example/undated2"
-    cdx_url = wayback_cdx_url(url)
     row = make_row(1, urls=(url,))
     report = make_report({1: row}, highlight_width={1: 1.0})
-    project = make_project({1: make_state(1)}, year=2002)
-    fetch = FakeFetch(
-        {
-            url: ok_result(url, pages=["Звичайний текст без дати."]),
-            cdx_url: ok_result(cdx_url, pages=["20010601123456\n"]),
-        }
-    )
+    check = _make_check(url, archive_first_capture="2001-06-01")
+    project = make_project({1: make_state(1, check=check)}, year=2002)
 
-    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+    recompute(project, report)
 
     assert project.states[1].decision == "keep"
     assert project.states[1].reason == "earlier"
 
 
-def test_check_batch_archive_first_capture_after_year_marks_date_unknown(tmp_path: Path) -> None:
+def test_archive_first_capture_after_year_marks_date_unknown() -> None:
     url = "https://a.example/undated3"
-    cdx_url = wayback_cdx_url(url)
     row = make_row(1, urls=(url,))
     report = make_report({1: row}, highlight_width={1: 1.0})
-    project = make_project({1: make_state(1)}, year=2002)
-    fetch = FakeFetch(
-        {
-            url: ok_result(url, pages=["Звичайний текст без дати."]),
-            cdx_url: ok_result(cdx_url, pages=["20050101123456\n"]),
-        }
-    )
+    check = _make_check(url, archive_first_capture="2005-01-01")
+    project = make_project({1: make_state(1, check=check)}, year=2002)
 
-    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+    recompute(project, report)
 
     assert project.states[1].decision == "disputed"
     assert project.states[1].reason == "date_unknown"
 
 
-def test_check_batch_skips_cdx_when_author_hit_decides(tmp_path: Path) -> None:
-    """Правило 5 у `decide` стоїть перед 8в — знімок архіву нічого не змінює."""
-    url = "https://a.example/own"
-    cdx_url = wayback_cdx_url(url)
+def test_saved_archive_first_capture_still_gives_earlier_after_reload() -> None:
+    """Стара дата знімка, збережена в JSON до PLAN_PLAG_FILTER_V3.md, §7 етап 1,
+    після перечитування проєкту досі дає `earlier` — правило не змінилося."""
+    from plag_filter.project import from_json, to_json
+
+    url = "https://a.example/undated4"
     row = make_row(1, urls=(url,))
     report = make_report({1: row}, highlight_width={1: 1.0})
-    project = make_project({1: make_state(1)}, year=2002)
-    fetch = FakeFetch(
-        {
-            url: ok_result(url, pages=["УДК 343. Петренко О. А. Текст без дати."]),
-            cdx_url: ok_result(cdx_url, pages=["20010601123456\n"]),
-        }
-    )
+    check = _make_check(url, archive_first_capture="2001-06-01")
+    project = make_project({1: make_state(1, check=check)}, year=2002)
+    recompute(project, report)
 
-    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
+    reloaded = from_json(to_json(project), report)
+    recompute(reloaded, report)
 
-    assert cdx_url not in fetch.calls
-    assert project.states[1].check.archive_first_capture is None
-    assert project.states[1].decision == "exclude"
-
-
-def test_check_batch_skips_cdx_when_later_citations_decide(tmp_path: Path) -> None:
-    """Правило 8б стоїть перед 8в — знімок архіву вже нічого не вирішує."""
-    url = "https://a.example/cites-later"
-    cdx_url = wayback_cdx_url(url)
-    row = make_row(1, urls=(url,))
-    report = make_report({1: row}, highlight_width={1: 1.0})
-    project = make_project({1: make_state(1)}, year=2002)
-    pages = [
-        "Текст без власної дати.",
-        "Список: Автор А. Назва. – К., 2008. – 200 с. Інший Б. Праця. – Л., 2010. – 150 с.",
-    ]
-    fetch = FakeFetch(
-        {
-            url: ok_result(url, pages=pages),
-            cdx_url: ok_result(cdx_url, pages=["20010601123456\n"]),
-        }
-    )
-
-    check_batch(report, project, fetch=fetch, tmp_dir=tmp_path)
-
-    assert cdx_url not in fetch.calls
-    assert project.states[1].reason == "later"
+    assert reloaded.states[1].check.archive_first_capture == "2001-06-01"
+    assert reloaded.states[1].decision == "keep"
+    assert reloaded.states[1].reason == "earlier"
 
 
 def test_check_batch_limits_parallel_archive_requests(tmp_path: Path) -> None:

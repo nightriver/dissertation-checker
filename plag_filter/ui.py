@@ -1,5 +1,6 @@
 """Екран режиму очищення звіту Plag — PLAN_PLAG_FILTER.md, §8, §9, доповнений
-`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 3, 5–6, 8–9).
+`PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 3, 5–6, 8–9) та
+`PLAN_PLAG_FILTER_V3.md`, §7 етап 2 — адреса отриманого документа.
 
 Порядок екрана — §9.2 етап 9: заголовок і завантажувач → картка автора →
 перевірка або підсумок двома блоками з кнопкою завантаження → перегляд
@@ -12,6 +13,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import tempfile
 from pathlib import Path
@@ -121,6 +123,20 @@ def _render_unavailable_form(
                     report, project, number, alt or row.urls[0], tmp_dir=Path(tmp)
                 )
             st.rerun()
+
+
+def _render_document_link(number: int, label: str, document_url: str, archive_used: bool) -> None:
+    """Адреса документа, який приложение реально отримало — PLAN_PLAG_FILTER_V3.md,
+    §7 етап 2. Файл не завантажується застосунком: експерт зберігає його сам
+    із браузера за цим посиланням."""
+    caption = html.escape(f"№ {number} · {label}")
+    href = html.escape(document_url, quote=True)
+    mark = ' <span>· Копія з Web Archive</span>' if archive_used else ""
+    st.markdown(
+        f'<div>{caption}<br><a href="{href}" target="_blank" rel="noopener noreferrer">'
+        f"Відкрити знайдений документ</a>{mark}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _seed_author_fields(data: bytes, report: PlagReport, project: PlagProject) -> None:
@@ -398,6 +414,12 @@ def _render_page_view(data: bytes, report: PlagReport, project: PlagProject) -> 
     event = render_viewer(payload, key="plag_viewer")
     if event is not None and apply_viewer_event(project, report, event):
         st.rerun()
+
+    for source in payload["sources"]:
+        if source["document_url"]:
+            state = project.states[source["number"]]
+            archive_used = state.check is not None and state.check.archive_used
+            _render_document_link(source["number"], source["label"], source["document_url"], archive_used)
 
     page_index = payload["page"] - 1
     for number in sorted(report.numbers_by_page.get(page_index, ())):

@@ -3,7 +3,11 @@
 Контракт узятий з `PLAN_PLAG_FILTER.md`, §4, §5, §6, §9, доповнений
 `PLAN_PLAG_FILTER_V2.md`, §8.3, §9.2 (етапи 3, 5, 6) — паралельна перевірка,
 роки цитування для правила «цитує пізніші праці» та ланцюжок звернень до
-Web Archive для недоступних і недатованих документів.
+Web Archive для недоступних і недатованих документів. `PLAN_PLAG_FILTER_V3.md`,
+§7 етап 1 прибрав автоматичний запит дати першого знімка архіву: він займав
+79–80 % часу перевірки і ніколи не впливав на жодне виключення джерела.
+§7 етап 3 розширив перелік помилок, після яких пробується архівна копія
+(`ARCHIVE_ERRORS`), кодами відповіді сервера — 5xx, 410, 526, `rate_limited`.
 Мережа підставляється параметром `fetch`; у продукті це `fetch.fetch_document`.
 """
 
@@ -18,12 +22,9 @@ from urllib.parse import urlparse, urlunparse
 from plag_filter.fetch import (
     FetchResult,
     fetch_document,
-    parse_cdx_first_capture,
     wayback_copy_url,
-    wayback_cdx_url,
 )
 from plag_filter.rules import (
-    MIN_LATER_CITATIONS,
     author_key,
     citation_years,
     date_from_court_text,
@@ -45,6 +46,23 @@ CHUNK_SIZE = 12
 # Помилки, після яких пробуємо іншу схему і Web Archive —
 # PLAN_PLAG_FILTER_V2.md, §8.3, §9.2 (етап 6).
 RETRY_ERRORS = frozenset({"http_404", "http_403", "network_error", "timeout"})
+
+# Помилки, після яких пробуємо архівну копію — PLAN_PLAG_FILTER_V3.md, §7 етап 3.
+# Розширює RETRY_ERRORS кодами, для яких заміна схеми безглузда (сервер
+# відповів, а не проблема з'єднання), але копія в архіві ще може існувати.
+# Замір 16.09.2026: без цього розширення копія взагалі не запитувалася для
+# 6 джерел у звіті 2020 і 8 у звіті 2002 — усі вони так і лишалися без
+# тексту. `too_large` і `no_text_layer` сюди не входять: архівна копія —
+# той самий файл, результат буде той самий.
+ARCHIVE_ERRORS = RETRY_ERRORS | {
+    "http_410",
+    "http_500",
+    "http_502",
+    "http_503",
+    "http_504",
+    "http_526",
+    "rate_limited",
+}
 
 # Скільки звернень до Web Archive виконується одночасно — PLAN_PLAG_FILTER_V2.md,
 # §11 запис 13. Саме 1: замір 14.09.2026 на звіті 2020 показав, що при 2
@@ -174,24 +192,6 @@ def _cached_fetch(
     return result
 
 
-def _archive_date_can_matter(check: SourceCheck, year: int | None) -> bool:
-    """Чи здатна дата першого знімка архіву змінити рішення — §8.2, `decide`.
-
-    Правило 5 (підпис або цитування автора) і правило 8б («цитує пізніші
-    праці») стоять у `decide` перед 8в, тож для таких джерел знімок архіву
-    нічого не вирішує, а запит до `WAYBACK_BASE` — чиста витрата часу
-    (PLAN_PLAG_FILTER_V2.md, §11 запис 13).
-    """
-    if check.author_hit is not None:
-        return False
-    if check.doc_date is not None or check.date_conflict:
-        return False
-    if year is None:
-        return False
-    later_years = [candidate for candidate in check.citation_years if candidate > year]
-    return len(later_years) < MIN_LATER_CITATIONS
-
-
 def _fetch_with_fallback(
     url: str,
     year: int | None,
@@ -203,24 +203,32 @@ def _fetch_with_fallback(
     archive_state: dict[str, bool],
 ) -> tuple[FetchResult, bool, str | None]:
     """Ланцюжок `fetch(url)` → заміна схеми → архівна копія —
-    PLAN_PLAG_FILTER_V2.md, §8.4, §9.2 (етап 6).
+    PLAN_PLAG_FILTER_V2.md, §8.4, §9.2 (етап 6), розширено
+    `PLAN_PLAG_FILTER_V3.md`, §7 етап 3.
 
-    Повертає `(result, archive_used, original_error)`. Архівна копія
-    використовується, лише якщо і пряма, і схемозамінна спроба з помилкою з
-    `RETRY_ERRORS`; успіх архіву позначається `archive_used` і зберігає
-    вихідну помилку `r.error` для підказки `hints["original_error"]`. Усі
-    звернення до `WAYBACK_BASE` проходять крізь `archive_slots` — не більше
-    `MAX_ARCHIVE_PARALLEL` одночасно; після `rate_limited` від архіву
-    подальші архівні спроби в цій партії пропускаються.
+    Заміна схеми пробується лише для помилок з'єднання (`RETRY_ERRORS`) —
+    для відповіді сервера (5xx, 410, 526, `rate_limited`) інша схема нічого
+    не змінить. Архівна копія пробується для ширшого `ARCHIVE_ERRORS`: сервер
+    міг відповісти помилкою, а архівна копія документа лишитися доступною.
+    Повертає `(result, archive_used, original_error)`. Успіх архіву
+    позначається `archive_used` і зберігає вихідну помилку `r.error` для
+    підказки `hints["original_error"]`. Усі звернення до `WAYBACK_BASE`
+    проходять крізь `archive_slots` — не більше `MAX_ARCHIVE_PARALLEL`
+    одночасно; після `rate_limited` від самого архіву подальші архівні
+    спроби в цій партії пропускаються (це не стосується `rate_limited` від
+    звичайного сайту — воно не заважає звернутися до архіву за тим самим
+    джерелом).
     """
     result = _cached_fetch(url, fetch, tmp_dir, cache, cache_lock)
-    if result.ok or result.error not in RETRY_ERRORS:
+    if result.ok or result.error not in ARCHIVE_ERRORS:
         return result, False, None
 
     original_error = result.error
-    swap_result = _cached_fetch(_swap_scheme(url), fetch, tmp_dir, cache, cache_lock)
-    if swap_result.ok:
-        return swap_result, False, None
+
+    if original_error in RETRY_ERRORS:
+        swap_result = _cached_fetch(_swap_scheme(url), fetch, tmp_dir, cache, cache_lock)
+        if swap_result.ok:
+            return swap_result, False, None
 
     if year is None:
         return result, False, None
@@ -235,28 +243,6 @@ def _fetch_with_fallback(
     if archive_result.ok:
         return archive_result, True, original_error
     return result, False, None
-
-
-def _fetch_archive_first_capture(
-    url: str,
-    fetch: FetchFn,
-    tmp_dir: Path,
-    archive_slots: threading.Semaphore,
-    archive_state: dict[str, bool],
-) -> str | None:
-    """Дата першого знімка адреси в архіві — PLAN_PLAG_FILTER_V2.md, §8.4,
-    §9.2 (етап 6). Лише для успішно завантажених недатованих документів."""
-    with archive_slots:
-        if archive_state["blocked"]:
-            return None
-        result = fetch(wayback_cdx_url(url), tmp_dir=tmp_dir)
-        if not result.ok:
-            if result.error == "rate_limited":
-                archive_state["blocked"] = True
-            return None
-    if not result.pages:
-        return None
-    return parse_cdx_first_capture(result.pages[0])
 
 
 def check_batch(
@@ -339,10 +325,6 @@ def check_batch(
             check.hints["original_error"] = original_error
             if check.date_basis is not None:
                 check.date_basis = f"archive:{check.date_basis}"
-        if result.ok and _archive_date_can_matter(check, project.year):
-            check.archive_first_capture = _fetch_archive_first_capture(
-                url, fetch, tmp_dir, archive_slots, archive_state
-            )
         return check
 
     results: dict[int, SourceCheck]

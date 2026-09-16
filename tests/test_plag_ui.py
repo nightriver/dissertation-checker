@@ -225,6 +225,80 @@ def test_autocheck_stopped_shows_resume_button(monkeypatch: pytest.MonkeyPatch) 
     assert "Продовжити перевірку" in labels
 
 
+@pytest.mark.corpus
+def test_document_link_shown_on_page_with_document_and_absent_elsewhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Адреса отриманого документа — PLAN_PLAG_FILTER_V3.md, §7 етап 2."""
+    from plag_filter.fetch import wayback_copy_url
+    from plag_filter.pdf import parse_report
+
+    report = parse_report(REPORT_2002.read_bytes())
+    page = report.body_first + 1
+    number = sorted(
+        candidate
+        for candidate in report.numbers_by_page.get(page - 1, ())
+        if report.rows[candidate].percent is None or report.rows[candidate].percent >= 0.1
+    )[0]
+    document_url = report.rows[number].urls[0]
+
+    app = AppTest.from_file(APP_PATH)
+    app.query_params["mode"] = "plag-filter"
+    app.run(timeout=60)
+
+    app.get("file_uploader")[0].upload(
+        "report.pdf", REPORT_2002.read_bytes(), "application/pdf"
+    )
+    app.run(timeout=120)
+    assert not app.exception
+
+    year = int(app.session_state["plag_year"])
+    archive_url = wayback_copy_url(document_url, year)
+
+    def fake_fetch(url: str, *, tmp_dir) -> FetchResult:
+        if url == archive_url:
+            return FetchResult(
+                ok=True,
+                error=None,
+                url=url,
+                final_url=archive_url,
+                kind="html",
+                pages=["Звичайний текст без прізвища автора."],
+                meta={},
+                jsonld=[],
+                repository_meta={},
+                hints={},
+            )
+        return _fake_fetch_404(url, tmp_dir=tmp_dir)
+
+    monkeypatch.setattr("plag_filter.fetch.fetch_document", fake_fetch)
+
+    app.button(key="plag_confirm").click()
+
+    from plag_filter.checker import pending_count
+
+    for _ in range(20):
+        app.run(timeout=120)
+        assert not app.exception
+        project = app.session_state["plag_project"]
+        report = app.session_state["plag_report"]
+        if pending_count(report, project) == 0:
+            break
+
+    assert project.states[number].check.archive_used is True
+
+    markdown = "\n".join(item.value for item in app.markdown)
+    assert markdown.count("Відкрити знайдений документ") == 1
+    assert archive_url in markdown
+    assert "Копія з Web Archive" in markdown
+
+    from plag_filter.view import viewer_payload
+
+    data = app.session_state["plag_data"]
+    other_page = viewer_payload(data, report, project, page=1, show_excluded=True)
+    assert all(not source["document_url"] for source in other_page["sources"])
+
+
 # ---------------------------------------------------------------------------
 # Порядок екрана й підсумок двома блоками — PLAN_PLAG_FILTER_V2.md, §9.2, етап 9
 # ---------------------------------------------------------------------------
