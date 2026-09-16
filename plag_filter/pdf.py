@@ -185,6 +185,41 @@ def _parse_list(doc: fitz.Document, list_first: int, sha256: str) -> dict[int, S
     return rows
 
 
+TRUNCATED_LABEL = "поза переліком Plag"
+
+
+def is_truncated_row(row: SourceRow) -> bool:
+    """Рядок відтворено з маркера тіла, бо Plag обрізав перелік."""
+    return not row.urls and row.label.startswith(TRUNCATED_LABEL)
+
+
+def _truncated_row(rows: dict[int, SourceRow], number: int) -> SourceRow:
+    """Рядок для маркера за межами обрізаного переліку Plag.
+
+    Plag виводить у перелік не більше ~1001 джерела, упорядкованих за спаданням
+    відсотка, але в тілі лишає маркери всіх джерел. Номер понад останній рядок
+    переліку, коли останній рядок має 0.0 %, означає джерело з відсотком
+    0.0 %. Інакше (пропуск усередині переліку чи ненульовий хвіст) звіт
+    не відповідає шаблону — `marker_not_in_list`.
+    """
+    listed = [n for n, row in rows.items() if not is_truncated_row(row)]
+    last = rows[max(listed)] if listed else None
+    if last is None or number < last.number or last.percent != 0.0:
+        raise UnsupportedReportError("marker_not_in_list")
+    return SourceRow(
+        number=number,
+        percent=0.0,
+        percent_text="0.0%",
+        label=f"{TRUNCATED_LABEL} (перелік обрізано на № {last.number})",
+        urls=(),
+        list_page=last.list_page,
+        band=(0.0, 0.0),
+        row_cuts=(),
+        link_rects=(),
+        source_id=hashlib.sha256(f"{last.source_id}:truncated:{number}".encode()).hexdigest()[:16],
+    )
+
+
 def _walk_body(
     doc: fitz.Document, body_first: int, list_first: int, rows: dict[int, SourceRow]
 ) -> tuple[
@@ -251,7 +286,7 @@ def _walk_body(
                     continue
                 number = int(raw)
                 if number not in rows:
-                    raise UnsupportedReportError("marker_not_in_list")
+                    rows[number] = _truncated_row(rows, number)
                 current = number
                 note(page_index, number)
                 events.append(

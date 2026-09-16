@@ -8,7 +8,14 @@ from urllib.parse import urlparse
 import fitz
 import pytest
 
-from plag_filter.pdf import UnsupportedReportError, parse_report
+from plag_filter.pdf import (
+    UnsupportedReportError,
+    _truncated_row,
+    filter_pdf,
+    is_truncated_row,
+    parse_report,
+)
+from plag_filter.types import SourceRow
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = ROOT / "examples" / "plag"
@@ -107,3 +114,67 @@ def test_synthetic_pdf_without_plag_markup_is_unsupported() -> None:
 
     with pytest.raises(UnsupportedReportError):
         parse_report(data)
+
+
+REPORT_TRUNCATED = EXAMPLES / "!Plag_Originality_Report_2026-09-17_01-07-15.pdf"
+
+
+def _listed_row(number: int, percent: float) -> SourceRow:
+    return SourceRow(
+        number=number,
+        percent=percent,
+        percent_text=f"{percent}%",
+        label="doi.org",
+        urls=("https://doi.org",),
+        list_page=5,
+        band=(100.0, 120.0),
+        row_cuts=((0, 1),),
+        link_rects=((0.0, 0.0, 1.0, 1.0),),
+        source_id="abc",
+    )
+
+
+def test_marker_beyond_zero_percent_list_tail_becomes_truncated_row() -> None:
+    """Plag обрізав перелік: номер понад останній рядок з 0.0 % — джерело 0.0 %."""
+    rows = {1: _listed_row(1, 4.5), 2: _listed_row(2, 0.0)}
+    row = _truncated_row(rows, 7)
+    rows[7] = row
+
+    assert row.percent == 0.0
+    assert row.urls == ()
+    assert row.row_cuts == ()
+    assert row.list_page == 5
+    assert is_truncated_row(row)
+    assert not is_truncated_row(rows[2])
+    assert "№ 2" in row.label
+    # Порядок маркерів у тілі довільний: менший номер після більшого теж приймається.
+    assert _truncated_row(rows, 3).number == 3
+
+
+@pytest.mark.parametrize(
+    ("rows", "number"),
+    [
+        ({1: _listed_row(1, 4.5), 3: _listed_row(3, 0.0)}, 2),  # пропуск усередині переліку
+        ({1: _listed_row(1, 4.5), 2: _listed_row(2, 0.2)}, 3),  # ненульовий хвіст
+        ({}, 1),  # перелік порожній
+    ],
+    ids=["gap", "nonzero_tail", "empty"],
+)
+def test_marker_not_explained_by_truncation_is_unsupported(rows, number) -> None:
+    with pytest.raises(UnsupportedReportError) as info:
+        _truncated_row(rows, number)
+    assert info.value.code == "marker_not_in_list"
+
+
+@pytest.mark.corpus
+def test_truncated_report_keeps_markers_beyond_list() -> None:
+    """Звіт 2026-09-17: перелік обрізано на № 1001, маркери в тілі до № 1457."""
+    data = REPORT_TRUNCATED.read_bytes()
+    report = parse_report(data)
+    truncated = sorted(n for n, row in report.rows.items() if is_truncated_row(row))
+
+    assert max(n for n, row in report.rows.items() if not is_truncated_row(row)) == 1001
+    assert truncated[0] > 1001 and truncated[-1] == 1457
+    assert all(report.rows[n].percent == 0.0 for n in truncated)
+    assert all(report.pages_by_number.get(n) for n in truncated)
+    assert filter_pdf(data, report, set(truncated))

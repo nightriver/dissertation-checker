@@ -29,6 +29,7 @@ from plag_filter.pdf import (
     UnsupportedReportError,
     append_protocol,
     filter_pdf,
+    is_truncated_row,
     parse_report,
 )
 from plag_filter.project import from_json, new_project, protocol_paragraphs, to_json
@@ -275,6 +276,8 @@ def _render_summary(data: bytes, report: PlagReport, project: PlagProject, filen
     checked = sum(1 for state in project.states.values() if state.check is not None)
     total = _visible_source_count(report)
     st.caption(f"Відсоток не розпізнано: {unknown_pct}")
+    truncated = sum(1 for row in report.rows.values() if is_truncated_row(row))
+    st.caption(f"Джерел поза обрізаним переліком Plag (0.0 %): {truncated}")
     st.caption(
         f"Перевірено {checked} з {total}; не вдалося завантажити "
         f"{counts.get('unavailable', 0)}; дату не встановлено — "
