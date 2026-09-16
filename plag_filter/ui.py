@@ -444,7 +444,7 @@ def _render_all_sources(report: PlagReport, project: PlagProject) -> None:
         rows_data = [
             {
                 "№": number,
-                "Домен": report.rows[number].label,
+                "Домен": report.rows[number].urls[0] if report.rows[number].urls else "",
                 "%": report.rows[number].percent_text or "?",
                 "W": round(report.highlight_width.get(number, 0.0), 1),
                 "Найдовший фрагмент": round(report.longest_run.get(number, 0.0), 1),
@@ -453,7 +453,16 @@ def _render_all_sources(report: PlagReport, project: PlagProject) -> None:
             }
             for number in ordered
         ]
-        st.dataframe(pd.DataFrame(rows_data), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(rows_data),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Домен": st.column_config.LinkColumn(
+                    "Домен", display_text=r"(?:https?://)?(?:www\.)?([^/]+)"
+                ),
+            },
+        )
 
         goto_col, button_col = st.columns([3, 1])
         with goto_col:
