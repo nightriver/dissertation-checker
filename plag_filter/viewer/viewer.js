@@ -252,6 +252,9 @@ function bindKeys(root, payload, send) {
     const target = event.target;
     const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
     if (tag === "input" || tag === "textarea" || tag === "select") return;
+    // Shift+→ розширює виділення тексту на вкладці «Звіт», а не гортає
+    // аркуш через приховану вкладку — PLAN_PLAG_VIEW.md, §7 етап 4.
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key === "ArrowLeft") {
       send({ type: "page", page: page - 1 });
     } else if (event.key === "ArrowRight") {

@@ -1,11 +1,13 @@
 """Екран режиму очищення звіту Plag — PLAN_PLAG_FILTER.md, §8, §9, доповнений
 `PLAN_PLAG_FILTER_V2.md`, §8.6, §9.2 (етапи 1, 3, 5–6, 8–9) та
-`PLAN_PLAG_FILTER_V3.md`, §7 етап 2 — адреса отриманого документа.
+`PLAN_PLAG_FILTER_V3.md`, §7 етап 2 — адреса отриманого документа, і
+`PLAN_PLAG_VIEW.md`, §7 етап 4 — вкладки.
 
-Порядок екрана — §9.2 етап 9: заголовок і завантажувач → картка автора →
-перевірка або підсумок двома блоками з кнопкою завантаження → перегляд
-аркуша компонентом `plag_filter.viewer` з панеллю джерел → згорнута таблиця
-всіх джерел → згорнутий блок «Проєкт» унизу (рідко потрібні дії). Кожна
+Порядок екрана: заголовок і завантажувач → картка автора → поступ
+автоперевірки, поки вона триває → вкладки «Звіт» (текст у вигляді Plag,
+`plag_filter.report_viewer`), «Аркуш PDF» (зображення аркуша компонентом
+`plag_filter.viewer`) і «Усі джерела й підсумок» (підсумок двома блоками з
+кнопкою завантаження → таблиця всіх джерел → згорнутий блок «Проєкт»). Кожна
 причина названа своїм ім'ям, без узагальненого слова для непевних рішень.
 Завантаження очищеного PDF додає протокол у кінець файлу — §10.2, етап 8
 плану 1.
@@ -42,7 +44,8 @@ from plag_filter.rules import (
     top20_share,
 )
 from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
-from plag_filter.view import apply_viewer_event, archive_links, viewer_payload
+from plag_filter.report_viewer import render_report_viewer
+from plag_filter.view import apply_viewer_event, archive_links, report_payload, viewer_payload
 from plag_filter.viewer import render_viewer
 from ui_helpers import file_sha256
 
@@ -55,6 +58,12 @@ _DATA_KEY = "plag_data"
 _PROJECT_KEY = "plag_project"
 _PAGE_KEY = "plag_page"
 _CLEANED_PDF_KEY = "plag_cleaned_pdf"
+# Показ виключених — спільний для вкладок «Звіт» і «Аркуш PDF»; типово
+# увімкнено, щоб текст мав ті самі кольори, що в Plag (PLAN_PLAG_VIEW.md, §7 етап 4).
+_SHOW_EXCLUDED_KEY = "plag_show_excluded"
+
+# Вкладки екрана — PLAN_PLAG_VIEW.md, §7 етап 4; «Звіт» перша й основна.
+_TABS = ("Звіт", "Аркуш PDF", "Усі джерела й підсумок")
 
 # Режим показу для браузера — PLAN_PLAG_FILTER_V2.md, §8.6.
 _DEMO_PDF_ENV = "PLAG_FILTER_DEMO_PDF"
@@ -349,14 +358,20 @@ def _visible_source_count(report: PlagReport) -> int:
     return sum(1 for row in report.rows.values() if row.percent is None or row.percent >= 0.1)
 
 
-def _render_autocheck(report: PlagReport, project: PlagProject) -> None:
-    """Автоматична паралельна перевірка джерел після підтвердження автора —
-    PLAN_PLAG_FILTER_V2.md, §9.2, етап 3."""
+def _render_autocheck(report: PlagReport, project: PlagProject) -> bool:
+    """Поступ автоматичної паралельної перевірки джерел після підтвердження
+    автора — PLAN_PLAG_FILTER_V2.md, §9.2, етап 3.
+
+    Повертає `True`, якщо треба запустити наступну партію. Саму партію
+    запускає `_run_autocheck_batch` наприкінці екрана — PLAN_PLAG_VIEW.md, §7
+    етап 4: вкладки встигають намалюватися на кожному проході й не блякнуть,
+    поки триває перевірка.
+    """
     if not project.confirmed:
-        return
+        return False
     remaining = pending_count(report, project)
     if remaining <= 0:
-        return
+        return False
 
     total = _visible_source_count(report)
     checked = max(total - remaining, 0)
@@ -366,14 +381,17 @@ def _render_autocheck(report: PlagReport, project: PlagProject) -> None:
         if st.button("Продовжити перевірку", key="plag_resume"):
             st.session_state["plag_check_stopped"] = False
             st.rerun()
-        return
+        return False
 
     st.progress(checked / total if total else 0.0, text=f"Перевірено {checked} з {total}")
     if st.button("Зупинити", key="plag_stop"):
         st.session_state["plag_check_stopped"] = True
         st.rerun()
-        return
+    return True
 
+
+def _run_autocheck_batch(report: PlagReport, project: PlagProject) -> None:
+    """Одна партія автоперевірки і новий прохід екрана."""
     with tempfile.TemporaryDirectory() as tmp:
         check_batch(
             report,
@@ -386,17 +404,31 @@ def _render_autocheck(report: PlagReport, project: PlagProject) -> None:
     st.rerun()
 
 
-def _render_check_or_summary(
-    data: bytes, report: PlagReport, project: PlagProject, filename: str
-) -> None:
-    """Перевірка, поки не завершиться, або підсумок двома блоками —
+def _summary_ready(report: PlagReport, project: PlagProject) -> bool:
+    """Підсумок показується, коли автора підтверджено й перевірку завершено —
     PLAN_PLAG_FILTER_V2.md, §9.2 етап 9."""
-    if not project.confirmed:
-        return
-    if pending_count(report, project) > 0:
-        _render_autocheck(report, project)
-    else:
-        _render_summary(data, report, project, filename)
+    return project.confirmed and pending_count(report, project) <= 0
+
+
+@st.fragment
+def _render_report_view(data: bytes, report: PlagReport, project: PlagProject) -> None:
+    """Вкладка «Звіт» у вигляді Plag — PLAN_PLAG_VIEW.md, §7 етап 4.
+
+    Лише компонент: подія від нього йде в `apply_viewer_event`, після чого
+    екран перемальовується цілком (решта вкладок і лічильники).
+    """
+    if _PAGE_KEY not in st.session_state:
+        st.session_state[_PAGE_KEY] = report.body_first + 1
+    payload = report_payload(
+        data,
+        report,
+        project,
+        int(st.session_state[_PAGE_KEY]),
+        bool(st.session_state.get(_SHOW_EXCLUDED_KEY, True)),
+    )
+    event = render_report_viewer(payload, key="plag_report_viewer")
+    if event is not None and apply_viewer_event(project, report, event):
+        st.rerun()
 
 
 @st.fragment
@@ -433,7 +465,7 @@ def _render_page_view(data: bytes, report: PlagReport, project: PlagProject) -> 
 
 
 def _render_all_sources(report: PlagReport, project: PlagProject) -> None:
-    with st.expander("Усі джерела", expanded=False):
+    with st.expander("Усі джерела", expanded=True):
         share = top20_share(project, report)
         share_text = f"{share:.0%}" if share is not None else "немає виділень"
         st.metric(
@@ -567,14 +599,26 @@ def render_plag_filter_page() -> None:
 
     _render_author_card(data, report, project)
 
-    st.divider()
-    _render_check_or_summary(data, report, project, filename)
+    # До першого віджета з цим ключем: типово виключені показуються.
+    st.session_state.setdefault(_SHOW_EXCLUDED_KEY, True)
+
+    run_batch = _render_autocheck(report, project)
 
     st.divider()
-    _render_page_view(data, report, project)
+    tab_report, tab_page, tab_all = st.tabs(list(_TABS))
+    # «Звіт» малюється першим: його подія `show_excluded` пише ключ раніше,
+    # ніж на «Аркуш PDF» з'явиться чекбокс із тим самим ключем.
+    with tab_report:
+        _render_report_view(data, report, project)
+    with tab_page:
+        _render_page_view(data, report, project)
+    with tab_all:
+        if _summary_ready(report, project):
+            _render_summary(data, report, project, filename)
+            st.divider()
+        _render_all_sources(report, project)
+        st.divider()
+        _render_project_expander(report, project, filename)
 
-    st.divider()
-    _render_all_sources(report, project)
-
-    st.divider()
-    _render_project_expander(report, project, filename)
+    if run_batch:
+        _run_autocheck_batch(report, project)

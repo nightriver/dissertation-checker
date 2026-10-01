@@ -20,10 +20,17 @@ from plag_filter.types import (
     SourceRow,
     SourceState,
 )
-from plag_filter.view import apply_viewer_event, archive_links, viewer_payload
+from plag_filter.view import (
+    apply_viewer_event,
+    archive_links,
+    report_payload,
+    source_color,
+    viewer_payload,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORT_2002 = ROOT / "examples" / "plag" / "Plag_Originality_Report_2026-09-09_16-36-02.pdf"
+REPORT_2020 = ROOT / "examples" / "plag" / "Plag_Originality_Report_2026-09-09_16-34-45.pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -430,3 +437,127 @@ def test_archive_links_empty_without_check() -> None:
     row = make_row(1)
 
     assert archive_links(_state_with_check(1, None, "unchecked"), row) == ("", "")
+
+
+# ---------------------------------------------------------------------------
+# report_payload і подія show_excluded — PLAN_PLAG_VIEW.md, §7 етап 2
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def data_2020() -> bytes:
+    return REPORT_2020.read_bytes()
+
+
+@pytest.fixture(scope="module")
+def report_2020(data_2020: bytes) -> PlagReport:
+    from plag_filter.pdf import parse_report
+
+    return parse_report(data_2020)
+
+
+def test_source_color_follows_plag_formula() -> None:
+    # Звірено з mhtml Plag: 168→7, 197→6, 310→9, 332→1, 374→3, 835→4, 862→1.
+    expected = {168: 7, 197: 6, 310: 9, 332: 1, 374: 3, 835: 4, 862: 1, 1: 0, 10: 9, 11: 0}
+    assert {number: source_color(number) for number in expected} == expected
+
+
+def test_report_payload_text_colors_and_sources(data_2020: bytes, report_2020: PlagReport) -> None:
+    project = new_project(report_2020, "zheltobriukh.pdf")
+    page = report_2020.body_first + 2
+
+    payload = report_payload(data_2020, report_2020, project, page, False)
+
+    assert payload["page"] == page
+    assert payload["filename"] == "zheltobriukh.pdf"
+    assert payload["paragraphs"]
+    for paragraph in payload["paragraphs"]:
+        assert paragraph
+        for segment in paragraph:
+            if segment["number"] is None:
+                assert segment["color"] is None and segment["marker"] is False
+            else:
+                assert segment["color"] == source_color(segment["number"])
+
+    expected = viewer_payload(data_2020, report_2020, project, page, False)["sources"]
+    assert [source["number"] for source in payload["sources"]] == [
+        source["number"] for source in expected
+    ]
+    for ours, theirs in zip(payload["sources"], expected):
+        assert ours == {**theirs, "color": source_color(theirs["number"])}
+    assert payload["below_count"] == viewer_payload(
+        data_2020, report_2020, project, page, False
+    )["below_count"]
+
+
+def test_report_payload_marks_excluded_source_segments(
+    data_2020: bytes, report_2020: PlagReport
+) -> None:
+    project = new_project(report_2020, "report.pdf")
+    page = report_2020.body_first + 2
+    number = report_2020.numbers_by_page[page - 1][0]
+    assert apply_viewer_event(
+        project, report_2020, {"type": "decision", "number": number, "manual": "exclude"}
+    )
+
+    payload = report_payload(data_2020, report_2020, project, page, True)
+
+    segments = [segment for paragraph in payload["paragraphs"] for segment in paragraph]
+    own = [segment for segment in segments if segment["number"] == number]
+    assert own
+    assert all(segment["excluded"] for segment in own)
+    assert not any(segment["excluded"] for segment in segments if segment["number"] is None)
+    assert payload["show_excluded"] is True
+
+
+def test_report_payload_pages_scores_and_title_page(
+    data_2020: bytes, report_2020: PlagReport
+) -> None:
+    project = new_project(report_2020, "report.pdf")
+
+    payload = report_payload(data_2020, report_2020, project, 1, False)
+
+    assert payload["pages"][0] == report_2020.body_first + 1
+    assert payload["pages"][-1] == report_2020.list_first
+    assert payload["paragraphs"] == []
+    assert payload["scores"] == {
+        "similarity": "76",
+        "risk": "НАЙВИЩИЙ",
+        "paraphrase": "4%",
+        "wrong_citation": "0%",
+        "text_matches": "72%",
+    }
+    assert report_payload(data_2020, report_2020, project, 9999, False)["page"] == (
+        report_2020.page_count
+    )
+
+
+def test_report_payload_signature_changes_only_with_content(
+    data_2020: bytes, report_2020: PlagReport
+) -> None:
+    project = new_project(report_2020, "report.pdf")
+    page = report_2020.body_first + 2
+
+    first = report_payload(data_2020, report_2020, project, page, False)["signature"]
+    assert report_payload(data_2020, report_2020, project, page, False)["signature"] == first
+    assert report_payload(data_2020, report_2020, project, page, True)["signature"] != first
+    assert report_payload(data_2020, report_2020, project, page + 1, False)["signature"] != first
+
+    number = report_2020.numbers_by_page[page - 1][0]
+    apply_viewer_event(
+        project, report_2020, {"type": "decision", "number": number, "manual": "exclude"}
+    )
+    assert report_payload(data_2020, report_2020, project, page, False)["signature"] != first
+
+
+def test_show_excluded_event_writes_session_state() -> None:
+    report = make_report()
+    project = make_project(report)
+    st.session_state["plag_show_excluded"] = False
+
+    assert apply_viewer_event(project, report, {"type": "show_excluded", "value": True}) is True
+    assert st.session_state["plag_show_excluded"] is True
+    assert apply_viewer_event(project, report, {"type": "show_excluded", "value": True}) is False
+    assert apply_viewer_event(project, report, {"type": "show_excluded", "value": "yes"}) is False
+    assert apply_viewer_event(project, report, {"type": "show_excluded"}) is False
+    assert st.session_state["plag_show_excluded"] is True

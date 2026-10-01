@@ -458,3 +458,85 @@ def test_summary_shows_own_work_and_later_with_download_and_project_last(
     joined = "\n".join(protocol_paragraphs(project, report))
     assert "Виключено з PDF" in joined
     assert "Залишено в PDF" in joined
+
+
+# ---------------------------------------------------------------------------
+# Вкладки екрана — PLAN_PLAG_VIEW.md, §7 етап 4
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.corpus
+def test_tabs_order_progress_above_and_summary_in_third_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import streamlit as st
+
+    from plag_filter.checker import pending_count
+    from plag_filter.view import apply_viewer_event
+
+    monkeypatch.setattr("plag_filter.fetch.fetch_document", _fake_fetch_404)
+
+    app = AppTest.from_file(APP_PATH)
+    app.query_params["mode"] = "plag-filter"
+    app.run(timeout=60)
+    app.get("file_uploader")[0].upload(
+        "report.pdf", REPORT_2002.read_bytes(), "application/pdf"
+    )
+    app.run(timeout=120)
+    assert not app.exception
+
+    assert [tab.label for tab in app.tabs] == ["Звіт", "Аркуш PDF", "Усі джерела й підсумок"]
+    # Типово виключені показуються — так текст має ті самі кольори, що в Plag.
+    assert app.session_state["plag_show_excluded"] is True
+    assert app.checkbox(key="plag_show_excluded").value is True
+
+    # Зупинена перевірка показує той самий блок поступу, що й під час роботи:
+    # він — над вкладками, а не всередині них. Без зупинки поддільна мережа
+    # проходить усю перевірку за один `run`, і поступ не застати.
+    app.session_state["plag_check_stopped"] = True
+    app.button(key="plag_confirm").click()
+    app.run(timeout=120)
+    assert not app.exception
+    assert "Перевірку зупинено" in [item.value for item in app.info]
+    assert len(app.tabs) == 3
+    for tab in app.tabs:
+        assert "Перевірку зупинено" not in [item.value for item in tab.get("alert")]
+        assert "Продовжити перевірку" not in [b.label for b in tab.get("button")]
+
+    app.button(key="plag_resume").click()
+    for _ in range(20):
+        project = app.session_state["plag_project"]
+        report = app.session_state["plag_report"]
+        if pending_count(report, project) == 0:
+            break
+        app.run(timeout=120)
+        assert not app.exception
+    assert pending_count(report, project) == 0
+
+    summary_tab = app.tabs[2]
+    assert "Завантажити очищений PDF" in [b.label for b in summary_tab.get("download_button")]
+    assert len(app.tabs[0].get("download_button")) == 0
+    assert len(app.tabs[1].get("download_button")) == 0
+
+    def manual_excluded() -> int:
+        metrics = {m.label: m.value for m in app.tabs[2].get("metric")}
+        return int(metrics["Виключено вручну"])
+
+    before = manual_excluded()
+    number = next(
+        n for n, state in sorted(project.states.items()) if state.decision != "exclude"
+    )
+    # Ту саму подію шле компонент вкладки «Звіт».
+    assert apply_viewer_event(
+        project, report, {"type": "decision", "number": number, "manual": "exclude"}
+    )
+    app.run(timeout=120)
+    assert not app.exception
+    assert app.session_state["plag_project"].states[number].decision == "exclude"
+    assert manual_excluded() == before + 1
+
+
+def test_old_viewer_ignores_arrows_with_modifier_keys() -> None:
+    """`Shift+→` при виділенні тексту не гортає аркуш — PLAN_PLAG_VIEW.md, §7 етап 4."""
+    js = (ROOT / "plag_filter" / "viewer" / "viewer.js").read_text(encoding="utf-8")
+    assert "event.shiftKey || event.ctrlKey || event.altKey || event.metaKey" in js

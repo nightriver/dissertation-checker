@@ -1,0 +1,596 @@
+/* Стилі вкладки «Звіт» у вигляді Plag — PLAN_PLAG_VIEW.md, §7 етап 3.
+   Усі кольори — з §5 плану (палітра Plag), задані змінними в одному місці.
+   Картка навмисно світла завжди: так виглядає Plag. */
+
+.pr-root {
+  --pr-c0-bg: rgb(248, 187, 208);
+  --pr-c0-fg: rgb(136, 14, 79);
+  --pr-c0-active: rgb(244, 143, 177);
+  --pr-c0-badge: rgb(194, 24, 91);
+  --pr-c0-row: rgb(233, 30, 99);
+  --pr-c0-row-light: rgb(252, 228, 236);
+  --pr-c1-bg: rgb(209, 196, 233);
+  --pr-c1-fg: rgb(49, 27, 146);
+  --pr-c1-active: rgb(179, 157, 219);
+  --pr-c1-badge: rgb(81, 45, 168);
+  --pr-c1-row: rgb(103, 58, 183);
+  --pr-c1-row-light: rgb(237, 231, 246);
+  --pr-c2-bg: rgb(187, 222, 251);
+  --pr-c2-fg: rgb(13, 71, 161);
+  --pr-c2-active: rgb(144, 202, 249);
+  --pr-c2-badge: rgb(25, 118, 210);
+  --pr-c2-row: rgb(33, 150, 243);
+  --pr-c2-row-light: rgb(227, 242, 253);
+  --pr-c3-bg: rgb(178, 235, 242);
+  --pr-c3-fg: rgb(0, 96, 100);
+  --pr-c3-active: rgb(128, 222, 234);
+  --pr-c3-badge: rgb(0, 151, 167);
+  --pr-c3-row: rgb(0, 188, 212);
+  --pr-c3-row-light: rgb(224, 247, 250);
+  --pr-c4-bg: rgb(178, 223, 219);
+  --pr-c4-fg: rgb(0, 77, 64);
+  --pr-c4-active: rgb(128, 203, 196);
+  --pr-c4-badge: rgb(0, 121, 107);
+  --pr-c4-row: rgb(0, 150, 136);
+  --pr-c4-row-light: rgb(224, 242, 241);
+  --pr-c5-bg: rgb(200, 230, 201);
+  --pr-c5-fg: rgb(27, 94, 32);
+  --pr-c5-active: rgb(165, 214, 167);
+  --pr-c5-badge: rgb(56, 142, 60);
+  --pr-c5-row: rgb(76, 175, 80);
+  --pr-c5-row-light: rgb(232, 245, 233);
+  --pr-c6-bg: rgb(240, 244, 195);
+  --pr-c6-fg: rgb(130, 119, 23);
+  --pr-c6-active: rgb(230, 238, 156);
+  --pr-c6-badge: rgb(175, 180, 43);
+  --pr-c6-row: rgb(205, 220, 57);
+  --pr-c6-row-light: rgb(249, 251, 231);
+  --pr-c7-bg: rgb(255, 236, 179);
+  --pr-c7-fg: rgb(255, 111, 0);
+  --pr-c7-active: rgb(255, 224, 130);
+  --pr-c7-badge: rgb(255, 160, 0);
+  --pr-c7-row: rgb(255, 193, 7);
+  --pr-c7-row-light: rgb(255, 248, 225);
+  --pr-c8-bg: rgb(255, 204, 188);
+  --pr-c8-fg: rgb(191, 54, 12);
+  --pr-c8-active: rgb(255, 171, 145);
+  --pr-c8-badge: rgb(230, 74, 25);
+  --pr-c8-row: rgb(255, 87, 34);
+  --pr-c8-row-light: rgb(251, 233, 231);
+  --pr-c9-bg: rgb(215, 204, 200);
+  --pr-c9-fg: rgb(62, 39, 35);
+  --pr-c9-active: rgb(188, 170, 164);
+  --pr-c9-badge: rgb(93, 64, 55);
+  --pr-c9-row: rgb(121, 85, 72);
+  --pr-c9-row-light: rgb(239, 235, 233);
+  --pr-page-active: rgb(0, 55, 55);
+  --pr-row-border: rgb(248, 242, 240);
+  --pr-row-hover: rgb(245, 245, 245);
+  --pr-gauge-track: #ffe0df;
+  --pr-gauge-arc: #ee7973;
+  --pr-excluded-stripe: rgb(224, 224, 224);
+  --pr-excluded-text: rgb(33, 33, 33);
+  --pr-card: #ffffff;
+  --pr-ink: #212121;
+  --pr-muted: #6b6f7b;
+  --pr-line: #ebecf2;
+  --pr-pill: #f2f3f7;
+  /* Шапка Streamlit (60 px) лежить поверх області прокрутки — замір етапу 5. */
+  --pr-sticky-top: 76px;
+
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  scroll-margin-top: var(--pr-sticky-top);
+  color: var(--pr-ink);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* --- картка з текстом ---------------------------------------------------- */
+
+.pr-card {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--pr-card);
+  border-radius: 24px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.07);
+  padding: 24px 40px 32px;
+}
+
+.pr-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--pr-line);
+  padding-bottom: 12px;
+}
+
+.pr-filename {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  font-size: 26px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-toggle-excluded {
+  border: none;
+  background: none;
+  color: var(--pr-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.pr-toggle-excluded:hover {
+  color: var(--pr-ink);
+  text-decoration: underline;
+}
+
+.pr-scores {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--pr-line);
+}
+
+.pr-score-caption {
+  text-align: right;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.pr-score-caption small {
+  display: block;
+  font-size: 12px;
+  color: var(--pr-muted);
+}
+
+.pr-gauge {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+}
+
+.pr-gauge svg {
+  display: block;
+}
+
+.pr-gauge-value {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.pr-score-rows {
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 40px;
+  row-gap: 4px;
+  font-size: 15px;
+  align-items: center;
+}
+
+.pr-pill {
+  background: var(--pr-pill);
+  border-radius: 10px;
+  padding: 1px 12px;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* --- нумерація аркушів --------------------------------------------------- */
+
+.pr-pages {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 20px 0;
+}
+
+.pr-page {
+  min-width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 20px;
+  background: none;
+  color: #5a5f6b;
+  font-size: 18px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0 8px;
+}
+
+.pr-page:hover {
+  background: var(--pr-row-hover);
+}
+
+.pr-page.pr-on {
+  background: var(--pr-page-active);
+  color: #fff;
+  cursor: default;
+}
+
+.pr-gap {
+  color: #5a5f6b;
+  font-size: 18px;
+  padding: 0 6px;
+}
+
+/* --- текст --------------------------------------------------------------- */
+
+.pr-text {
+  font-size: 17px;
+  line-height: 2.4;
+  text-align: justify;
+  word-wrap: break-word;
+}
+
+.pr-text p {
+  margin: 0 0 12px;
+}
+
+.pr-frag {
+  scroll-margin-top: var(--pr-sticky-top);
+}
+
+.pr-empty {
+  color: var(--pr-muted);
+  text-align: center;
+  padding: 40px 0;
+}
+
+.pr-frag {
+  position: relative;
+  background: var(--pr-bg);
+  color: var(--pr-fg);
+  cursor: pointer;
+}
+
+.pr-frag.pr-active {
+  background: var(--pr-active);
+}
+
+/* Плашка номера: згенерований вміст не потрапляє у виділення й Ctrl+C. */
+.pr-frag[data-badge]::before,
+.pr-badge-only[data-badge]::before {
+  content: attr(data-badge);
+  position: absolute;
+  top: -14px;
+  left: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 2px;
+  line-height: 14px;
+  font-size: 10px;
+  font-weight: 500;
+  text-align: center;
+  color: #fff;
+  background: var(--pr-badge);
+  font-family: Arial, Helvetica, sans-serif;
+  user-select: none;
+}
+
+.pr-badge-only {
+  position: relative;
+  display: inline-block;
+  width: 0;
+}
+
+/* Виключені: з показом — сірі смужки, без показу — звичайний текст. */
+.pr-show-excluded .pr-frag.pr-excluded {
+  background: repeating-linear-gradient(
+    45deg,
+    #fff,
+    #fff 2px,
+    var(--pr-excluded-stripe) 2px,
+    var(--pr-excluded-stripe) 8px
+  );
+  color: var(--pr-excluded-text);
+}
+
+.pr-show-excluded .pr-excluded[data-badge]::before {
+  background: #9e9e9e;
+}
+
+.pr-root:not(.pr-show-excluded) .pr-frag.pr-excluded {
+  background: none;
+  color: inherit;
+  cursor: text;
+}
+
+.pr-root:not(.pr-show-excluded) .pr-excluded[data-badge]::before {
+  display: none;
+}
+
+/* --- панель джерел ------------------------------------------------------- */
+
+.pr-panel {
+  /* 400 px як у Plag; на вузькому екрані панель стискається, а не текст. */
+  flex: 0 0 clamp(260px, 32%, 400px);
+  width: clamp(260px, 32%, 400px);
+  position: sticky;
+  top: var(--pr-sticky-top);
+  max-height: calc(100vh - var(--pr-sticky-top) - 16px);
+  overflow-y: auto;
+  background: var(--pr-card);
+  border-radius: 24px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.07);
+  padding: 12px 0;
+}
+
+.pr-panel-title {
+  font-size: 13px;
+  color: var(--pr-muted);
+  padding: 4px 20px 8px;
+}
+
+.pr-row {
+  border-bottom: 1px solid var(--pr-row-border);
+  transition: background-color 100ms linear;
+}
+
+.pr-row:hover {
+  background: var(--pr-row-hover);
+}
+
+.pr-row-main {
+  display: flex;
+}
+
+.pr-no {
+  width: 50px;
+  flex: 0 0 50px;
+  padding: 0 10px 0 0;
+  text-align: right;
+  line-height: 50px;
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--pr-row);
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+}
+
+.pr-meta {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 10px;
+}
+
+.pr-url {
+  display: block;
+  padding-top: 9px;
+  padding-right: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--pr-row);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-type {
+  font-size: 11px;
+  color: var(--pr-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-similarity {
+  width: 70px;
+  flex: 0 0 70px;
+  padding-right: 15px;
+  text-align: right;
+  line-height: 50px;
+  font-size: 16px;
+  color: var(--pr-ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.pr-chevron {
+  margin-left: 6px;
+  color: var(--pr-muted);
+}
+
+.pr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 0 15px 8px 60px;
+  font-size: 11px;
+}
+
+.pr-actions button,
+.pr-actions a {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--pr-muted);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.pr-actions button:hover,
+.pr-actions a:hover {
+  color: var(--pr-ink);
+}
+
+/* Виділений рядок — як `.ref-inverse` у Plag. */
+.pr-row.pr-active {
+  background: var(--pr-row);
+}
+
+.pr-row.pr-active .pr-no,
+.pr-row.pr-active .pr-url,
+.pr-row.pr-active .pr-actions button,
+.pr-row.pr-active .pr-actions a {
+  color: #fff;
+}
+
+.pr-row.pr-active .pr-type,
+.pr-row.pr-active .pr-similarity,
+.pr-row.pr-active .pr-chevron {
+  color: var(--pr-row-light);
+}
+
+.pr-row.pr-excluded {
+  opacity: 0.45;
+}
+
+.pr-below {
+  font-size: 11px;
+  color: var(--pr-muted);
+  padding: 10px 20px 4px;
+}
+
+/* --- кольори джерел ------------------------------------------------------ */
+
+.pr-frag[data-c="0"],
+.pr-badge-only[data-c="0"] {
+  --pr-bg: var(--pr-c0-bg);
+  --pr-fg: var(--pr-c0-fg);
+  --pr-active: var(--pr-c0-active);
+  --pr-badge: var(--pr-c0-badge);
+}
+
+.pr-row[data-c="0"] {
+  --pr-row: var(--pr-c0-row);
+  --pr-row-light: var(--pr-c0-row-light);
+}
+
+.pr-frag[data-c="1"],
+.pr-badge-only[data-c="1"] {
+  --pr-bg: var(--pr-c1-bg);
+  --pr-fg: var(--pr-c1-fg);
+  --pr-active: var(--pr-c1-active);
+  --pr-badge: var(--pr-c1-badge);
+}
+
+.pr-row[data-c="1"] {
+  --pr-row: var(--pr-c1-row);
+  --pr-row-light: var(--pr-c1-row-light);
+}
+
+.pr-frag[data-c="2"],
+.pr-badge-only[data-c="2"] {
+  --pr-bg: var(--pr-c2-bg);
+  --pr-fg: var(--pr-c2-fg);
+  --pr-active: var(--pr-c2-active);
+  --pr-badge: var(--pr-c2-badge);
+}
+
+.pr-row[data-c="2"] {
+  --pr-row: var(--pr-c2-row);
+  --pr-row-light: var(--pr-c2-row-light);
+}
+
+.pr-frag[data-c="3"],
+.pr-badge-only[data-c="3"] {
+  --pr-bg: var(--pr-c3-bg);
+  --pr-fg: var(--pr-c3-fg);
+  --pr-active: var(--pr-c3-active);
+  --pr-badge: var(--pr-c3-badge);
+}
+
+.pr-row[data-c="3"] {
+  --pr-row: var(--pr-c3-row);
+  --pr-row-light: var(--pr-c3-row-light);
+}
+
+.pr-frag[data-c="4"],
+.pr-badge-only[data-c="4"] {
+  --pr-bg: var(--pr-c4-bg);
+  --pr-fg: var(--pr-c4-fg);
+  --pr-active: var(--pr-c4-active);
+  --pr-badge: var(--pr-c4-badge);
+}
+
+.pr-row[data-c="4"] {
+  --pr-row: var(--pr-c4-row);
+  --pr-row-light: var(--pr-c4-row-light);
+}
+
+.pr-frag[data-c="5"],
+.pr-badge-only[data-c="5"] {
+  --pr-bg: var(--pr-c5-bg);
+  --pr-fg: var(--pr-c5-fg);
+  --pr-active: var(--pr-c5-active);
+  --pr-badge: var(--pr-c5-badge);
+}
+
+.pr-row[data-c="5"] {
+  --pr-row: var(--pr-c5-row);
+  --pr-row-light: var(--pr-c5-row-light);
+}
+
+.pr-frag[data-c="6"],
+.pr-badge-only[data-c="6"] {
+  --pr-bg: var(--pr-c6-bg);
+  --pr-fg: var(--pr-c6-fg);
+  --pr-active: var(--pr-c6-active);
+  --pr-badge: var(--pr-c6-badge);
+}
+
+.pr-row[data-c="6"] {
+  --pr-row: var(--pr-c6-row);
+  --pr-row-light: var(--pr-c6-row-light);
+}
+
+.pr-frag[data-c="7"],
+.pr-badge-only[data-c="7"] {
+  --pr-bg: var(--pr-c7-bg);
+  --pr-fg: var(--pr-c7-fg);
+  --pr-active: var(--pr-c7-active);
+  --pr-badge: var(--pr-c7-badge);
+}
+
+.pr-row[data-c="7"] {
+  --pr-row: var(--pr-c7-row);
+  --pr-row-light: var(--pr-c7-row-light);
+}
+
+.pr-frag[data-c="8"],
+.pr-badge-only[data-c="8"] {
+  --pr-bg: var(--pr-c8-bg);
+  --pr-fg: var(--pr-c8-fg);
+  --pr-active: var(--pr-c8-active);
+  --pr-badge: var(--pr-c8-badge);
+}
+
+.pr-row[data-c="8"] {
+  --pr-row: var(--pr-c8-row);
+  --pr-row-light: var(--pr-c8-row-light);
+}
+
+.pr-frag[data-c="9"],
+.pr-badge-only[data-c="9"] {
+  --pr-bg: var(--pr-c9-bg);
+  --pr-fg: var(--pr-c9-fg);
+  --pr-active: var(--pr-c9-active);
+  --pr-badge: var(--pr-c9-badge);
+}
+
+.pr-row[data-c="9"] {
+  --pr-row: var(--pr-c9-row);
+  --pr-row-light: var(--pr-c9-row-light);
+}

@@ -2,7 +2,7 @@
 
 Контракт — `PLAN_PLAG_FILTER_V2.md`, §8.5, §9.2 етап 8, доповнено
 `PLAN_PLAG_FILTER_V3.md`, §7 етап 2 — адреса документа, який приложение
-реально отримало. Модуль не малює нічого сам: `viewer_payload` збирає все,
+реально отримало, і `PLAN_PLAG_VIEW.md`, §7 етап 2 — дані вкладки «Звіт». Модуль не малює нічого сам: `viewer_payload` збирає все,
 що потрібно компонентові на одному аркуші, а `apply_viewer_event` приймає
 від нього рішення експерта та зміну аркуша.
 """
@@ -10,12 +10,15 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 
 import streamlit as st
 
 from plag_filter.fetch import wayback_calendar_url
 from plag_filter.pdf import UnsupportedReportError, page_overlay, render_clean_page_png
 from plag_filter.rules import date_evidence, recompute
+from plag_filter.text import page_text, report_scores
 from plag_filter.types import (
     REASON_LABELS,
     OverlayItem,
@@ -27,6 +30,14 @@ from plag_filter.types import (
 
 # Ключ поточного аркуша в `session_state` — PLAN_PLAG_FILTER_V2.md, §8.6.
 _PAGE_KEY = "plag_page"
+# Спільний для обох вкладок прапорець показу виключених — PLAN_PLAG_VIEW.md, §7 етап 2.
+_SHOW_EXCLUDED_KEY = "plag_show_excluded"
+
+# Кількість кольорів палітри Plag — PLAN_PLAG_VIEW.md, §5.
+_PALETTE_SIZE = 10
+
+# Показники шапки читаються з PDF один раз на звіт.
+_scores_cache: dict[str, dict[str, str]] = {}
 
 _MANUAL_VALUES = ("keep", "exclude")
 
@@ -140,6 +151,35 @@ def _overlay_items(data: bytes, report: PlagReport, page_index: int) -> list[Ove
         return []
 
 
+def _page_sources(report: PlagReport, project: PlagProject, visible: list[int]) -> list[dict]:
+    """Рядки панелі джерел аркуша — спільні для обох компонентів перегляду."""
+    sources = []
+    for number in visible:
+        row = report.rows[number]
+        state = project.states[number]
+        url = row.urls[0] if row.urls else ""
+        archive_url = (
+            wayback_calendar_url(url)
+            if url and state.reason in _ARCHIVE_LINK_REASONS
+            else ""
+        )
+        sources.append(
+            {
+                "number": number,
+                "label": row.label,
+                "percent_text": row.percent_text or "?",
+                "reason_label": REASON_LABELS[state.reason],
+                "evidence": _evidence_text(state, project),
+                "decision": state.decision,
+                "manual": state.manual,
+                "url": url,
+                "archive_url": archive_url,
+                "document_url": _document_url(state, url),
+            }
+        )
+    return sources
+
+
 def viewer_payload(
     data: bytes,
     report: PlagReport,
@@ -175,30 +215,7 @@ def viewer_payload(
 
     numbers_on_page = report.numbers_by_page.get(page_index, ())
     visible = _visible_numbers_on_page(report, page_index)
-    sources = []
-    for number in visible:
-        row = report.rows[number]
-        state = project.states[number]
-        url = row.urls[0] if row.urls else ""
-        archive_url = (
-            wayback_calendar_url(url)
-            if url and state.reason in _ARCHIVE_LINK_REASONS
-            else ""
-        )
-        sources.append(
-            {
-                "number": number,
-                "label": row.label,
-                "percent_text": row.percent_text or "?",
-                "reason_label": REASON_LABELS[state.reason],
-                "evidence": _evidence_text(state, project),
-                "decision": state.decision,
-                "manual": state.manual,
-                "url": url,
-                "archive_url": archive_url,
-                "document_url": _document_url(state, url),
-            }
-        )
+    sources = _page_sources(report, project, visible)
 
     return {
         "page": page,
@@ -210,6 +227,76 @@ def viewer_payload(
         "show_excluded": bool(show_excluded),
         "keep_pages": _pages_with_kept_sources(report, project),
     }
+
+
+def source_color(number: int) -> int:
+    """Індекс кольору джерела в палітрі Plag — PLAN_PLAG_VIEW.md, §5."""
+    return (number - 1) % _PALETTE_SIZE
+
+
+def _scores(data: bytes, report: PlagReport) -> dict[str, str]:
+    cached = _scores_cache.get(report.sha256)
+    if cached is None:
+        cached = {
+            key: "—" if value is None else value for key, value in report_scores(data).items()
+        }
+        _scores_cache[report.sha256] = cached
+    return cached
+
+
+def report_payload(
+    data: bytes,
+    report: PlagReport,
+    project: PlagProject,
+    page: int,
+    show_excluded: bool,
+) -> dict:
+    """Дані одного аркуша для вкладки «Звіт» — PLAN_PLAG_VIEW.md, §7 етап 2.
+
+    `page` — номер аркуша PDF з одиниці, як у `session_state["plag_page"]`.
+    `signature` — відбиток решти полів: компонент не перемальовує DOM, поки він
+    не змінився (виділення й прокрутка лишаються на місці).
+    """
+    page = max(1, min(int(page), report.page_count))
+    page_index = page - 1
+
+    def excluded(number: int | None) -> bool:
+        state = project.states.get(number) if number is not None else None
+        return state is not None and state.decision == "exclude"
+
+    paragraphs = [
+        [
+            {
+                "text": segment.text,
+                "number": segment.number,
+                "marker": segment.marker,
+                "color": None if segment.number is None else source_color(segment.number),
+                "excluded": excluded(segment.number),
+            }
+            for segment in paragraph
+        ]
+        for paragraph in page_text(data, report, page_index)
+    ]
+
+    numbers_on_page = report.numbers_by_page.get(page_index, ())
+    visible = _visible_numbers_on_page(report, page_index)
+    sources = _page_sources(report, project, visible)
+    for source in sources:
+        source["color"] = source_color(source["number"])
+
+    payload = {
+        "page": page,
+        "pages": list(range(report.body_first + 1, report.list_first + 1)),
+        "filename": project.report_name,
+        "scores": dict(_scores(data, report)),
+        "paragraphs": paragraphs,
+        "sources": sources,
+        "below_count": len(numbers_on_page) - len(visible),
+        "show_excluded": bool(show_excluded),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    payload["signature"] = hashlib.sha256(encoded).hexdigest()
+    return payload
 
 
 def _apply_decision(project: PlagProject, report: PlagReport, event: dict) -> bool:
@@ -239,10 +326,21 @@ def _apply_page(report: PlagReport, event: dict) -> bool:
     return True
 
 
+def _apply_show_excluded(event: dict) -> bool:
+    value = event.get("value")
+    if not isinstance(value, bool):
+        return False
+    if st.session_state.get(_SHOW_EXCLUDED_KEY, False) == value:
+        return False
+    st.session_state[_SHOW_EXCLUDED_KEY] = value
+    return True
+
+
 def apply_viewer_event(project: PlagProject, report: PlagReport, event: dict) -> bool:
     """Застосувати подію компонента — §8.5, §9.2 етап 8.
 
-    Повертає `True`, якщо щось змінилося: рішення джерела або аркуш.
+    Повертає `True`, якщо щось змінилося: рішення джерела, аркуш або показ
+    виключених (`show_excluded` — PLAN_PLAG_VIEW.md, §7 етап 2).
     Невідомий тип події, невідомий номер і неприпустиме значення нічого не
     змінюють і дають `False`.
     """
@@ -253,4 +351,6 @@ def apply_viewer_event(project: PlagProject, report: PlagReport, event: dict) ->
         return _apply_decision(project, report, event)
     if kind == "page":
         return _apply_page(report, event)
+    if kind == "show_excluded":
+        return _apply_show_excluded(event)
     return False
