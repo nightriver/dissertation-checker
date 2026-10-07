@@ -161,9 +161,13 @@ def _swap_scheme(url: str) -> str:
 
 
 def _rate_limited_result(url: str) -> FetchResult:
+    return _failed_result(url, "rate_limited")
+
+
+def _failed_result(url: str, error: str) -> FetchResult:
     return FetchResult(
         ok=False,
-        error="rate_limited",
+        error=error,
         url=url,
         final_url=None,
         kind=None,
@@ -305,16 +309,22 @@ def check_batch(
             if host_blocked:
                 result, archive_used, original_error = _rate_limited_result(url), False, None
             else:
-                result, archive_used, original_error = _fetch_with_fallback(
-                    url,
-                    project.year,
-                    fetch,
-                    tmp_dir,
-                    cache,
-                    cache_lock,
-                    archive_slots,
-                    archive_state,
-                )
+                try:
+                    result, archive_used, original_error = _fetch_with_fallback(
+                        url,
+                        project.year,
+                        fetch,
+                        tmp_dir,
+                        cache,
+                        cache_lock,
+                        archive_slots,
+                        archive_state,
+                    )
+                except Exception:
+                    # Непередбачений збій одного джерела не обриває партію:
+                    # джерело лишається з причиною `internal_error` —
+                    # PLAN_PLAG_FILTER.md, §6.
+                    result, archive_used, original_error = _failed_result(url, "internal_error"), False, None
                 if not result.ok and result.error == "rate_limited":
                     with blocked_lock:
                         blocked_hosts.add(host)

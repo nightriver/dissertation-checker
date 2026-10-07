@@ -931,6 +931,30 @@ def test_check_batch_rate_limited_host_skips_remaining_with_workers(tmp_path: Pa
     assert project.states[4].check.error == "rate_limited"
 
 
+def test_check_batch_unexpected_exception_does_not_abort_batch(tmp_path: Path) -> None:
+    """Виняток при перевірці одного джерела — `internal_error` лише для нього."""
+    rows = {
+        1: make_row(1, urls=("https://a.example/doc1",)),
+        2: make_row(2, urls=("https://b.example/doc2",)),
+        3: make_row(3, urls=("https://c.example/doc3",)),
+    }
+    report = make_report(rows, highlight_width={1: 3.0, 2: 2.0, 3: 1.0})
+    states = {number: make_state(number) for number in rows}
+    project = make_project(states)
+
+    def fetch(url: str, *, tmp_dir: Path) -> FetchResult:
+        if "doc2" in url:
+            raise RuntimeError("пошкоджений документ")
+        return error_result(url, "http_403")
+
+    for workers in (1, 6):
+        check_batch(report, project, fetch=fetch, tmp_dir=tmp_path, limit=3, workers=workers)
+
+        assert project.states[1].check.error == "http_403"
+        assert project.states[2].check.error == "internal_error"
+        assert project.states[3].check.error == "http_403"
+
+
 def test_check_batch_progress_called_from_calling_thread(tmp_path: Path) -> None:
     count, hosts = 12, 6
     report, rows = _make_batch(count, hosts)

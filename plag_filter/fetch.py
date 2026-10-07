@@ -266,7 +266,8 @@ def _download_and_parse(
                     too_large = total > limit
         except (socket.timeout, TimeoutError):
             return _error_result(url, "timeout"), None
-        except OSError:
+        except (OSError, http.client.HTTPException):
+            # `IncompleteRead` — сервер обірвав з'єднання посеред тіла.
             return _error_result(url, "network_error"), None
 
         if too_large:
@@ -285,19 +286,29 @@ def _download_and_parse(
 def _parse_pdf(
     url: str, final_url: str, tmp_path: Path, headers
 ) -> tuple[FetchResult, str | None]:
-    """Текст PDF постранично — PLAN_PLAG_FILTER.md, §6."""
-    doc = fitz.open(str(tmp_path))
+    """Текст PDF постранично — PLAN_PLAG_FILTER.md, §6.
+
+    Файл, що починається з `%PDF-`, але не розбирається (обрізана архівна
+    копія, пошкоджена структура), дає `broken_pdf`, а не виняток.
+    """
+    hints: dict[str, str] = {}
     try:
-        pages = [page.get_text() for page in doc]
-        hints: dict[str, str] = {}
-        last_modified = headers.get("Last-Modified") if headers is not None else None
-        if last_modified:
-            hints["last_modified"] = last_modified
-        creation_date = (doc.metadata or {}).get("creationDate")
-        if creation_date:
-            hints["pdf_creation"] = creation_date
-    finally:
-        doc.close()
+        doc = fitz.open(str(tmp_path))
+        try:
+            pages = [page.get_text() for page in doc]
+            creation_date = (doc.metadata or {}).get("creationDate")
+        finally:
+            doc.close()
+    except Exception:
+        # PyMuPDF кидає різні типи (`FileDataError`, `FzErrorSyntax`, …),
+        # спільного базового класу, крім `Exception`, у них немає.
+        return _error_result(url, "broken_pdf"), None
+
+    last_modified = headers.get("Last-Modified") if headers is not None else None
+    if last_modified:
+        hints["last_modified"] = last_modified
+    if creation_date:
+        hints["pdf_creation"] = creation_date
 
     total_chars = sum(1 for page_text in pages for ch in page_text if not ch.isspace())
     if total_chars < MIN_TEXT_CHARS:

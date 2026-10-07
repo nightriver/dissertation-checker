@@ -321,6 +321,34 @@ def test_fetch_pdf_no_text_layer(tmp_dir: Path) -> None:
     _assert_tmp_dir_empty(tmp_dir)
 
 
+def test_fetch_truncated_pdf_returns_broken_pdf(tmp_dir: Path) -> None:
+    """Обрізана копія Web Archive: початок `%PDF-` є, `xref` і `trailer` немає.
+
+    Байти повторюють голову реальної копії, що обірвалася рівно на 1 МіБ
+    (`dndi.mvs.gov.ua/files/pdf/theses_2018_12_14.pdf`): обрізаний посеред
+    словника каталогу файл MuPDF не відновлює.
+    """
+    pdf_bytes = b"%PDF-1.5\n1 0 obj\n<</Type/Catalog/Pages 2 0 R/Lang(ru-RU) /StructTreeRoot 5"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(pdf_bytes)))
+            self.end_headers()
+            self.wfile.write(pdf_bytes)
+
+        def log_message(self, format, *args):
+            pass
+
+    for server in _run_server(Handler):
+        result = fetch_document(f"{server.url}/cut.pdf", tmp_dir=tmp_dir, allow_private=True)
+
+    assert result.ok is False
+    assert result.error == "broken_pdf"
+    _assert_tmp_dir_empty(tmp_dir)
+
+
 def test_fetch_timeout(tmp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(fetch_module, "TIMEOUT_SECONDS", 1)
 
