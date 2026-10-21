@@ -21,11 +21,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SEARCH_DIR = ROOT / "search"
+REPORT_DIR = ROOT / "report_first_page"
 TESTS_DIR = ROOT / "tests"
 SELF = Path(__file__).resolve()
 
 # Модулі, які пишуться українською (код, docstrings, коментарі).
-UKRAINIAN_SOURCES = sorted(SEARCH_DIR.glob("*.py")) + sorted((ROOT / "plag_filter").glob("*.py")) + [
+UKRAINIAN_SOURCES = sorted(SEARCH_DIR.glob("*.py")) + sorted((ROOT / "plag_filter").glob("*.py")) + sorted(REPORT_DIR.glob("*.py")) + [
     ROOT / "parser" / "searchdoc.py",
     ROOT / "ui_helpers.py",
 ]
@@ -84,7 +85,7 @@ def _imported_names(path: Path) -> set[str]:
 
 def test_no_pdf_blocks_api_in_search_code() -> None:
     offenders: list[str] = []
-    for path in _existing(sorted(SEARCH_DIR.glob("*.py")) + [ROOT / "parser" / "searchdoc.py"]):
+    for path in _existing(sorted(SEARCH_DIR.glob("*.py")) + sorted(REPORT_DIR.glob("*.py")) + [ROOT / "parser" / "searchdoc.py"]):
         for node in ast.walk(_parse(path)):
             if not isinstance(node, ast.Call):
                 continue
@@ -140,6 +141,30 @@ def test_search_has_no_hidden_nondeterminism() -> None:
         "CLAUDE.md №1: результат має бути відтворюваним. Поточний час і випадковість "
         f"інʼєктуються аргументом, а не беруться всередині: {offenders}"
     )
+
+
+def test_report_has_no_llm_network_randomness_or_hidden_clock() -> None:
+    """Єдиний годинник — підмінний kyiv_date у UI; інші модулі чисті."""
+    offenders = []
+    for path in _existing(sorted(REPORT_DIR.glob("*.py"))):
+        bad = _imported_names(path) & (FORBIDDEN_IMPORTS | {"requests", "httpx", "urllib", "socket"})
+        if bad:
+            offenders.append(f"{path.name}: {sorted(bad)}")
+        tree = _parse(path)
+        allowed_calls = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and path.name == "ui.py" and node.name == "kyiv_date":
+                assert "clock" in {arg.arg for arg in node.args.kwonlyargs}
+                allowed_calls = {id(child) for child in ast.walk(node)}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            terminal = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else None
+            if terminal in {"now", "utcnow", "today", "time", "time_ns"}:
+                if terminal != "now" or id(node) not in allowed_calls:
+                    offenders.append(f"{path.name}:{node.lineno}: {terminal}")
+    assert not offenders, f"Звіт має бути локальним і відтворюваним: {offenders}"
 
 
 # --------------------------------------------------------------------------
@@ -202,7 +227,7 @@ def test_no_skip_or_xfail_markers() -> None:
 def test_coverage_gate_is_not_lowered() -> None:
     ini = (ROOT / "pytest.ini").read_text(encoding="utf-8")
     assert "--cov-fail-under=90" in ini, "Поріг покриття 90 % знижувати не можна"
-    for target in ("--cov=parser", "--cov=ui_helpers", "--cov=compare", "--cov=search"):
+    for target in ("--cov=parser", "--cov=ui_helpers", "--cov=compare", "--cov=search", "--cov=report_first_page"):
         assert target in ini, f"Втрачено {target} з pytest.ini"
 
 

@@ -46,6 +46,14 @@ def is_plag_filter_mode(query_params: MutableMapping[str, Any]) -> bool:
     return value == "plag-filter"
 
 
+def is_report_first_page_mode(query_params: MutableMapping[str, Any]) -> bool:
+    """Повертає True лише для окремого режиму початкової сторінки звіту."""
+    value = query_params.get("mode")
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    return value == "report-first-page"
+
+
 # ---------------------------------------------------------------------------
 # Ключі стану, прив'язані до конкретного завантаженого файлу
 # ---------------------------------------------------------------------------

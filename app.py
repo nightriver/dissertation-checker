@@ -50,6 +50,7 @@ from ui_helpers import (
     reset_search_scoped_state,
     is_table_highlight_mode,
     is_plag_filter_mode,
+    is_report_first_page_mode,
 )
 from compare.docx_export import DOCX_MIME, build_comparison_docx
 from table_highlighter.types import FONT_CHOICES, FONT_SIZE_RANGE, HighlightOptions
@@ -195,6 +196,7 @@ APP_SECTIONS = (
     ("compare", "Порівняння двох робіт", "?mode=compare"),
     ("table-highlight", "Підсвічування таблиці", "?mode=table-highlight"),
     ("plag-filter", "Очищення звіту Plag", "?mode=plag-filter"),
+    ("report-first-page", "Звіт", "?mode=report-first-page"),
 )
 
 
@@ -1580,6 +1582,8 @@ elif is_table_highlight_mode(st.query_params):
     active_section = "table-highlight"
 elif is_plag_filter_mode(st.query_params):
     active_section = "plag-filter"
+elif is_report_first_page_mode(st.query_params):
+    active_section = "report-first-page"
 
 render_main_navigation(active_section)
 
@@ -1601,6 +1605,12 @@ if active_section == "plag-filter":
     from plag_filter.ui import render_plag_filter_page
 
     render_plag_filter_page()
+    st.stop()
+
+if active_section == "report-first-page":
+    from report_first_page.ui import render_report_first_page
+
+    render_report_first_page()
     st.stop()
 
 st.title("📚 Перевірка джерел дисертації")
