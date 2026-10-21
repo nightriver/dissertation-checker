@@ -32,6 +32,9 @@ _PERSON_FIELDS = (
     ("before_name", "Кваліфікації перед ПІБ"), ("full_name", "Повний ПІБ"),
     ("after_name", "Установа, посада та інші відомості після ПІБ"),
 )
+# У шести авторефератах: тема 38–103, установа захисту 59–110,
+# кваліфікації до 90, установи й посади людей до 224 символів.
+_MULTILINE_FIELDS = {"title", "degree_phrase", "institution_tail"}
 
 
 def kyiv_date(*, clock: Callable[[ZoneInfo], datetime] | None = None) -> date:
@@ -137,4 +140,7 @@ def render_report_first_page() -> None:
             for warning in metadata.warnings:
                 st.warning(warning)
             for name, label, _ in fields:
-                st.text_input(label, key=FIELD_PREFIX + name)
+                if name in _MULTILINE_FIELDS or name.endswith(("_before_name", "_after_name")):
+                    st.text_area(label, key=FIELD_PREFIX + name, height="content")
+                else:
+                    st.text_input(label, key=FIELD_PREFIX + name)

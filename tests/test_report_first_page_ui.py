@@ -100,7 +100,7 @@ def test_upload_preview_download_edits_and_date_reruns_do_not_reparse(monkeypatc
     app.text_input(key=ui.FIELD_PREFIX + "author").set_value("Автор після правки").run(timeout=30)
     assert "Автор після правки на здобуття" in preview(app)
     assert "Автор після правки на здобуття" in Document(BytesIO(downloads[-1])).paragraphs[2].text
-    app.text_input(key=ui.FIELD_PREFIX + "title").set_value("").run(timeout=30)
+    app.text_area(key=ui.FIELD_PREFIX + "title").set_value("").run(timeout=30)
     assert "на тему «_____»" in preview(app)
     app.text_input(key=ui.FIELD_PREFIX + "opponents_0_full_name").set_value("Перший після правки").run(timeout=30)
     assert "Перший після правки" in preview(app)
@@ -126,9 +126,15 @@ def test_every_variable_field_updates_both_outputs_immediately(monkeypatch):
     app = open_screen()
     app.get("file_uploader")[0].upload("source.pdf", b"data", "application/pdf")
     app.run(timeout=30)
-    for index, widget in enumerate(list(app.text_input)):
-        text = f"Поле {index} після правки"
-        app.text_input(key=widget.key).set_value(text).run(timeout=30)
+    assert {w.key.removeprefix(ui.FIELD_PREFIX) for w in app.text_area} == {
+        "title", "degree_phrase", "institution_tail", "supervisor_before_name", "supervisor_after_name",
+        "opponents_0_before_name", "opponents_0_after_name", "opponents_1_before_name", "opponents_1_after_name",
+    }
+    for index, widget in enumerate([*app.text_input, *app.text_area]):
+        multiline = widget.type == "text_area"
+        text = f"Поле {index}\nпісля правки" if multiline else f"Поле {index} після правки"
+        collection = app.text_area if multiline else app.text_input
+        collection(key=widget.key).set_value(text).run(timeout=30)
         assert not app.exception
         assert text in preview(app)
         assert any(text in p.text for p in captured[-1].paragraphs)
@@ -153,7 +159,7 @@ def test_same_name_and_size_file_switch_invalid_file_removal_and_return_reset_ed
     app.get("file_uploader")[0].upload("same.pdf", b"ERROR", "application/pdf")
     app.run(timeout=30)
     assert "Пошкоджений PDF B" in [e.value for e in app.error]
-    assert not app.text_input and not app.get("download_button")
+    assert not app.text_input and not app.text_area and not app.get("download_button")
     assert not any("report-first-page\">" in m.value for m in app.markdown)
     app.run(timeout=30)
     assert calls.count(b"ERROR") == 1
@@ -163,7 +169,7 @@ def test_same_name_and_size_file_switch_invalid_file_removal_and_return_reset_ed
     assert ui.AUTHOR_TOAST_KEY in app.session_state
     app.get("file_uploader")[0].clear()
     app.run(timeout=30)
-    assert not app.get("download_button") and not app.text_input
+    assert not app.get("download_button") and not app.text_input and not app.text_area
     assert ui.METADATA_KEY not in app.session_state
     assert ui.AUTHOR_TOAST_KEY not in app.session_state
 
@@ -177,7 +183,7 @@ def test_docx_export_error_keeps_html_and_editing_but_removes_download(monkeypat
     app.get("file_uploader")[0].upload("source.pdf", b"data", "application/pdf")
     app.run(timeout=30)
     assert not app.exception
-    assert preview(app) and app.text_input
+    assert preview(app) and app.text_input and app.text_area
     assert not app.get("download_button")
     assert any("Відсутній шаблон" in e.value for e in app.error)
 
@@ -191,7 +197,7 @@ def test_invalid_upload_clears_existing_result_before_parsing(monkeypatch):
     app.get("file_uploader")[0].upload("source.pdf", b"", "application/pdf")
     app.run(timeout=30)
     assert not app.exception and app.error
-    assert not app.text_input and not app.get("download_button")
+    assert not app.text_input and not app.text_area and not app.get("download_button")
     assert ui.METADATA_KEY not in app.session_state
 
 
@@ -201,7 +207,7 @@ def test_missing_fields_remain_empty_in_editor_and_can_be_filled(monkeypatch):
     app.get("file_uploader")[0].upload("source.pdf", b"data", "application/pdf")
     app.run(timeout=30)
     assert not app.exception
-    assert all(w.value == "" for w in app.text_input)
+    assert all(w.value == "" for w in [*app.text_input, *app.text_area])
     assert "Немає даних" in [w.value for w in app.warning]
     app.text_input(key=ui.FIELD_PREFIX + "opponents_0_full_name").set_value("Заповнено вручну").run(timeout=30)
     assert "Заповнено вручну" in preview(app)
