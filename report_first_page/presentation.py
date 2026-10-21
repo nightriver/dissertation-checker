@@ -18,7 +18,7 @@ EXPERT_TEXT = (
     "Перевірку провела Благодєтєлєва-Вовк Світлана Леонідівна, канд. екон. наук, "
     "доцент, голова Ради ГО ТРОН, координаторка антиплагіатної ініціативи «Дисергейт»"
 )
-AUTHOR_WARNING = "ПІБ автора перенесено без відмінювання. Перевірте форму перед завантаженням"
+AUTHOR_WARNING = "Перевірте відмінок ПІБ автора"
 
 
 def _value(value: str | None) -> str:
@@ -99,9 +99,11 @@ def render_report_html(page: ReportPage) -> str:
     return """<style>
 .report-first-page{box-sizing:border-box;width:210mm;max-width:100%;min-height:297mm;
 padding:25.4mm;background:white;color:#000;font-family:Calibri,sans-serif;font-size:14pt;
-line-height:normal;overflow-wrap:break-word;white-space:pre-wrap;}
+line-height:normal;overflow-wrap:break-word;white-space:pre-wrap;margin:4px auto 24px;
+border:1px solid #ebecf2;border-radius:24px;box-shadow:0 4px 24px rgba(0,0,0,0.07);}
 .report-first-page p{margin:0;line-height:normal;font-family:Calibri,sans-serif;font-size:14pt;}
 .report-first-page .report-heading{font-family:'Calibri Light',Calibri,sans-serif;font-size:HEADING_SIZEpt;}
 .report-first-page .report-separator{height:1.15em;}
 .report-first-page .report-date{text-align:center;margin-top:DATE_SPACEpt;}
+@media(max-width:700px){.report-first-page{padding:24px;min-height:0;}}
 </style><article class="report-first-page">""".replace("HEADING_SIZE", str(HEADING_SIZE_PT)).replace("DATE_SPACE", str(DATE_SPACE_BEFORE_PT)) + "".join(paragraphs) + "</article>"

@@ -61,10 +61,16 @@ def test_report_screen_is_last_and_has_exactly_one_pdf_uploader():
 def test_upload_preview_download_edits_and_date_reruns_do_not_reparse(monkeypatch):
     calls = []
     downloads = []
+    toasts = []
     generated = [date(2026, 10, 31)]
     metadata = sample_metadata()
     monkeypatch.setattr(ui, "extract_report_metadata", lambda data: calls.append(data) or metadata)
     monkeypatch.setattr(ui, "kyiv_date", lambda: generated[0])
+    original_toast = ui.st.toast
+    def toast(body, **kwargs):
+        toasts.append((body, kwargs))
+        return original_toast(body, **kwargs)
+    monkeypatch.setattr(ui.st, "toast", toast)
     original_docx = ui.build_report_docx
     def export(page):
         data = original_docx(page)
@@ -75,17 +81,22 @@ def test_upload_preview_download_edits_and_date_reruns_do_not_reparse(monkeypatc
     app.get("file_uploader")[0].upload("same.pdf", b"PDF A", "application/pdf")
     app.run(timeout=30)
     assert not app.exception
-    assert AUTHOR_WARNING in [w.value for w in app.warning]
+    assert toasts == [("Перевірте відмінок ПІБ автора", {"icon": "ℹ️", "duration": 5})]
+    assert AUTHOR_WARNING not in [w.value for w in app.warning]
     assert len(app.get("download_button")) == 1
-    assert app.get("download_button")[0].label == "Завантажити сторінку звіту (.docx)"
+    assert app.get("download_button")[0].label == "Завантажити"
+    assert app.get("download_button")[0].proto.type == "primary"
     assert app.expander[0].label == "Уточнити дані" and app.expander[0].proto.expanded is False
     assert not app.get("image") and not app.get("slider")
     assert preview(app).count(metadata.author) == 1
-    ordered = list(app.main)
-    preview_index = next(i for i, element in enumerate(ordered) if getattr(element, "value", None) == preview(app))
+    left, right = app.get("column")
+    assert preview(app) in [item.value for item in left.markdown]
+    assert not left.get("download_button") and not left.get("expander")
+    assert len(right.get("download_button")) == len(right.get("expander")) == 1
+    ordered = list(right)
     download_index = next(i for i, element in enumerate(ordered) if element.type == "download_button")
     edit_index = next(i for i, element in enumerate(ordered) if element.type == "expander")
-    assert preview_index < download_index < edit_index
+    assert download_index < edit_index
     app.text_input(key=ui.FIELD_PREFIX + "author").set_value("Автор після правки").run(timeout=30)
     assert "Автор після правки на здобуття" in preview(app)
     assert "Автор після правки на здобуття" in Document(BytesIO(downloads[-1])).paragraphs[2].text
@@ -101,6 +112,7 @@ def test_upload_preview_download_edits_and_date_reruns_do_not_reparse(monkeypatc
     assert previous != downloads[-1]
     assert Document(BytesIO(downloads[-1])).paragraphs[-1].text == "Київ, листопад 2026"
     assert len(calls) == 1
+    assert len(toasts) == 1
 
 
 def test_every_variable_field_updates_both_outputs_immediately(monkeypatch):
@@ -148,10 +160,12 @@ def test_same_name_and_size_file_switch_invalid_file_removal_and_return_reset_ed
     app.get("file_uploader")[0].upload("same.pdf", b"PDF A", "application/pdf")
     app.run(timeout=30)
     assert app.text_input(key=ui.FIELD_PREFIX + "author").value == "Автор А"
+    assert ui.AUTHOR_TOAST_KEY in app.session_state
     app.get("file_uploader")[0].clear()
     app.run(timeout=30)
     assert not app.get("download_button") and not app.text_input
     assert ui.METADATA_KEY not in app.session_state
+    assert ui.AUTHOR_TOAST_KEY not in app.session_state
 
 
 def test_docx_export_error_keeps_html_and_editing_but_removes_download(monkeypatch):
@@ -220,7 +234,8 @@ def test_kyiv_date_uses_timezone_at_month_year_and_dst_boundaries(utc, expected)
 
 
 def test_source_reset_keeps_uploader_and_unrelated_modes_only():
-    state = {ui.UPLOAD_KEY: "upload", ui.METADATA_KEY: "old", ui.FIELD_PREFIX + "author": "edited", "search_result": "keep"}
+    state = {ui.UPLOAD_KEY: "upload", ui.METADATA_KEY: "old", ui.FIELD_PREFIX + "author": "edited",
+             ui.AUTHOR_TOAST_KEY: True, "search_result": "keep"}
     ui.reset_source(state, "new")
     assert state == {ui.UPLOAD_KEY: "upload", ui.SOURCE_KEY: "new", "search_result": "keep"}
     ui.reset_source(state, None)

@@ -19,6 +19,7 @@ UPLOAD_KEY = PREFIX + "upload"
 SOURCE_KEY = PREFIX + "source"
 METADATA_KEY = PREFIX + "metadata"
 ERROR_KEY = PREFIX + "error"
+AUTHOR_TOAST_KEY = PREFIX + "author_toast_shown"
 FIELD_PREFIX = PREFIX + "field_"
 _FIELDS = (
     ("author", "ПІБ автора"), ("title", "Тема дисертації"), ("degree_phrase", "Фраза про ступінь після «на здобуття»"),
@@ -115,19 +116,25 @@ def render_report_first_page() -> None:
             st.session_state[key] = initial or ""
     effective = apply_edits(metadata, st.session_state)
     page = build_report_page(effective, generated_on=kyiv_date())
-    st.warning(AUTHOR_WARNING)
-    st.markdown(render_report_html(page), unsafe_allow_html=True)
-    try:
-        docx = build_report_docx(page)
-    except Exception as exc:
-        st.error(f"Не вдалося сформувати Word: {exc}")
-    else:
-        st.download_button(
-            "Завантажити сторінку звіту (.docx)", data=docx,
-            file_name="zvit.docx", mime=DOCX_MIME, key=PREFIX + "download",
-        )
-    with st.expander("Уточнити дані", expanded=False):
-        for warning in metadata.warnings:
-            st.warning(warning)
-        for name, label, _ in fields:
-            st.text_input(label, key=FIELD_PREFIX + name)
+    if not st.session_state.get(AUTHOR_TOAST_KEY):
+        st.toast(AUTHOR_WARNING, icon="ℹ️", duration=5)
+        st.session_state[AUTHOR_TOAST_KEY] = True
+    preview_column, actions_column = st.columns([3, 1.4], gap="large")
+    with preview_column:
+        st.markdown(render_report_html(page), unsafe_allow_html=True)
+    with actions_column:
+        try:
+            docx = build_report_docx(page)
+        except Exception as exc:
+            st.error(f"Не вдалося сформувати Word: {exc}")
+        else:
+            st.download_button(
+                "Завантажити", data=docx, type="primary", use_container_width=True,
+                file_name="zvit.docx", mime=DOCX_MIME, key=PREFIX + "download",
+                help="Завантажити сторінку звіту у форматі Word (.docx).",
+            )
+        with st.expander("Уточнити дані", expanded=False):
+            for warning in metadata.warnings:
+                st.warning(warning)
+            for name, label, _ in fields:
+                st.text_input(label, key=FIELD_PREFIX + name)
