@@ -79,6 +79,13 @@ class TestZones:
         left = annotate_left_cell(document.tables[0].rows[0].cells[0])
         assert [item.zone for item in left.paragraphs] == ["plain", "text", "plain", "plain"]
 
+    def test_left_empty_paragraph_right_after_marker_does_not_close_text(self):
+        """Порожній абзац одразу після маркера не відрізає весь фрагмент."""
+        data = _table_docx([(["Вступ", "С. 6", "", "Текст", "", "Коментар"], ["С. 2", "Текст"])])
+        document = Document(io.BytesIO(data))
+        left = annotate_left_cell(document.tables[0].rows[0].cells[0])
+        assert [item.zone for item in left.paragraphs] == ["plain", "plain", "plain", "text", "plain", "plain"]
+
 
 class TestMatcher:
     def test_threshold_100_disables_relaxed_short_word_match(self):

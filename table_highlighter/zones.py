@@ -67,16 +67,19 @@ def annotate_left_cell(cell) -> CellZones:
         )
 
     text_open = True
+    text_seen = False
     result: list[ParagraphZone] = []
     for index, paragraph in enumerate(paragraphs):
         text = paragraph_text(paragraph)
         if index <= marker_index:
             zone = "plain"
         elif text_open and not text.strip():
-            text_open = False
+            # Порожні абзаци між маркером і текстом зону ще не закривають.
+            text_open = not text_seen
             zone = "plain"
         else:
             zone = "text" if text_open else "plain"
+            text_seen = text_seen or text_open
         result.append(ParagraphZone(paragraph, index, zone))
     return CellZones(tuple(result), marker_index)
 
