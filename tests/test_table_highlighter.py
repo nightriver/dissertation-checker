@@ -86,6 +86,13 @@ class TestZones:
         left = annotate_left_cell(document.tables[0].rows[0].cells[0])
         assert [item.zone for item in left.paragraphs] == ["plain", "plain", "plain", "text", "plain", "plain"]
 
+    def test_right_numbered_source_text_after_marker_is_not_comment(self):
+        """Нумерований пункт джерела одразу після маркера лишається текстом."""
+        data = _table_docx([(["С. 1", "Текст"], ["Там само", "С. 2", "4. Текст", "Продовження", "", "Посилання на:", "29. Джерело"])])
+        document = Document(io.BytesIO(data))
+        right = annotate_right_cell(document.tables[0].rows[0].cells[1])
+        assert [item.zone for item in right.paragraphs] == ["plain", "plain", "text", "text", "text", "plain", "plain"]
+
 
 class TestMatcher:
     def test_threshold_100_disables_relaxed_short_word_match(self):
@@ -151,6 +158,31 @@ class TestProcessor:
         cell = output.tables[0].rows[0].cells[1]
         assert _has_hyperlink(cell)
         assert "посилання" in paragraph_text(cell.paragraphs[1])
+
+    def test_line_break_inside_compared_text_is_highlighted_and_kept(self):
+        """Ручний розрив рядка (Shift+Enter) не робить абзац непідтримуваним."""
+        data = _table_docx([(["С. 1", "Спільний"], ["С. 2", "Спільний"])])
+        document = Document(io.BytesIO(data))
+        for cell in document.tables[0].rows[0].cells:
+            run = cell.paragraphs[1].runs[0]
+            run._r.append(OxmlElement("w:br"))
+            run._r.append(OxmlElement("w:tab"))
+            tail = OxmlElement("w:t")
+            tail.text = "текст"
+            run._r.append(tail)
+        raw = io.BytesIO()
+        document.save(raw)
+
+        result = process_document(raw.getvalue(), HighlightOptions())
+        output = Document(io.BytesIO(result.document_bytes))
+        assert result.warnings == ()
+        assert result.stats.processed_rows == 1
+        for cell in output.tables[0].rows[0].cells:
+            paragraph = cell.paragraphs[1]
+            assert paragraph_text(paragraph) == "Спільний\n\tтекст"
+            assert len(paragraph._p.findall(".//" + qn("w:br"))) == 1
+            colors = {str(run.font.highlight_color) for run in paragraph.runs if run.text.strip()}
+            assert colors == {"YELLOW (7)"}
 
     def test_alignment_gives_markers_a_shared_row_below_bibliography(self):
         data = _table_docx([(["С. 1", "Однаковий текст"], ["Бібліографія", "С. 2", "Однаковий текст"])])

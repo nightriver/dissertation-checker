@@ -10,6 +10,7 @@ from docx.oxml.ns import qn
 
 PAGE_MARKER_RE = re.compile(r"^\s*[СсCc]\.\s*\d+[\d\s\-–—]*\s*$")
 COMMENT_RE = re.compile(r"^(?:\d+\.|Посилання на:|Там само$)")
+NUMBERED_RE = re.compile(r"^\d+\.")
 
 
 @dataclass(frozen=True)
@@ -99,15 +100,20 @@ def annotate_right_cell(cell) -> CellZones:
         )
 
     text_open = True
+    text_seen = False
     result: list[ParagraphZone] = []
     for index, paragraph in enumerate(paragraphs):
-        text = paragraph_text(paragraph)
+        text = paragraph_text(paragraph).strip()
+        # Нумерований пункт одразу після маркера — це сам текст джерела
+        # («4. Спеціальний режим…»), а не номер у переліку посилань.
+        numbered_source = not text_seen and NUMBERED_RE.match(text)
         if index <= marker_index:
             zone = "plain"
-        elif text_open and COMMENT_RE.match(text.strip()):
+        elif text_open and COMMENT_RE.match(text) and not numbered_source:
             text_open = False
             zone = "plain"
         else:
             zone = "text" if text_open else "plain"
+            text_seen = text_seen or (text_open and bool(text))
         result.append(ParagraphZone(paragraph, index, zone))
     return CellZones(tuple(result), marker_index)

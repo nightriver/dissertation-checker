@@ -14,7 +14,10 @@ from table_highlighter.zones import paragraph_text
 HIGHLIGHT = {"match": "yellow", "diff": "cyan"}
 # lastRenderedPageBreak — кешована позначка Word між двома текстовими runs.
 # Вона не входить до видимого тексту, але її не можна втратити через підсвітку.
-_ALLOWED_RUN_CHILDREN = {qn("w:rPr"), qn("w:t"), qn("w:lastRenderedPageBreak")}
+# Розриви й табуляції стоять окремими вузлами всередині run; у видимому тексті
+# кожен займає один символ, як у paragraph_text, і переноситься без змін.
+_BREAK_CHILDREN = {qn("w:br"): "\n", qn("w:cr"): "\n", qn("w:tab"): "\t"}
+_ALLOWED_RUN_CHILDREN = {qn("w:rPr"), qn("w:t"), qn("w:lastRenderedPageBreak"), *_BREAK_CHILDREN}
 
 
 def supports_highlighting(paragraph) -> bool:
@@ -26,7 +29,11 @@ def supports_highlighting(paragraph) -> bool:
 
 
 def _run_text(run) -> str:
-    return "".join(element.text or "" for element in run.findall(qn("w:t")))
+    return "".join(
+        _BREAK_CHILDREN.get(child.tag, child.text or "")
+        for child in run
+        if child.tag == qn("w:t") or child.tag in _BREAK_CHILDREN
+    )
 
 
 def _set_font(run, font_name: str, font_size: int, status: str | None = None) -> None:
@@ -38,13 +45,18 @@ def _clone_run(
 ):
     clone = deepcopy(run)
     for child in tuple(clone):
-        if child.tag == qn("w:t") or (child.tag != qn("w:rPr") and not preserve_nontext):
+        if child.tag in {qn("w:t"), *_BREAK_CHILDREN} or (child.tag != qn("w:rPr") and not preserve_nontext):
             clone.remove(child)
-    text_element = OxmlElement("w:t")
-    if text[:1].isspace() or text[-1:].isspace():
-        text_element.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-    text_element.text = text
-    clone.append(text_element)
+    if isinstance(text, str):
+        text_element = OxmlElement("w:t")
+        if text[:1].isspace() or text[-1:].isspace():
+            text_element.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        text_element.text = text
+        clone.append(text_element)
+    else:
+        # Розрив або табуляція переходить у власний run без підсвітки.
+        clone.append(deepcopy(text))
+        status = None
     _set_font(clone, font_name, font_size, status)
     return clone
 
@@ -75,14 +87,21 @@ def style_text_paragraph(
         if not raw:
             _set_font(run, font_name, font_size)
             continue
-        run_statuses = statuses[cursor:cursor + len(raw)]
-        cursor += len(raw)
-        groups: list[tuple[str, str | None]] = []
-        for char, status in zip(raw, run_statuses):
-            if groups and groups[-1][1] == status:
-                groups[-1] = (groups[-1][0] + char, status)
-            else:
-                groups.append((char, status))
+        groups: list[tuple[object, str | None]] = []
+        for child in run:
+            if child.tag in _BREAK_CHILDREN:
+                cursor += 1
+                groups.append((child, None))
+                continue
+            if child.tag != qn("w:t"):
+                continue
+            for char in child.text or "":
+                status = statuses[cursor]
+                cursor += 1
+                if groups and isinstance(groups[-1][0], str) and groups[-1][1] == status:
+                    groups[-1] = (groups[-1][0] + char, status)
+                else:
+                    groups.append((char, status))
         parent = run.getparent()
         position = parent.index(run)
         parent.remove(run)
