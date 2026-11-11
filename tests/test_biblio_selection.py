@@ -11,6 +11,7 @@ from parser.bibliography import (
     BibliographyNotFoundError,
     parse_bibliography,
     split_zones,
+    split_zones_manual,
 )
 
 
@@ -161,3 +162,51 @@ class TestContainmentRule(unittest.TestCase):
 
         r = split_zones(doc)
         self.assertEqual(r.biblio_header_line, "СПИСОК ВИКОРИСТАНИХ ДЖЕРЕЛ")
+
+
+class TestStopWordsAndHeaders(unittest.TestCase):
+    """Регресія на examples/tekst diss-doc.pdf: заголовок «ВИКОРИСТАНА
+    ЛІТЕРАТУРА» не розпізнавався, а рядок «Додаток до № 28.» усередині
+    запису обрізав список після третього джерела."""
+
+    def test_used_literature_header_is_found_automatically(self):
+        doc = (L(["Текст [1]."])
+               + L(["ВИКОРИСТАНА ЛІТЕРАТУРА"] + entries(1, 6)))
+        r = split_zones(doc)
+        self.assertEqual(r.biblio_header_line, "ВИКОРИСТАНА ЛІТЕРАТУРА")
+        self.assertEqual(len(parse_bibliography(r.bibliography)), 6)
+
+    def test_appendix_continuation_line_does_not_cut_the_list(self):
+        doc = (L(["Текст."])
+               + L(["СПИСОК ВИКОРИСТАНИХ ДЖЕРЕЛ",
+                    "1. Житловий кодекс Української РСР. – К. : ВВР, 1983,",
+                    "Додаток до № 28.",
+                    "2. Кодекс України. – Додаток до № 51."]
+                   + entries(3, 10))
+               + L(["ДОДАТОК А", "Список публікацій"]))
+        r = split_zones(doc)
+        bib = parse_bibliography(r.bibliography)
+        self.assertEqual(sorted(bib), list(range(1, 11)))
+        self.assertIn("Додаток до № 28.", bib[1])
+        self.assertEqual(r.after[0]["line"], "ДОДАТОК А")
+
+    def test_manual_mode_also_ignores_continuation_line(self):
+        doc = L(["ВИКОРИСТАНА ЛІТЕРАТУРА", "1. Кодекс. – 1983,",
+                 "Додаток до № 28."] + entries(2, 5))
+        r = split_zones_manual(doc, "використана література", 1)
+        self.assertEqual(len(parse_bibliography(r.bibliography)), 5)
+
+    def test_real_stop_headings_still_close_the_zone(self):
+        for heading in ["ДОДАТКИ", "ДОДАТОК Б", "Додаток В. Акти впровадження",
+                        "ДОДАТКИ ДО ДИСЕРТАЦІЇ", "АНОТАЦІЯ", "Abstract"]:
+            with self.subTest(heading=heading):
+                doc = L(["СПИСОК ВИКОРИСТАНИХ ДЖЕРЕЛ"] + entries(1, 4)
+                        + [heading] + entries(5, 9))
+                r = split_zones(doc)
+                self.assertEqual(r.after[0]["line"], heading)
+
+    def test_longer_word_with_stop_prefix_is_not_a_stop(self):
+        doc = L(["СПИСОК ВИКОРИСТАНИХ ДЖЕРЕЛ"] + entries(1, 3)
+                + ["Додатковий випуск, 2001."] + entries(4, 6))
+        r = split_zones(doc)
+        self.assertEqual(r.after, [])

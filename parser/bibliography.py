@@ -20,6 +20,8 @@ BIBLIO_HEADERS: list[str] = [
     "СПИСОК ВИКОРИСТАНИХ ДЖЕРЕЛ",
     "СПИСОК ЛІТЕРАТУРИ",
     "СПИСОК ВИКОРИСТАНОЇ ЛІТЕРАТУРИ",
+    "ВИКОРИСТАНА ЛІТЕРАТУРА",
+    "ПЕРЕЛІК ВИКОРИСТАНИХ ДЖЕРЕЛ",
     "ВИКОРИСТАНІ ДЖЕРЕЛА",
     "БІБЛІОГРАФІЯ",
     "БІБЛІОГРАФІЧНИЙ СПИСОК",
@@ -96,8 +98,33 @@ def _is_biblio_header(line: str) -> bool:
 
 
 def _is_stop_word(line: str) -> bool:
-    n = _normalize(line)
-    return any(n == s or n.startswith(s) for s in STOP_WORDS)
+    """
+    True, якщо рядок схожий на заголовок розділу, що закриває список.
+
+    Простого «починається зі стоп-слова» замало: у тексті записів трапляються
+    рядки-продовження на кшталт «Додаток до № 28.» (джерело — додаток до
+    номера видання). Раніше такий рядок обрізав список після третього запису.
+    Тому стоп-слово має стояти окремим словом, а решта рядка не може
+    починатися з малої літери (якщо рядок не набраний капсом):
+    «ДОДАТОК А», «Додаток Б. …», «ДОДАТКИ ДО ДИСЕРТАЦІЇ» — заголовки,
+    «Додаток до № 28.», «Додатковий …» — ні.
+    """
+    stripped = re.sub(r"\s+", " ", line.strip())
+    n = stripped.upper()
+    for s in STOP_WORDS:
+        if not n.startswith(s):
+            continue
+        rest = stripped[len(s):]
+        if rest and unicodedata.category(rest[0]).startswith("L"):
+            continue   # стоп-слово — лише частина довшого слова
+        first_letter = next(
+            (ch for ch in rest if unicodedata.category(ch).startswith("L")),
+            None,
+        )
+        if first_letter is not None and first_letter.islower():
+            continue   # продовження речення, а не заголовок
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
