@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:  # pragma: no cover - лише для анотацій
+    from plag_filter.v4.build import V4Info
 
 Decision = Literal["keep", "exclude", "disputed"]
 Reason = Literal[
@@ -76,7 +79,12 @@ class BodyEvent:
 
 @dataclass(frozen=True)
 class PlagReport:
-    """Розібраний звіт Plag: перелік джерел і події в тілі."""
+    """Розібраний звіт Plag: перелік джерел і події в тілі.
+
+    `kind` і `v4` — PLAN_PLAG_FILTER_V4.md, §6.3: для звіту нового формату
+    аркуші, тіло й заголовок — це аркуші дисертації, а `v4` несе розібраний
+    звіт, потік дисертації, острови й лічильники. Старий формат їх не заповнює.
+    """
 
     sha256: str
     page_count: int
@@ -89,6 +97,8 @@ class PlagReport:
     highlight_width: dict[int, float]
     longest_run: dict[int, float]
     title_text: str
+    kind: Literal["classic", "v4"] = "classic"
+    v4: "V4Info | None" = None
 
 
 @dataclass(frozen=True)

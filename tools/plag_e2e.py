@@ -11,6 +11,11 @@
 Специфікація — PLAN_PLAG_FILTER.md, §10.2, етап 9. Прізвище та ініціали
 автора приймальник передає аргументами командного рядка — у файли
 репозиторію вони не потрапляють.
+
+Звіт нового формату (PLAN_PLAG_FILTER_V4.md, §7 етап 7) прогоняється з
+`--diss <PDF дисертації>`: замість `parse_report` — `build_report`, замість
+очищеного PDF звіту — дисертація з підсвіткою й протоколом
+(`<ім'я дисертації>_plag_<номер звіту>.pdf`).
 """
 
 from __future__ import annotations
@@ -38,6 +43,8 @@ from plag_filter.fetch import fetch_document
 from plag_filter.pdf import append_protocol, filter_pdf, parse_report, render_page_png
 from plag_filter.project import from_json, new_project, protocol_paragraphs, to_json
 from plag_filter.rules import derive_initials, extract_author, recompute
+from plag_filter.v4.build import build_report
+from plag_filter.v4.export import highlighted_dissertation, highlighted_pdf_name
 from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
 from tools.measure_plag_memory import _peak_working_set_bytes
 
@@ -227,6 +234,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", required=True, type=Path, help="каталог поза репозиторієм")
     parser.add_argument(
+        "--diss",
+        type=Path,
+        default=None,
+        help="PDF дисертації для звіту нового формату — PLAN_PLAG_FILTER_V4.md, §7 етап 7",
+    )
+    parser.add_argument(
         "--label-check",
         type=Path,
         default=None,
@@ -237,7 +250,17 @@ def main(argv: list[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     data = args.report.read_bytes()
 
-    report = parse_report(data)
+    diss_data = args.diss.read_bytes() if args.diss is not None else None
+    report = parse_report(data) if diss_data is None else build_report(data, diss_data)
+    if report.kind == "v4":
+        counters = report.v4.counters
+        print(
+            f"Новий формат {report.v4.report.report_id}: записів основних {counters.main_entries}, "
+            f"перекладених {counters.translated_entries} (відкинуто {counters.translated_below}), "
+            f"коротких {counters.short_matches}; шматків знайдено {counters.runs_located} з "
+            f"{counters.runs_total}; дрібних островів {counters.small_islands}; "
+            f"джерел {counters.sources}"
+        )
 
     if args.auto_author:
         guess = extract_author(report.title_text)
@@ -302,13 +325,20 @@ def main(argv: list[str] | None = None) -> int:
     project_path.write_text(to_json(project), encoding="utf-8")
 
     excluded = {number for number, state in project.states.items() if state.decision == "exclude"}
-    filtered = filter_pdf(data, report, excluded)
-    filtered = append_protocol(filtered, protocol_paragraphs(project, report))
-    out_pdf = args.out / f"{args.report.stem}_filtered.pdf"
-    out_pdf.write_bytes(filtered)
+    if report.kind == "v4":
+        out_pdf = args.out / highlighted_pdf_name(args.diss.name, report)
+        out_pdf.write_bytes(highlighted_dissertation(report, project, diss_data))
+        demo_page = None
+    else:
+        filtered = filter_pdf(data, report, excluded)
+        filtered = append_protocol(filtered, protocol_paragraphs(project, report))
+        out_pdf = args.out / f"{args.report.stem}_filtered.pdf"
+        out_pdf.write_bytes(filtered)
+        demo_page = _pick_demo_page(report, excluded)
 
-    demo_page = _pick_demo_page(report, excluded)
-    if demo_page is not None:
+    if report.kind == "v4":
+        print("PNG до/після: у новому форматі аркуші — це дисертація, не будуються")
+    elif demo_page is not None:
         (args.out / "page_before.png").write_bytes(render_page_png(data, report, demo_page, set()))
         (args.out / "page_after.png").write_bytes(render_page_png(data, report, demo_page, excluded))
         print(f"PNG до/після збережено для аркуша {demo_page + 1} (з 1)")
@@ -319,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.label_check is not None:
         _label_check(project, report, args.label_check)
     print(f"Проєкт: {project_path}")
-    print(f"Очищений PDF: {out_pdf}")
+    print(f"Підсумковий PDF: {out_pdf}")
 
     peak_bytes = _peak_working_set_bytes()
     print(f"Пікова пам'ять процесу: {peak_bytes / (1024 * 1024):.1f} МБ")

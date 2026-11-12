@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import date
 
 from plag_filter.rules import date_evidence, recompute
+from plag_filter.v4.build import MIN_ISLAND_WORDS, MIN_TRANSLATED_SENTENCES
 from plag_filter.types import (
     AuthorHit,
     DateInterval,
@@ -26,6 +27,10 @@ from plag_filter.types import (
 REQUIRED_PROTOCOL_PHRASE = (
     "Відсотки й оцінки Plag на початкових сторінках належать до вихідного звіту "
     "та не перераховувалися."
+)
+# Та сама фраза для звіту нового формату — PLAN_PLAG_FILTER_V4.md, §6.5.
+V4_PROTOCOL_PHRASE = (
+    "Показники Plag у звіті {report_id} належать до вихідного звіту та не перераховувалися."
 )
 
 # Поділ причин на два блоки протоколу й підсумку екрана —
@@ -328,6 +333,25 @@ def protocol_paragraphs(project: PlagProject, report: PlagReport) -> list[str]:
         )
         paragraphs.append(f"Спірні джерела: {items}.")
 
-    paragraphs.append(REQUIRED_PROTOCOL_PHRASE)
+    if report.kind == "v4":
+        paragraphs.append(_v4_counters_paragraph(report))
+        paragraphs.append(V4_PROTOCOL_PHRASE.format(report_id=report.v4.report.report_id))
+    else:
+        paragraphs.append(REQUIRED_PROTOCOL_PHRASE)
 
     return paragraphs
+
+
+def _v4_counters_paragraph(report: PlagReport) -> str:
+    """Лічильники відкинутого для протоколу — PLAN_PLAG_FILTER_V4.md, §6.5."""
+    counters = report.v4.counters
+    return (
+        f"Звіт Plag {report.v4.report.report_id}: записів основних {counters.main_entries}, "
+        f"перекладених {counters.translated_entries} (менше {MIN_TRANSLATED_SENTENCES} речень — "
+        f"{counters.translated_below}, не розглядаються); коротких збігів "
+        f"{counters.short_matches} — не розглядаються. Шматків збігу знайдено в тексті "
+        f"дисертації {counters.runs_located} з {counters.runs_total}, не знайдено "
+        f"{counters.runs_missing}. Дрібних збігів (менше {MIN_ISLAND_WORDS} слів) відкинуто "
+        f"{counters.small_islands} ({counters.small_island_words} слів). Джерел за "
+        f"адресами: {counters.sources}."
+    )

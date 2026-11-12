@@ -126,7 +126,9 @@ function render(root, payload) {
   };
   head.appendChild(toggle);
   card.appendChild(head);
-  card.appendChild(renderScores(scores));
+  // Звіт нового формату (PLAN_PLAG_FILTER_V4.md, §6.4) несе показники рядками.
+  const scoreRows = Array.isArray(payload.score_rows) ? payload.score_rows : null;
+  card.appendChild(scoreRows ? renderScoreRows(scoreRows) : renderScores(scores));
 
   // --- нумерація й текст --------------------------------------------------
   const goto = (value) => send(root, { type: "page", page: value });
@@ -193,6 +195,19 @@ function render(root, payload) {
   panel.appendChild(
     el("div", "pr-below", `Ще ${Number(payload.below_count) || 0} джерел нижче 0,1 % прибрано.`)
   );
+}
+
+function renderScoreRows(scoreRows) {
+  const box = el("div", "pr-scores");
+  const rows = el("div", "pr-score-rows");
+  scoreRows.forEach((row) => {
+    const label = Array.isArray(row) ? row[0] : "";
+    const value = Array.isArray(row) ? row[1] : "";
+    rows.appendChild(el("div", "", label || ""));
+    rows.appendChild(el("div", "pr-pill", value || "—"));
+  });
+  box.appendChild(rows);
+  return box;
 }
 
 function renderScores(scores) {

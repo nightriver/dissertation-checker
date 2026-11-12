@@ -540,3 +540,98 @@ def test_old_viewer_ignores_arrows_with_modifier_keys() -> None:
     """`Shift+→` при виділенні тексту не гортає аркуш — PLAN_PLAG_VIEW.md, §7 етап 4."""
     js = (ROOT / "plag_filter" / "viewer" / "viewer.js").read_text(encoding="utf-8")
     assert "event.shiftKey || event.ctrlKey || event.altKey || event.metaKey" in js
+
+
+# ---------------------------------------------------------------------------
+# Звіт нового формату + дисертація — PLAN_PLAG_FILTER_V4.md, §6.4, §7 етап 5
+# ---------------------------------------------------------------------------
+
+NEW_PLAG = ROOT / "examples" / "plag" / "new plag"
+REPORT_V4 = NEW_PLAG / "plag-report-докт-R001904.pdf"
+DISS_V4 = NEW_PLAG / "source" / "Чванкін докт.pdf"
+OTHER_DISS_V4 = NEW_PLAG / "source" / "Білоус канд.pdf"
+
+
+def _open_v4(monkeypatch: pytest.MonkeyPatch, with_diss: bool = True) -> AppTest:
+    monkeypatch.setattr("plag_filter.fetch.fetch_document", _fake_fetch_404)
+    app = AppTest.from_file(APP_PATH)
+    app.query_params["mode"] = "plag-filter"
+    app.run(timeout=60)
+    app.get("file_uploader")[0].upload("report.pdf", REPORT_V4.read_bytes(), "application/pdf")
+    app.run(timeout=120)
+    assert not app.exception
+    if with_diss:
+        app.get("file_uploader")[1].upload("diss.pdf", DISS_V4.read_bytes(), "application/pdf")
+        app.run(timeout=180)
+        assert not app.exception
+    return app
+
+
+@pytest.mark.corpus
+def test_v4_report_without_dissertation_asks_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _open_v4(monkeypatch, with_diss=False)
+    labels = [item.label for item in app.get("file_uploader")]
+    assert labels == ["Звіт Plag (PDF)", "Дисертація (PDF), яку перевіряв Plag"]
+    assert any("дисертац" in item.value for item in app.info)
+    assert len(app.tabs) == 0
+    assert "plag_report" not in app.session_state
+
+
+@pytest.mark.corpus
+def test_v4_report_with_dissertation_shows_author_counters_and_tabs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _open_v4(monkeypatch)
+    report = app.session_state["plag_report"]
+    assert report.kind == "v4"
+    assert app.text_input(key="plag_surname").value.strip() != ""
+    assert int(app.number_input(key="plag_year").value) == 2021
+
+    captions = "\n".join(item.value for item in app.caption)
+    counters = report.v4.counters
+    assert f"коротких збігів {counters.short_matches}" in captions
+    assert f"менше 7 речень — {counters.translated_below}" in captions
+    assert f"не знайдено {counters.runs_missing}" in captions
+    assert f"Дрібних збігів (менше 8 слів) відкинуто: {counters.small_islands}" in captions
+    assert f"Джерел за адресами: {counters.sources}" in captions
+
+    assert [tab.label for tab in app.tabs] == ["Звіт", "Аркуш PDF", "Усі джерела й підсумок"]
+
+    records = app.selectbox(key="plag_v4_records")
+    assert records.value == 1
+    expanders = [item.label for item in app.tabs[2].get("expander")]
+    assert any(label.startswith("Розділ 3 · запис № 1") for label in expanders)
+    markdown = "\n".join(item.value for item in app.tabs[2].markdown)
+    assert "**" in markdown
+    assert "Текст джерела" in markdown
+
+
+@pytest.mark.corpus
+def test_v4_changing_dissertation_resets_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _open_v4(monkeypatch)
+    first = app.session_state["plag_report"].sha256
+    app.session_state["plag_project"].confirmed = True
+
+    app.get("file_uploader")[1].upload("other.pdf", OTHER_DISS_V4.read_bytes(), "application/pdf")
+    app.run(timeout=180)
+    assert not app.exception
+    assert app.session_state["plag_report"].sha256 != first
+    assert app.session_state["plag_project"].confirmed is False
+
+
+@pytest.mark.corpus
+def test_v4_summary_offers_highlighted_dissertation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Підсумок нового формату — PLAN_PLAG_FILTER_V4.md, §6.5, §7 етап 6."""
+    from plag_filter.checker import pending_count
+
+    app = _open_v4(monkeypatch)
+    app.button(key="plag_confirm").click()
+    for _ in range(20):
+        app.run(timeout=180)
+        assert not app.exception
+        if pending_count(app.session_state["plag_report"], app.session_state["plag_project"]) == 0:
+            break
+    summary_tab = app.tabs[2]
+    labels = [b.label for b in summary_tab.get("download_button")]
+    assert "Завантажити дисертацію з підсвіткою" in labels
+    assert "Завантажити очищений PDF" not in labels

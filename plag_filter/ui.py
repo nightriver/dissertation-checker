@@ -11,12 +11,17 @@
 причина названа своїм ім'ям, без узагальненого слова для непевних рішень.
 Завантаження очищеного PDF додає протокол у кінець файлу — §10.2, етап 8
 плану 1.
+
+Звіт нового формату (`PLAN_PLAG_FILTER_V4.md`, §6.4, §7 етап 5) потребує ще й
+PDF дисертації: аркуші вкладок — це аркуші дисертації, під карткою автора —
+лічильники відкинутого, а в третій вкладці — записи Plag обраного джерела.
 """
 
 from __future__ import annotations
 
 import html
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -47,10 +52,15 @@ from plag_filter.types import PlagProject, PlagReport, REASON_LABELS
 from plag_filter.report_viewer import render_report_viewer
 from plag_filter.view import apply_viewer_event, archive_links, report_payload, viewer_payload
 from plag_filter.viewer import render_viewer
+from plag_filter.v4.build import MIN_ISLAND_WORDS, MIN_TRANSLATED_SENTENCES, build_report
+from plag_filter.v4.export import highlighted_dissertation, highlighted_pdf_name
+from plag_filter.v4.report import detect_report_kind
 from ui_helpers import file_sha256
 
 # Ліміт завантажуваного звіту — PLAN_PLAG_FILTER.md, §8, пункт 1.
 MAX_PLAG_PDF_BYTES = 30 * 1024 * 1024
+# Ліміт PDF дисертації — PLAN_PLAG_FILTER_V4.md, §5.
+MAX_DISS_PDF_BYTES = 50 * 1024 * 1024
 
 _SHA_KEY = "plag_report_sha256"
 _REPORT_KEY = "plag_report"
@@ -58,6 +68,9 @@ _DATA_KEY = "plag_data"
 _PROJECT_KEY = "plag_project"
 _PAGE_KEY = "plag_page"
 _CLEANED_PDF_KEY = "plag_cleaned_pdf"
+# Підсумковий PDF нового формату і ім'я файлу дисертації — PLAN_PLAG_FILTER_V4.md, §6.5.
+_V4_PDF_KEY = "plag_v4_pdf"
+_DISS_NAME_KEY = "plag_diss_name"
 # Показ виключених — спільний для вкладок «Звіт» і «Аркуш PDF»; типово
 # увімкнено, щоб текст мав ті самі кольори, що в Plag (PLAN_PLAG_VIEW.md, §7 етап 4).
 _SHOW_EXCLUDED_KEY = "plag_show_excluded"
@@ -68,6 +81,8 @@ _TABS = ("Звіт", "Аркуш PDF", "Усі джерела й підсумо�
 # Режим показу для браузера — PLAN_PLAG_FILTER_V2.md, §8.6.
 _DEMO_PDF_ENV = "PLAG_FILTER_DEMO_PDF"
 _DEMO_PROJECT_ENV = "PLAG_FILTER_DEMO_PROJECT"
+# Дисертація до демонстраційного звіту нового формату — PLAN_PLAG_FILTER_V4.md, §7 етап 5.
+_DEMO_DISS_ENV = "PLAG_FILTER_DEMO_DISS"
 
 _RESETTABLE_KEYS = (
     _PROJECT_KEY,
@@ -75,6 +90,7 @@ _RESETTABLE_KEYS = (
     _DATA_KEY,
     _PAGE_KEY,
     _CLEANED_PDF_KEY,
+    _V4_PDF_KEY,
     "plag_surname",
     "plag_given_name",
     "plag_patronymic",
@@ -103,12 +119,16 @@ def _reset_if_new_file(data: bytes) -> None:
         st.session_state.pop(key, None)
 
 
-def _year_hint_lines(data: bytes) -> list[dict]:
-    """Рядки аркушів 4–6 для `extract_dissertation_year` — PLAN_PLAG_FILTER.md, §2, §8."""
+def _year_hint_lines(data: bytes, first_page: int = 3) -> list[dict]:
+    """Рядки аркушів титулу для `extract_dissertation_year` — PLAN_PLAG_FILTER.md, §2, §8.
+
+    У старому звіті титул — аркуші 4–6 звіту; у новому форматі `data` — сама
+    дисертація, і титул — аркуші 1–3 (PLAN_PLAG_FILTER_V4.md, §6.4).
+    """
     doc = fitz.open(stream=data, filetype="pdf")
     try:
         lines: list[dict] = []
-        for page_index in range(3, min(6, doc.page_count)):
+        for page_index in range(first_page, min(first_page + 3, doc.page_count)):
             for line in doc[page_index].get_text().split("\n"):
                 lines.append({"line": line, "page": page_index + 1})
         return lines
@@ -163,7 +183,9 @@ def _seed_author_fields(data: bytes, report: PlagReport, project: PlagProject) -
     if "plag_year" not in st.session_state:
         st.session_state["plag_year"] = (
             project.year
-            or extract_dissertation_year(_year_hint_lines(data))
+            or extract_dissertation_year(
+                _year_hint_lines(data, 0 if report.kind == "v4" else 3)
+            )
             or extract_title_year(report.title_text)
             or 2000
         )
@@ -281,17 +303,29 @@ def _render_summary(data: bytes, report: PlagReport, project: PlagProject, filen
         col.metric(kept_labels[reason], counts.get(reason, 0))
     kept_cols[-1].metric("Ще не перевірено", not_checked)
 
-    unknown_pct = sum(1 for row in report.rows.values() if row.percent is None)
     checked = sum(1 for state in project.states.values() if state.check is not None)
     total = _visible_source_count(report)
-    st.caption(f"Відсоток не розпізнано: {unknown_pct}")
-    truncated = sum(1 for row in report.rows.values() if is_truncated_row(row))
-    st.caption(f"Джерел поза обрізаним переліком Plag (0.0 %): {truncated}")
+    if report.kind != "v4":
+        unknown_pct = sum(1 for row in report.rows.values() if row.percent is None)
+        st.caption(f"Відсоток не розпізнано: {unknown_pct}")
+        truncated = sum(1 for row in report.rows.values() if is_truncated_row(row))
+        st.caption(f"Джерел поза обрізаним переліком Plag (0.0 %): {truncated}")
     st.caption(
         f"Перевірено {checked} з {total}; не вдалося завантажити "
         f"{counts.get('unavailable', 0)}; дату не встановлено — "
         f"{counts.get('date_unknown', 0)}"
     )
+
+    if report.kind == "v4":
+        diss_name = st.session_state.get(_DISS_NAME_KEY, "dissertation.pdf")
+        st.download_button(
+            "Завантажити дисертацію з підсвіткою",
+            data=_highlighted_pdf(data, report, project),
+            file_name=highlighted_pdf_name(diss_name, report),
+            mime="application/pdf",
+            key="plag_download_highlighted",
+        )
+        return
 
     excluded = {
         number for number, state in project.states.items() if state.decision == "exclude"
@@ -319,6 +353,22 @@ def _cleaned_pdf_with_protocol(
     with_protocol = append_protocol(cleaned, protocol_paragraphs(project, report))
     cache[key] = with_protocol
     return with_protocol
+
+
+def _highlighted_pdf(diss_data: bytes, report: PlagReport, project: PlagProject) -> bytes:
+    """Дисертація з підсвіткою й протоколом, побудована раз на набір рішень —
+    PLAN_PLAG_FILTER_V4.md, §6.5. Ключ — виключені номери й текст протоколу."""
+    excluded = frozenset(
+        number for number, state in project.states.items() if state.decision == "exclude"
+    )
+    key = (excluded, tuple(protocol_paragraphs(project, report)))
+    cache: dict = st.session_state.setdefault(_V4_PDF_KEY, {})
+    cached = cache.get(key)
+    if cached is None:
+        cached = highlighted_dissertation(report, project, diss_data)
+        cache.clear()
+        cache[key] = cached
+    return cached
 
 
 def _render_project_expander(report: PlagReport, project: PlagProject, filename: str) -> None:
@@ -526,9 +576,89 @@ def _render_all_sources(report: PlagReport, project: PlagProject) -> None:
                 row = report.rows.get(number)
                 if row is not None:
                     pages = report.pages_by_number.get(number)
-                    target_page = pages[0] if pages else row.list_page
-                    st.session_state[_PAGE_KEY] = target_page + 1
-                    st.rerun()
+                    if pages:
+                        target_page = pages[0]
+                    elif report.kind != "v4":
+                        target_page = row.list_page
+                    else:
+                        # PLAN_PLAG_FILTER_V4.md, §6.3: острови джерела відкинуто як дрібні.
+                        st.info(f"Джерело № {number} не має збігів у тексті дисертації")
+                        target_page = None
+                    if target_page is not None:
+                        st.session_state[_PAGE_KEY] = target_page + 1
+                        st.rerun()
+
+
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|>~<$])")
+
+
+def _escape_markdown(text: str) -> str:
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", text)
+
+
+def _fragment_markdown(text: str, runs: tuple[str, ...]) -> str:
+    """Фрагмент роботи, у якому жирні шматки Plag виділено `**…**`."""
+    parts: list[str] = []
+    cursor = 0
+    for run in runs:
+        position = text.find(run, cursor)
+        if position < 0:
+            continue
+        parts.append(_escape_markdown(text[cursor:position]))
+        parts.append("**" + _escape_markdown(run) + "**")
+        cursor = position + len(run)
+    parts.append(_escape_markdown(text[cursor:]))
+    return "… " + "".join(parts) + " …"
+
+
+def _render_v4_counters(report: PlagReport) -> None:
+    """Лічильники відкинутого — видимі завжди, включно з нульовими —
+    PLAN_PLAG_FILTER_V4.md, §4, §6.4."""
+    counters = report.v4.counters
+    how = counters.runs_by_how
+    st.caption(
+        f"Записи Plag: основних {counters.main_entries}, перекладених "
+        f"{counters.translated_entries} (з них менше {MIN_TRANSLATED_SENTENCES} речень — "
+        f"{counters.translated_below}, не розглядаються); коротких збігів "
+        f"{counters.short_matches} — не розглядаються."
+    )
+    st.caption(
+        f"Шматків збігу знайдено в тексті дисертації: {counters.runs_located} з "
+        f"{counters.runs_total}, не знайдено {counters.runs_missing} (за фрагментом "
+        f"{how.get('fragment', 0)}, єдиних {how.get('unique', 0)}, за сусіднім "
+        f"{how.get('nearest', 0)}, перше входження {how.get('first', 0)})."
+    )
+    st.caption(
+        f"Дрібних збігів (менше {MIN_ISLAND_WORDS} слів) відкинуто: {counters.small_islands} "
+        f"({counters.small_island_words} слів). Джерел за адресами: {counters.sources}."
+    )
+
+
+def _render_v4_records(report: PlagReport) -> None:
+    """Записи Plag обраного джерела: фрагменти роботи й текст джерела —
+    PLAN_PLAG_FILTER_V4.md, §6.4."""
+    numbers = sorted(report.rows)
+    if not numbers:
+        return
+    number = st.selectbox(
+        "Записи Plag для джерела №",
+        numbers,
+        format_func=lambda n: f"№ {n} · {report.rows[n].label} · {report.rows[n].percent_text}",
+        key="plag_v4_records",
+    )
+    for entry in report.v4.entries_by_number.get(number, ()):
+        if entry.section == "main":
+            title = f"Розділ 3 · запис № {entry.number} · {entry.words} слів"
+        else:
+            title = f"Розділ 4 (переклад) · запис № {entry.number} · {entry.sentences} речень"
+        with st.expander(title, expanded=False):
+            st.caption(entry.url)
+            st.markdown("**Фрагменти в роботі**")
+            for fragment in entry.fragments:
+                st.markdown(_fragment_markdown(fragment.text, fragment.runs))
+            st.markdown("**Текст джерела**")
+            for text in entry.source_texts:
+                st.markdown(_escape_markdown(text))
 
 
 def _demo_source() -> tuple[bytes, str] | None:
@@ -539,6 +669,18 @@ def _demo_source() -> tuple[bytes, str] | None:
     path = Path(demo_pdf)
     if not path.is_file():
         st.error(f"Файл показу не знайдено: {demo_pdf}")
+        return None
+    return path.read_bytes(), path.name
+
+
+def _demo_dissertation() -> tuple[bytes, str] | None:
+    """Дисертація до демонстраційного звіту нового формату — PLAN_PLAG_FILTER_V4.md, §7 етап 5."""
+    demo_diss = os.environ.get(_DEMO_DISS_ENV)
+    if not demo_diss:
+        return None
+    path = Path(demo_diss)
+    if not path.is_file():
+        st.error(f"Файл дисертації для показу не знайдено: {demo_diss}")
         return None
     return path.read_bytes(), path.name
 
@@ -579,16 +721,48 @@ def render_plag_filter_page() -> None:
         st.error("Файл більший за 30 МБ.")
         return
 
-    _reset_if_new_file(data)
+    # Новий формат звіту потребує PDF дисертації — PLAN_PLAG_FILTER_V4.md, §6.4.
+    report_data = data
+    diss_data: bytes | None = None
+    if detect_report_kind(report_data) == "v4":
+        demo_diss = _demo_dissertation() if demo is not None else None
+        if demo_diss is None:
+            diss_upload = st.file_uploader(
+                "Дисертація (PDF), яку перевіряв Plag",
+                type=["pdf"],
+                key="plag_diss_upload",
+                help="Новий формат звіту Plag не містить тексту дисертації.",
+            )
+            if diss_upload is None:
+                st.info(
+                    "Це звіт Plag нового формату: завантажте PDF дисертації, "
+                    "яку перевіряв Plag."
+                )
+                return
+            diss_data = diss_upload.getvalue()
+            st.session_state[_DISS_NAME_KEY] = diss_upload.name
+        else:
+            diss_data = demo_diss[0]
+            st.session_state[_DISS_NAME_KEY] = demo_diss[1]
+        if len(diss_data) > MAX_DISS_PDF_BYTES:
+            st.error("Файл дисертації більший за 50 МБ.")
+            return
+
+    _reset_if_new_file(report_data if diss_data is None else report_data + b"\0" + diss_data)
 
     if _REPORT_KEY not in st.session_state:
         try:
-            report = parse_report(data)
+            if diss_data is None:
+                report = parse_report(report_data)
+            else:
+                with st.spinner("Зіставлення звіту з текстом дисертації…"):
+                    report = build_report(report_data, diss_data)
         except UnsupportedReportError as exc:
             st.error(f"Звіт не відповідає очікуваному шаблону Plag: {exc.code}.")
             return
         st.session_state[_REPORT_KEY] = report
-        st.session_state[_DATA_KEY] = data
+        # Аркуші перегляду — аркуші дисертації в новому форматі.
+        st.session_state[_DATA_KEY] = report_data if diss_data is None else diss_data
         st.session_state[_PROJECT_KEY] = new_project(report, filename)
         if demo is not None:
             _apply_demo_project(report)
@@ -598,6 +772,8 @@ def render_plag_filter_page() -> None:
     project: PlagProject = st.session_state[_PROJECT_KEY]
 
     _render_author_card(data, report, project)
+    if report.kind == "v4":
+        _render_v4_counters(report)
 
     # До першого віджета з цим ключем: типово виключені показуються.
     st.session_state.setdefault(_SHOW_EXCLUDED_KEY, True)
@@ -617,6 +793,9 @@ def render_plag_filter_page() -> None:
             _render_summary(data, report, project, filename)
             st.divider()
         _render_all_sources(report, project)
+        if report.kind == "v4":
+            st.divider()
+            _render_v4_records(report)
         st.divider()
         _render_project_expander(report, project, filename)
 

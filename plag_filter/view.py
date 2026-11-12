@@ -19,6 +19,7 @@ from plag_filter.fetch import wayback_calendar_url
 from plag_filter.pdf import UnsupportedReportError, page_overlay, render_clean_page_png
 from plag_filter.rules import date_evidence, recompute
 from plag_filter.text import page_text, report_scores
+from plag_filter.v4.page import page_overlay_v4, page_text_v4, render_page_png_v4
 from plag_filter.types import (
     REASON_LABELS,
     OverlayItem,
@@ -142,6 +143,8 @@ def _overlay_items(data: bytes, report: PlagReport, page_index: int) -> list[Ove
     аркушах тіла. Титул, зміст і перелік джерел подій не мають: там наведення
     порожнє, а не помилка.
     """
+    if report.kind == "v4":
+        return page_overlay_v4(data, report, page_index)
     in_body = report.body_first <= page_index < report.list_first
     try:
         return page_overlay(data, report, page_index)
@@ -194,7 +197,10 @@ def viewer_payload(
     page = max(1, min(int(page), report.page_count))
     page_index = page - 1
 
-    png = render_clean_page_png(data, report, page_index)
+    if report.kind == "v4":
+        png = render_page_png_v4(data, page_index)
+    else:
+        png = render_clean_page_png(data, report, page_index)
     image = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
     overlay = [
@@ -244,6 +250,25 @@ def _scores(data: bytes, report: PlagReport) -> dict[str, str]:
     return cached
 
 
+def _v4_segment(text: str, numbers: tuple[int, ...], excluded) -> dict:
+    """Шматок тексту дисертації для компонента «Звіт» — PLAN_PLAG_FILTER_V4.md, §6.4.
+
+    Показується перший невиключений номер; якщо виключені всі — перший, і
+    шматок позначено виключеним.
+    """
+    if not numbers:
+        return {"text": text, "number": None, "marker": False, "color": None, "excluded": False}
+    kept = [number for number in numbers if not excluded(number)]
+    number = kept[0] if kept else numbers[0]
+    return {
+        "text": text,
+        "number": number,
+        "marker": False,
+        "color": source_color(number),
+        "excluded": not kept,
+    }
+
+
 def report_payload(
     data: bytes,
     report: PlagReport,
@@ -264,19 +289,25 @@ def report_payload(
         state = project.states.get(number) if number is not None else None
         return state is not None and state.decision == "exclude"
 
-    paragraphs = [
-        [
-            {
-                "text": segment.text,
-                "number": segment.number,
-                "marker": segment.marker,
-                "color": None if segment.number is None else source_color(segment.number),
-                "excluded": excluded(segment.number),
-            }
-            for segment in paragraph
+    if report.kind == "v4":
+        paragraphs = [
+            [_v4_segment(segment.text, segment.numbers, excluded) for segment in paragraph]
+            for paragraph in page_text_v4(data, report, page_index)
         ]
-        for paragraph in page_text(data, report, page_index)
-    ]
+    else:
+        paragraphs = [
+            [
+                {
+                    "text": segment.text,
+                    "number": segment.number,
+                    "marker": segment.marker,
+                    "color": None if segment.number is None else source_color(segment.number),
+                    "excluded": excluded(segment.number),
+                }
+                for segment in paragraph
+            ]
+            for paragraph in page_text(data, report, page_index)
+        ]
 
     numbers_on_page = report.numbers_by_page.get(page_index, ())
     visible = _visible_numbers_on_page(report, page_index)
@@ -288,12 +319,14 @@ def report_payload(
         "page": page,
         "pages": list(range(report.body_first + 1, report.list_first + 1)),
         "filename": project.report_name,
-        "scores": dict(_scores(data, report)),
+        "scores": {} if report.kind == "v4" else dict(_scores(data, report)),
         "paragraphs": paragraphs,
         "sources": sources,
         "below_count": len(numbers_on_page) - len(visible),
         "show_excluded": bool(show_excluded),
     }
+    if report.kind == "v4":
+        payload["score_rows"] = [list(row) for row in report.v4.report.scores]
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     payload["signature"] = hashlib.sha256(encoded).hexdigest()
     return payload
