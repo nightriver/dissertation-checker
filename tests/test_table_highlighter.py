@@ -93,6 +93,14 @@ class TestZones:
         right = annotate_right_cell(document.tables[0].rows[0].cells[1])
         assert [item.zone for item in right.paragraphs] == ["plain", "plain", "text", "text", "text", "plain", "plain"]
 
+    def test_right_source_with_several_page_markers_starts_at_first_marker(self):
+        """Кілька уривків джерела, кожен зі своєю сторінкою, усі порівнюються."""
+        data = _table_docx([(["С. 1", "Перший", "Другий"], ["Джерело", "с. 87", "Перший", "с. 89", "Другий", "", "Посилання на:", "1. Джерело"])])
+        document = Document(io.BytesIO(data))
+        right = annotate_right_cell(document.tables[0].rows[0].cells[1])
+        assert right.marker_index == 1
+        assert [item.zone for item in right.paragraphs] == ["plain", "plain", "text", "plain", "text", "text", "plain", "plain"]
+
 
 class TestMatcher:
     def test_threshold_100_disables_relaxed_short_word_match(self):
@@ -181,6 +189,34 @@ class TestProcessor:
             paragraph = cell.paragraphs[1]
             assert paragraph_text(paragraph) == "Спільний\n\tтекст"
             assert len(paragraph._p.findall(".//" + qn("w:br"))) == 1
+            colors = {str(run.font.highlight_color) for run in paragraph.runs if run.text.strip()}
+            assert colors == {"YELLOW (7)"}
+
+    def test_symbol_and_soft_hyphen_inside_compared_text_are_kept(self):
+        """w:sym і w:softHyphen не роблять абзац непідтримуваним і не губляться."""
+        data = _table_docx([(["С. 1", "Спільний"], ["С. 2", "Спільний"])])
+        document = Document(io.BytesIO(data))
+        for cell in document.tables[0].rows[0].cells:
+            run = cell.paragraphs[1].runs[0]
+            run._r.append(OxmlElement("w:softHyphen"))
+            symbol = OxmlElement("w:sym")
+            symbol.set(qn("w:font"), "Symbol")
+            symbol.set(qn("w:char"), "F02D")
+            run._r.append(symbol)
+            tail = OxmlElement("w:t")
+            tail.text = "текст"
+            run._r.append(tail)
+        raw = io.BytesIO()
+        document.save(raw)
+
+        result = process_document(raw.getvalue(), HighlightOptions())
+        output = Document(io.BytesIO(result.document_bytes))
+        assert result.warnings == ()
+        for cell in output.tables[0].rows[0].cells:
+            paragraph = cell.paragraphs[1]
+            assert paragraph_text(paragraph) == "Спільний-текст"
+            assert len(paragraph._p.findall(".//" + qn("w:sym"))) == 1
+            assert len(paragraph._p.findall(".//" + qn("w:softHyphen"))) == 1
             colors = {str(run.font.highlight_color) for run in paragraph.runs if run.text.strip()}
             assert colors == {"YELLOW (7)"}
 

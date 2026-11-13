@@ -8,16 +8,16 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 from table_highlighter.formatting import set_run_font
-from table_highlighter.zones import paragraph_text
+from table_highlighter.zones import INLINE_TAGS, element_text, paragraph_text
 
 
 HIGHLIGHT = {"match": "yellow", "diff": "cyan"}
 # lastRenderedPageBreak — кешована позначка Word між двома текстовими runs.
 # Вона не входить до видимого тексту, але її не можна втратити через підсвітку.
-# Розриви й табуляції стоять окремими вузлами всередині run; у видимому тексті
-# кожен займає один символ, як у paragraph_text, і переноситься без змін.
-_BREAK_CHILDREN = {qn("w:br"): "\n", qn("w:cr"): "\n", qn("w:tab"): "\t"}
-_ALLOWED_RUN_CHILDREN = {qn("w:rPr"), qn("w:t"), qn("w:lastRenderedPageBreak"), *_BREAK_CHILDREN}
+# Розриви, табуляції, символи й м'які переноси стоять окремими вузлами
+# всередині run; їхній видимий текст рахується так само, як у paragraph_text,
+# а самі вузли переносяться без змін.
+_ALLOWED_RUN_CHILDREN = {qn("w:rPr"), qn("w:t"), qn("w:lastRenderedPageBreak"), *INLINE_TAGS}
 
 
 def supports_highlighting(paragraph) -> bool:
@@ -29,11 +29,7 @@ def supports_highlighting(paragraph) -> bool:
 
 
 def _run_text(run) -> str:
-    return "".join(
-        _BREAK_CHILDREN.get(child.tag, child.text or "")
-        for child in run
-        if child.tag == qn("w:t") or child.tag in _BREAK_CHILDREN
-    )
+    return "".join(text for child in run if (text := element_text(child)) is not None)
 
 
 def _set_font(run, font_name: str, font_size: int, status: str | None = None) -> None:
@@ -45,7 +41,7 @@ def _clone_run(
 ):
     clone = deepcopy(run)
     for child in tuple(clone):
-        if child.tag in {qn("w:t"), *_BREAK_CHILDREN} or (child.tag != qn("w:rPr") and not preserve_nontext):
+        if child.tag in {qn("w:t"), *INLINE_TAGS} or (child.tag != qn("w:rPr") and not preserve_nontext):
             clone.remove(child)
     if isinstance(text, str):
         text_element = OxmlElement("w:t")
@@ -54,7 +50,7 @@ def _clone_run(
         text_element.text = text
         clone.append(text_element)
     else:
-        # Розрив або табуляція переходить у власний run без підсвітки.
+        # Розрив, табуляція чи символ переходить у власний run без підсвітки.
         clone.append(deepcopy(text))
         status = None
     _set_font(clone, font_name, font_size, status)
@@ -89,8 +85,8 @@ def style_text_paragraph(
             continue
         groups: list[tuple[object, str | None]] = []
         for child in run:
-            if child.tag in _BREAK_CHILDREN:
-                cursor += 1
+            if child.tag in INLINE_TAGS:
+                cursor += len(element_text(child))
                 groups.append((child, None))
                 continue
             if child.tag != qn("w:t"):
